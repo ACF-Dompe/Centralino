@@ -57,6 +57,7 @@
 #   APPLICATIONINSIGHTS_CONNECTION_STRING  Key Vault reference (optional)
 #   BACKEND_BASE_URL                 Built from ACA_ENVIRONMENT_DEFAULT_DOMAIN
 #   NODE_ENV, PORT, LOG_LEVEL        Plain values
+#   SKIP_MIGRATIONS, SEED_ENABLED    Plain values (true and false by default — CI handles migrations)
 #
 #   MAIL_GRAPH_ENABLED               Plain value (false by default)
 #   MAIL_GRAPH_TENANT_ID             From GitHub secret (reuses AZURE_TENANT_ID)
@@ -407,6 +408,8 @@ jobs:
               MAIL_GRAPH_USER_ID="${{ secrets.MAIL_GRAPH_USER_ID }}" \
               MAIL_GRAPH_FROM_ADDRESS="noreply@dompe.com" \
               BACKEND_BASE_URL="http://ca-cgd-backend-${{ env.ENV_SUFFIX }}.${{ secrets.ACA_ENVIRONMENT_DEFAULT_DOMAIN }}" \
+              SKIP_MIGRATIONS=true \
+              SEED_ENABLED=false \
               --output none
           echo "Backend deployed with env vars."
 
