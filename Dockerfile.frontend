@@ -1,0 +1,72 @@
+# syntax=docker/dockerfile:1.7
+# =============================================================================
+# Frontend — Azure Container Apps target
+# =============================================================================
+# Serves the built React SPA via nginx. The Application Gateway routes
+# /* (non-API) traffic to this container.
+# =============================================================================
+
+# ---------- Stage 1: build ----------
+FROM node:20-alpine AS build
+
+WORKDIR /app
+
+# Copy manifests first for better layer caching
+COPY package.json package-lock.json* ./
+COPY frontend/package.json ./frontend/package.json
+
+RUN npm config set fund false && npm config set audit false \
+    && npm install --no-audit --no-fund
+
+# Copy frontend source
+COPY frontend ./frontend
+
+# Build frontend (vite)
+RUN npm run build -w frontend
+
+# ---------- Stage 2: nginx runtime ----------
+FROM nginx:1.27-alpine AS runtime
+
+# Copy the built frontend
+COPY --from=build /app/frontend/dist /usr/share/nginx/html
+
+# Minimal nginx config: SPA fallback (all routes → index.html)
+RUN echo 'server { \
+  listen 3000; \
+  root /usr/share/nginx/html; \
+  index index.html; \
+\
+  # Health endpoints (process-level only — MUST NOT check backend or DB).\
+  # Guidelines §10: frontend readiness MUST NOT cascade AGW pool failure.\
+  location /healthz { \
+    access_log off; \
+    add_header Content-Type text/plain; \
+    return 200 "ok\n"; \
+  } \
+  location /readyz { \
+    access_log off; \
+    add_header Content-Type text/plain; \
+    return 200 "ok\n"; \
+  } \
+\
+  location / { \
+    try_files $uri $uri/ /index.html; \
+  } \
+  location /api/ { \
+    return 404; \
+  } \
+}' > /etc/nginx/conf.d/default.conf
+
+# Ensure the nginx user (UID 101) can read all files
+RUN chown -R nginx:nginx /usr/share/nginx/html && \
+    chmod -R 755 /usr/share/nginx/html && \
+    chown nginx:nginx /etc/nginx/conf.d/default.conf && \
+    chmod 644 /etc/nginx/conf.d/default.conf
+
+# Switch to non-root user (ACA security compliance)
+USER nginx
+
+EXPOSE 3000
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:3000/ >/dev/null 2>&1 || exit 1

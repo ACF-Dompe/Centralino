@@ -1,0 +1,106 @@
+# =============================================================================
+# E2E (Playwright, reusable)
+# =============================================================================
+# Reusable workflow for the Playwright E2E suite.
+# Tests run against PostgreSQL via a GitHub Actions service container.
+# The frontend is served by Vite dev server, backend runs directly with node.
+# =============================================================================
+
+name: E2E (Playwright, reusable)
+
+on:
+  workflow_call:
+
+jobs:
+  e2e:
+    name: Playwright E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    # PostgreSQL service container
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: guest_desk
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready -U postgres -d guest_desk
+          --health-interval 10s
+          --health-timeout 3s
+          --health-retries 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: TypeCheck backend
+        working-directory: backend
+        run: npx tsc --noEmit
+
+      - name: TypeCheck frontend
+        working-directory: frontend
+        run: npx tsc --noEmit
+
+      - name: Build backend
+        run: npm run build -w backend
+
+      - name: Build frontend
+        run: npm run build -w frontend
+
+      - name: Install Playwright
+        run: npx playwright install --with-deps chromium
+
+      # Start backend + frontend in background
+      - name: Start services
+        run: |
+          # Start backend
+          DATABASE_URL=postgres://postgres:password@localhost:5432/guest_desk \
+          NODE_ENV=development PORT=3001 LOG_LEVEL=silent \
+          node backend/dist/index.js &
+          echo "Backend PID: $!"
+
+          # Start frontend (Vite preview serves dist/ on port 3000)
+          cd frontend && npx vite preview --port 3000 &
+          echo "Frontend PID: $!"
+
+          # Wait for both services to be ready
+          for i in $(seq 1 30); do
+            sleep 1
+            BACKEND_OK=$(curl -fsS -m 3 http://localhost:3001/api/health >/dev/null 2>&1 && echo 1 || echo 0)
+            FRONTEND_OK=$(curl -fsS -m 3 http://localhost:3000/ >/dev/null 2>&1 && echo 1 || echo 0)
+            echo "[$i] backend=$BACKEND_OK frontend=$FRONTEND_OK"
+            [ "$BACKEND_OK" = "1" ] && [ "$FRONTEND_OK" = "1" ] && break
+          done
+
+          curl -fsS -m 5 http://localhost:3001/api/health && echo " BACKEND HEALTHY"
+          curl -fsS -m 5 http://localhost:3000/ | head -c 200 && echo " FRONTEND SERVING"
+
+      - name: Run Playwright E2E suite
+        working-directory: frontend
+        env:
+          CI: 'true'
+          E2E_BASE_URL: http://localhost:3000
+        run: npx playwright test --reporter=list
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            frontend/playwright-report/
+            frontend/test-results/
+          retention-days: 7

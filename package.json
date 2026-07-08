@@ -1,0 +1,24 @@
+{
+  "name": "cisco-guest-desk",
+  "version": "1.0.0",
+  "description": "Cisco Catalyst 9800 Guest Management Desk",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "scripts": {
+    "dev": "concurrently --kill-others -n be,fe -c cyan,magenta 'npm run dev -w backend' 'npm run dev -w frontend'",
+    "build": "npm run build -w backend && npm run build -w frontend",
+    "start": "npm run start -w backend"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.3"
+  },
+  "dependencies": {
+    "@microsoft/microsoft-graph-client": "^3.0.7",
+    "@microsoft/microsoft-graph-types": "^2.43.1",
+    "@vitest/coverage-v8": "^4.1.9"
+  }
+}

@@ -1,0 +1,114 @@
+# =============================================================================
+# Azure Infrastructure Provisioning (manual via workflow_dispatch)
+# =============================================================================
+# Manual workflow to provision or update Azure infrastructure for the
+# Cisco Guest Desk application: Key Vault, UAMI, ACA Environment, ACA
+# Container Apps, and initial Key Vault secrets.
+#
+# Usage:
+#   1. Go to GitHub → Actions → "Provision Azure Infrastructure"
+#   2. Click "Run workflow"
+#   3. Select environment, enter ACR name, optionally enable dry-run
+#   4. Review the output for any errors
+#
+# Prerequisites:
+#   - Azure OIDC federated credential configured (AZURE_CLIENT_ID, etc.)
+#   - User running this must have Contributor + User Access Admin RBAC
+# =============================================================================
+
+name: Provision Azure Infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - stg
+          - prd
+      acr_name:
+        description: 'Azure Container Registry name (e.g. crcgddev)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Dry-run mode: print commands without executing'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  AZURE_RESOURCE_GROUP: rg-cgd-${{ github.event.inputs.environment }}
+
+jobs:
+  provision:
+    name: 'Provision ${{ github.event.inputs.environment }}'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to Azure (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # Install jq (needed by the provisioning script)
+      - name: Install jq
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
+
+      - name: Provision infrastructure
+        id: provision
+        env:
+          ACR_NAME: ${{ github.event.inputs.acr_name }}
+        run: |
+          DRY_FLAG=""
+          if [[ "${{ github.event.inputs.dry_run }}" == "true" ]]; then
+            DRY_FLAG="--dry-run"
+            echo "⚠️  DRY-RUN MODE — commands will be printed but NOT executed."
+          fi
+
+          echo "🔧 Provisioning infrastructure for environment: ${{ github.event.inputs.environment }}"
+          echo "📦 ACR: ${{ github.event.inputs.acr_name }}"
+          echo ""
+
+          # Run provisioning and capture output for summary parsing
+          export ACR_NAME="${{ github.event.inputs.acr_name }}"
+          bash scripts/provision.sh "${{ github.event.inputs.environment }}" $DRY_FLAG 2>&1 | tee /tmp/provision-output.txt
+
+          # Extract key values from script output for the step summary
+          # Uses 'domain:' which avoids ANSI escape codes from info() and matches
+          # both the info() line and print_summary() line — head -1 takes the first.
+          ACA_DOMAIN=$(grep -oP 'domain: \K\S+' /tmp/provision-output.txt | head -1 || echo "<pending>")
+
+          echo "aca_domain=${ACA_DOMAIN}" >> $GITHUB_OUTPUT
+          echo "resource_group=rg-cgd-${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
+          echo "key_vault=kv-cgd-${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
+          echo "aca_backend=ca-cgd-backend-${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
+          echo "aca_frontend=ca-cgd-frontend-${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
+
+      - name: Summary
+        run: |
+          echo "## ✅ Provisioning ${{ github.event.inputs.environment }} — ${{ github.event.inputs.dry_run == 'true' && 'Dry-Run' || 'Complete' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Resource | Name |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Resource Group | ${{ steps.provision.outputs.resource_group }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Key Vault | ${{ steps.provision.outputs.key_vault }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| UAMI Backend | uami-cgd-backend-${{ github.event.inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| UAMI Frontend | uami-cgd-frontend-${{ github.event.inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| ACA Environment | cae-cgd-${{ github.event.inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| ACA Backend | ${{ steps.provision.outputs.aca_backend }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| ACA Frontend | ${{ steps.provision.outputs.aca_frontend }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| ACA Default Domain | ${{ steps.provision.outputs.aca_domain }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Migration Job | job-cgd-migrate-${{ github.event.inputs.environment }} |" >> $GITHUB_STEP_SUMMARY

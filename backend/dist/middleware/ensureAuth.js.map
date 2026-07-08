@@ -1,0 +1,1 @@
+{"version":3,"file":"ensureAuth.js","sourceRoot":"","sources":["../../src/middleware/ensureAuth.ts"],"names":[],"mappings":"AAMA,MAAM,UAAU,mBAAmB,CACjC,GAAY,EACZ,GAAa,EACb,IAAkB;IAElB,IAAI,GAAG,CAAC,eAAe,EAAE,EAAE,CAAC;QAC1B,OAAO,IAAI,EAAE,CAAC;IAChB,CAAC;IACD,GAAG,CAAC,MAAM,CAAC,GAAG,CAAC,CAAC,IAAI,CAAC;QACnB,OAAO,EAAE,KAAK;QACd,KAAK,EAAE,uEAAuE;KAC/E,CAAC,CAAC;AACL,CAAC"}
