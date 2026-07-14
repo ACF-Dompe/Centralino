@@ -788,7 +788,8 @@ test.describe('SSO SAML login screen', () => {
   }) => {
     let badgeSent = false;
 
-    // Intercept guest API — return a guest with email so the badge button + send button work
+    // Intercept guest API — return a guest with email so the badge button + send button work.
+    // Must be registered BEFORE enterSsoHappyPath so Dashboard mount can load guests.
     await page.route('**/api/guests**', async (route) => {
       const method = route.request().method();
 
@@ -821,7 +822,11 @@ test.describe('SSO SAML login screen', () => {
       }
     });
 
-    // Intercept email config (BadgeModal loads it on mount)
+    await enterSsoHappyPath(page);
+
+    // Intercept email config AFTER helper so it takes LIFO priority over
+    // setupSsoCommonRoutes's handler (which returns noreply@example.com).
+    // BadgeModal has not been opened yet — the API call happens on mount.
     await page.route('**/api/config/email', async (route) => {
       if (route.request().method() === 'GET') {
         await route.fulfill({
@@ -845,7 +850,7 @@ test.describe('SSO SAML login screen', () => {
       }
     });
 
-    // Intercept the resend credentials API (BadgeModal calls this to send the email)
+    // Intercept the resend credentials API AFTER helper for LIFO priority
     await page.route('**/guests/*/resend-credentials', async (route) => {
       if (route.request().method() === 'POST') {
         badgeSent = true;
@@ -864,8 +869,6 @@ test.describe('SSO SAML login screen', () => {
         await route.fallback();
       }
     });
-
-    await enterSsoHappyPath(page);
 
     // Guest table should show the guest
     await expect(page.getByText('Mario Badge Test')).toBeVisible({ timeout: 10_000 });
