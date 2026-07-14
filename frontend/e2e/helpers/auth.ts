@@ -120,8 +120,8 @@ export async function enterDemoSandbox(page: Page): Promise<void> {
   // fails fast and the "WLC NON RAGGIUNGIBILE" modal appears.
   await page.getByLabel('Host / IP Controller', { exact: true }).fill('198.51.100.1');
   // The password field is required and pre-filled empty — give it a value.
-  await page.getByLabel('Password amministratore', { exact: true }).fill('demo');
-  await page.getByRole('button', { name: /Connetti al WLC/i }).click();
+  await page.getByLabel('Password amministratore', { exact: true }).fill('demo');  await page.getByTestId('wlc-connect-btn').click();
+
   // The WLC is unreachable in the test env → fallback modal appears.
   const sandboxBtn = page.getByRole('button', { name: /Abilita Demo Sandbox/i });
   await expect(sandboxBtn).toBeVisible({ timeout: 20_000 });
@@ -275,7 +275,7 @@ export async function enterSsoDemoSandbox(page: Page): Promise<void> {
 
   await ssoSelectSedeAndFillForm(page);
 
-  await page.getByRole('button', { name: /Connetti al WLC/i }).click();
+  await page.getByTestId('wlc-connect-btn').click();
 
   // Demo Sandbox modal
   const sandboxBtn = page.getByRole('button', { name: /Abilita Demo Sandbox/i });
@@ -315,7 +315,7 @@ export async function enterSsoHappyPath(page: Page): Promise<void> {
   await ssoSelectSedeAndFillForm(page);
 
   // WLC login succeeds → Dashboard renders directly (no Demo Sandbox modal)
-  await page.getByRole('button', { name: /Connetti al WLC/i }).click();
+  await page.getByTestId('wlc-connect-btn').click();
 
   // Dashboard
   await expect(page.getByTestId('register-guest-btn')).toBeVisible({

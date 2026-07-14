@@ -260,7 +260,7 @@ function SedeWlcForm({
           </div>
         </div>
 
-        <button type="submit" className="btn-primary mt-6 w-full" disabled={submitting}>
+        <button data-testid="wlc-connect-btn" type="submit" className="btn-primary mt-6 w-full" disabled={submitting}>
           {submitting ? t('toast.loading') : t('login.submit')}
         </button>
 
