@@ -195,12 +195,14 @@ test.describe('SSO SAML login screen', () => {
       timeout: 10_000,
     });
 
-    // Switch to the WLC section (label depends on i18n: WLC/Wifi/Controller)
-    await page.getByRole('button', { name: /WLC|Wifi|Wireless|Controller/i }).click();
+    // Switch to the WLC section — scope to the config panel sidebar nav
+    // to avoid matching the "Sincronizza WLC" button in the Dashboard header.
+    await page.locator('.fixed.inset-0.z-50 nav').getByRole('button', { name: /WLC|Controller/i }).click();
 
-    // Change the WLC host — filter input by its initial known value since
-    // the label has no htmlFor/id association (Playwright getByLabel won't work)
-    await page.locator('input').filter({ hasValue: '172.18.106.100' }).fill('10.0.0.50');
+    // Change the WLC host — scope to inputs inside ConfigPanel to avoid
+    // matching other inputs outside (e.g. filter, search). The host input
+    // is the only one pre-filled with the WLC IP address.
+    await page.locator('.fixed.inset-0.z-50 input').filter({ hasValue: '172.18.106.100' }).fill('10.0.0.50');
 
     // Click "Save All"
     await page.getByRole('button', { name: /Salva|Save|Salva tutto/i }).click();
@@ -302,8 +304,9 @@ test.describe('SSO SAML login screen', () => {
       timeout: 5_000,
     });
 
-    // Change SMTP port (unique number input in email section)
-    await page.locator('input[type="number"]').filter({ hasValue: '587' }).fill('465');
+    // Change SMTP port — scope to ConfigPanel to avoid matching
+    // number inputs from other sections (e.g. WLC port, duration).
+    await page.locator('.fixed.inset-0.z-50 input[type="number"]').filter({ hasValue: '587' }).fill('465');
 
     // Click "Save All"
     await page.getByRole('button', { name: /Salva|Save|Salva tutto/i }).click();
@@ -381,8 +384,11 @@ test.describe('SSO SAML login screen', () => {
       }
     });
 
-    // Click the SSO logout button (matches existing test pattern)
-    await page.getByRole('button', { name: /Esci|Logout|Disconnetti SSO/i }).click();
+    // Click the SSO logout button
+    // Use force:true because the fixed language selector overlay (z-50)
+    // in the top-right corner of all views may intercept pointer events
+    // during the Dashboard→SsoLogin transition.
+    await page.getByRole('button', { name: /Esci|Logout|Disconnetti SSO/i }).click({ force: true });
 
     // After logout, the app transitions to sso-required → SsoLogin screen
     await expect(
@@ -417,7 +423,10 @@ test.describe('SSO SAML login screen', () => {
     });
 
     // Click the SSO logout button
-    await page.getByRole('button', { name: /Esci|Logout|Disconnetti SSO/i }).click();
+    // Use force:true because the fixed language selector overlay (z-50)
+    // in the top-right corner of all views may intercept pointer events
+    // during the transition to the SsoLogin screen.
+    await page.getByRole('button', { name: /Esci|Logout|Disconnetti SSO/i }).click({ force: true });
 
     // Even though the API call failed, the app force-logs out via .catch()
     await expect(

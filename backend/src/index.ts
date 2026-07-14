@@ -17,7 +17,9 @@ import { config } from './config.js';
 import { router } from './routes/index.js';
 import { createAuthRouter } from './routes/auth.js';
 import { createSamlStrategy } from './auth/saml.js';
-import { createSessionMiddleware } from './auth/session.js';
+import { createSessionMiddleware, createSessionStore } from './auth/session.js';
+import cookieSignature from 'cookie-signature';
+import type { SessionData } from './auth/session.js';
 import { startBackgroundServices, stopBackgroundServices } from './services/timer.js';
 import { initWsServer, shutdownWsServer } from './services/ws.js';
 import { getDb } from './db/index.js';
@@ -56,6 +58,14 @@ async function main(): Promise<void> {
     config.sessionSecret,
   );
   app.use(sessionMiddleware);
+
+  // ── WebSocket session verifier ───────────────────────────────────────────
+  // Uses the same PostgreSQL session store as the Express middleware to
+  // authenticate WebSocket upgrade requests. The verifier reads the session
+  // cookie, unsigns it (express-session signs all cookies with 's:' prefix),
+  // looks up the session in PostgreSQL via store.get(), and checks for a
+  // passport-authenticated user in the session data.
+  const wsSessionStore = createSessionStore(config.databaseUrl);
   app.use(passport.initialize());
   app.use(passport.session());
 
@@ -155,7 +165,40 @@ async function main(): Promise<void> {
   // Bind to 0.0.0.0 for ACA compatibility (ACA routes traffic to the
   // container's port regardless of the host interface).
   server = http.createServer(app);
-  initWsServer(server);
+  initWsServer(server, {
+    verifySession(req, callback) {
+      // Parse the session cookie from the Cookie header
+      const rawCookie = req.headers.cookie ?? '';
+      const match = rawCookie.match(/(?:^|;\s*)cgd\.sid=([^;]+)/);
+      if (!match) {
+        callback(false);
+        return;
+      }
+
+      // Express-session signs session cookies with the format:
+      //   s:<session-id>.<signature>
+      // We must unsign to get the raw session ID before calling store.get(),
+      // because connect-pg-simple stores sessions keyed by the unsigned ID.
+      const signedValue = match[1];
+      const sid = signedValue.startsWith('s:')
+        ? cookieSignature.unsign(signedValue.slice(2), config.sessionSecret)
+        : signedValue;
+
+      if (!sid) {
+        callback(false); // Invalid cookie signature
+        return;
+      }
+
+      wsSessionStore.get(sid, (err: Error | null, session?: SessionData | null) => {
+        if (err || !session) {
+          callback(false);
+          return;
+        }
+        // Verify the session contains a passport-authenticated user
+        callback(!!session.passport?.user);
+      });
+    },
+  });
   server.listen(config.port, '0.0.0.0', () => {
     log.info(`Server listening on http://0.0.0.0:${config.port}`);
   });

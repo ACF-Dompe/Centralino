@@ -18,6 +18,19 @@ export interface SessionData extends session.SessionData {
 }
 
 /**
+ * Create a PostgreSQL-backed session store instance.
+ * Shared between the Express session middleware and WebSocket
+ * upgrade authentication so both can validate sessions against
+ * the same database.
+ */
+export function createSessionStore(databaseUrl: string): session.Store {
+  return new PgStore({
+    conString: databaseUrl,
+    createTableIfMissing: true,
+  }) as unknown as session.Store;
+}
+
+/**
  * Build the Express session middleware.
  * `databaseUrl` is the PostgreSQL connection string.
  * `secret` is the session signing secret (defaults to a hard-coded fallback
@@ -25,10 +38,7 @@ export interface SessionData extends session.SessionData {
  */
 export function createSessionMiddleware(databaseUrl: string, secret: string) {
   return session({
-    store: new PgStore({
-      conString: databaseUrl,
-      createTableIfMissing: true,
-    }),
+    store: createSessionStore(databaseUrl),
     secret,
     name: 'cgd.sid',
     resave: false,
