@@ -365,7 +365,7 @@ export default function Dashboard({ config, sede, ssoUser, onDisconnect, onConfi
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <button className="btn-ghost" onClick={() => setShowConfig(true)}>
+              <button data-testid="settings-button" className="btn-ghost" onClick={() => setShowConfig(true)}>
                 <Settings className="h-4 w-4" /> {t('toolbar.config')}
               </button>
               <button className="btn-primary" onClick={() => setShowCreate(true)} disabled={!sede} title={sede ? '' : t('login.sede.heading')}>
@@ -508,7 +508,7 @@ function LockOverlay({ onUnlock }: { onUnlock: () => void }) {
   const [, , t] = useLocale();
   const [pin, setPin] = useState('');
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/80 backdrop-blur">
+    <div data-testid="lock-overlay" className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/80 backdrop-blur">
       <div className="card w-full max-w-sm p-6 text-center">
         <Lock className="mx-auto h-10 w-10 text-navy" />
         <h3 className="mt-3 text-lg font-bold">{t('header.lockConsole')}</h3>

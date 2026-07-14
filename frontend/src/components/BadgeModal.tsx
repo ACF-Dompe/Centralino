@@ -50,7 +50,7 @@ export default function BadgeModal({ guest, ssid, onClose }: Props) {
   }, [ssid, guest, t]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
+    <div data-testid="badge-modal" className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
       <div className="card w-full max-w-xl shadow-elev">
         <div className="flex items-start justify-between border-b border-slate-200 px-6 py-4">
           <div>
@@ -60,7 +60,7 @@ export default function BadgeModal({ guest, ssid, onClose }: Props) {
               <Building className="h-3 w-3" />{guest.company} · {guest.host}
             </div>
           </div>
-          <button onClick={onClose} className="btn-ghost p-1">
+          <button data-testid="badge-modal-close" onClick={onClose} className="btn-ghost p-1">
             <X className="h-5 w-5" />
           </button>
         </div>

@@ -190,7 +190,7 @@ test.describe('SSO SAML login screen', () => {
     await enterSsoHappyPath(page);
 
     // Click the Settings button to open ConfigPanel
-    await page.getByRole('button', { name: /Config|Impostazioni|Settings/i }).click();
+    await page.getByTestId('settings-button').click();
     await expect(page.getByRole('heading', { name: /Config|Impostazioni/i })).toBeVisible({
       timeout: 10_000,
     });
@@ -290,7 +290,7 @@ test.describe('SSO SAML login screen', () => {
     await enterSsoHappyPath(page);
 
     // Open ConfigPanel — defaults to email section
-    await page.getByRole('button', { name: /Config|Impostazioni|Settings/i }).click();
+    await page.getByTestId('settings-button').click();
     await expect(page.getByRole('heading', { name: /Config|Impostazioni/i })).toBeVisible({
       timeout: 10_000,
     });
@@ -326,16 +326,16 @@ test.describe('SSO SAML login screen', () => {
     // Click the lock button in the header — title is 'Blocca Console' (IT) or 'Lock Console' (EN)
     await page.getByTitle(/Blocca Console|Lock Console/i).click();
 
-    // LockOverlay should appear
+    // LockOverlay should appear — heading is 'Blocca Console' (IT) or 'Lock Console' (EN)
     await expect(
-      page.getByRole('heading', { name: /Blocca|Console|Blocco|Sessione/i }),
+      page.getByRole('heading', { name: /Blocca Console|Lock Console/i }),
     ).toBeVisible({ timeout: 5_000 });
 
     // The demo PIN input should be visible (accepts any value)
     await expect(page.getByText(/Inserisci PIN/i)).toBeVisible();
 
     // Type a PIN and click "Sblocca"
-    await page.locator('.fixed.inset-0.z-50 input').fill('1234');
+    await page.getByTestId('lock-overlay').locator('input').fill('1234');
     await page.getByRole('button', { name: /Sblocca|Unlock/i }).click();
 
     // LockOverlay closes, Dashboard should be visible again
@@ -899,7 +899,7 @@ test.describe('SSO SAML login screen', () => {
     await expect(page.getByText('Mario Badge Test')).toBeVisible({ timeout: 10_000 });
 
     // Click the badge button (Send icon, title attrs)
-    await page.getByTitle(/Invia Badge|Send Badge|Badge/i).click();
+    await page.getByTitle(/Invia Badge|Send Badge/i).click();
 
     // BadgeModal should appear with guest name in the heading
     await expect(page.getByRole('heading', { name: /Mario Badge Test/i })).toBeVisible({
@@ -920,8 +920,8 @@ test.describe('SSO SAML login screen', () => {
       timeout: 5_000,
     });
 
-    // Close the BadgeModal — X button with class btn-ghost p-1
-    await page.locator('.fixed.inset-0.z-50 .btn-ghost.p-1').click();
+    // Close the BadgeModal
+    await page.getByTestId('badge-modal-close').click();
 
     // BadgeModal should be closed (heading is unique to modal, not the table row)
     await expect(
@@ -998,7 +998,7 @@ test.describe('SSO SAML login screen', () => {
     await expect(page.getByText('Mario Reinvio Test')).toBeVisible({ timeout: 10_000 });
 
     // Click the resend button (RefreshCw icon, title attrs)
-    await page.getByTitle(/Re-invia|Re-send|Resend|Credenziali/i).click();
+    await page.getByTitle(/Re-invia|Re-send|Resend/i).click();
 
     // Resend API should have been called
     expect(resendCalled).toBe(true);
