@@ -36,7 +36,7 @@ test.describe('Calendar date picker — Custom duration', () => {
     await openRegisterGuestModal(page);
     await expect(page.getByRole('button', { name: /Data personalizzata/i })).toBeVisible();
     await expect(page.getByRole('button', { name: /^4 ore$/ })).toBeVisible();
-    await expect(page.getByRole('button', { name: /^1 anno$/ })).toBeVisible();
+    await expect(page.getByRole('button', { name: /1 settimana|1 week/i })).toBeVisible();
   });
 
   test('reveals a datetime-local input when Custom is clicked', async ({ page }) => {

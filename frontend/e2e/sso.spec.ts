@@ -95,7 +95,7 @@ test.describe('SSO SAML login screen', () => {
   }) => {
     // Intercept POST /api/guests → 200 with mock guest response
     // Registered BEFORE enterSsoHappyPath for FIFO priority
-    await page.route('**/api/guests*', async (route) => {
+    await page.route('**/api/guests**', async (route) => {
       if (route.request().method() === 'POST') {
         await route.fulfill({
           status: 200,
@@ -197,13 +197,13 @@ test.describe('SSO SAML login screen', () => {
     await page.getByTestId('config-panel-nav').getByRole('button', { name: /WLC|Controller/i }).click();
 
     // Change the WLC host — scope to inputs inside ConfigPanel via data-testid
-    await page.getByTestId('config-panel').locator('input').filter({ hasValue: '172.18.106.100' }).fill('10.0.0.50');
+    await page.getByTestId('config-panel').locator('input').filter({ hasValue: '172.18.106.100' }).first().fill('10.0.0.50');
 
     // Click "Save All"
     await page.getByRole('button', { name: /Salva|Save|Salva tutto/i }).click();
 
     // Wait for save confirmation
-    await expect(page.getByText(/Salvato|Saved/i)).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByText(/Salvat|Saved/i)).toBeVisible({ timeout: 5_000 });
 
     // Close ConfigPanel
     await page.getByTestId('config-panel-close').click();
@@ -300,13 +300,13 @@ test.describe('SSO SAML login screen', () => {
     });
 
     // Change SMTP port — scope to ConfigPanel via data-testid
-    await page.getByTestId('config-panel').locator('input[type="number"]').filter({ hasValue: '587' }).fill('465');
+    await page.getByTestId('config-panel').locator('input[type="number"]').filter({ hasValue: '587' }).first().fill('465');
 
     // Click "Save All"
     await page.getByRole('button', { name: /Salva|Save|Salva tutto/i }).click();
 
     // Wait for save confirmation
-    await expect(page.getByText(/Salvato|Saved/i)).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByText(/Salvat|Saved/i)).toBeVisible({ timeout: 5_000 });
 
     // Close ConfigPanel
     await page.getByTestId('config-panel-close').click();
@@ -438,7 +438,7 @@ test.describe('SSO SAML login screen', () => {
 
     // Intercept guest API — static mock guests + state tracking for activate
     // Registered BEFORE enterSsoHappyPath for FIFO priority
-    await page.route('**/api/guests*', async (route) => {
+    await page.route('**/api/guests**', async (route) => {
       const method = route.request().method();
 
       if (method === 'GET') {
@@ -519,7 +519,7 @@ test.describe('SSO SAML login screen', () => {
     let deleted = false;
 
     // Intercept guest API — return a guest initially, empty after DELETE
-    await page.route('**/api/guests*', async (route) => {
+    await page.route('**/api/guests**', async (route) => {
       const method = route.request().method();
       const url = route.request().url();
 
@@ -594,7 +594,7 @@ test.describe('SSO SAML login screen', () => {
     });
 
     // Intercept guest API — return a guest with both username and password
-    await page.route('**/api/guests*', async (route) => {
+    await page.route('**/api/guests**', async (route) => {
       const method = route.request().method();
 
       if (method === 'GET') {
@@ -731,7 +731,7 @@ test.describe('SSO SAML login screen', () => {
     ];
 
     // Intercept guest API — filter by status query param
-    await page.route('**/api/guests*', async (route) => {
+    await page.route('**/api/guests**', async (route) => {
       const method = route.request().method();
 
       if (method === 'GET') {
@@ -813,7 +813,7 @@ test.describe('SSO SAML login screen', () => {
     let badgeSent = false;
 
     // Intercept guest API — return a guest with email so the badge button + send button work
-    await page.route('**/api/guests*', async (route) => {
+    await page.route('**/api/guests**', async (route) => {
       const method = route.request().method();
 
       if (method === 'GET') {
@@ -936,7 +936,7 @@ test.describe('SSO SAML login screen', () => {
 
     // Intercept guest API — return a guest with email so the resend button shows
     // Registered BEFORE enterSsoHappyPath for FIFO priority
-    await page.route('**/api/guests*', async (route) => {
+    await page.route('**/api/guests**', async (route) => {
       const method = route.request().method();
 
       if (method === 'GET') {

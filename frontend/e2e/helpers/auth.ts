@@ -136,20 +136,19 @@ export async function enterDemoSandbox(page: Page): Promise<void> {
 }
 
 /**
- * Shared: set up the 4 common SSO route intercepts (auth/me, config/wlc, sedi,
- * guests). Does NOT intercept /api/wlc/login — each helper provides its own
- * WLC login handler.
+ * Shared: set up SSO route intercepts as individual glob-based handlers
+ * to preserve FIFO priority with any test-specific handlers registered
+ * before calling this helper.
  *
- * Use this in any test that needs an SSO-authenticated user session. For tests
- * that also need to go through the WLC login flow, use `enterSsoHappyPath` or
- * `enterSsoDemoSandbox` instead which also call this function internally.
- *
- * Route handlers are evaluated in registration order (FIFO). Callers can add
- * their own intercepts *before* calling this helper to take priority over the
- * defaults — or *after* to have the defaults apply first (with `.fallback()`
- * in the custom handler to fall through to these mocks).
+ * Handles: auth/me (SSO authenticated), config/wlc, wlc/login (configurable),
+ * sedi, guests, config/email, auth/logout.
  */
-export async function setupSsoCommonRoutes(page: Page): Promise<void> {
+export async function setupSsoCommonRoutes(
+  page: Page,
+  options?: { wlcPostResponse?: 'success' | 'unreachable' },
+): Promise<void> {
+  const wlcResponse = options?.wlcPostResponse;
+
   // 1. SSO authenticated (Mario Rossi)
   await page.route('**/api/auth/me', async (route) => {
     await route.fulfill({
@@ -177,15 +176,9 @@ export async function setupSsoCommonRoutes(page: Page): Promise<void> {
       contentType: 'application/json',
       body: JSON.stringify({
         data: {
-          id: 0,
-          host: '172.18.106.100',
-          port: 443,
-          sshPort: 22,
-          username: 'admin_guest',
-          password: '',
-          wlanSsid: 'Dompe Guest',
-          authenticated: false,
-          sedeId: null,
+          id: 0, host: '172.18.106.100', port: 443, sshPort: 22,
+          username: 'admin_guest', password: '', wlanSsid: 'Dompe Guest',
+          authenticated: false, sedeId: null,
         },
       }),
     });
@@ -199,27 +192,91 @@ export async function setupSsoCommonRoutes(page: Page): Promise<void> {
       body: JSON.stringify({
         data: [
           {
-            id: 1,
-            code: 'MIL',
-            name: 'Dompe Milano HQ',
-            city: 'Milano',
-            address: 'Via Tomada 12',
-            wlcConfigId: 1,
-            createdAt: '2025-01-01T00:00:00.000Z',
+            id: 1, code: 'MIL', name: 'Dompe Milano HQ',
+            city: 'Milano', address: 'Via Tomada 12',
+            wlcConfigId: 1, createdAt: '2025-01-01T00:00:00.000Z',
           },
         ],
       }),
     });
   });
 
-  // 5. Guest list → empty (GET only, handles query params)
-  await page.route('**/api/guests*', async (route) => {
+  // 4. Guest list → empty (GET only)
+  await page.route('**/api/guests**', async (route) => {
     if (route.request().method() === 'GET') {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({ data: [] }),
       });
+    } else {
+      await route.fallback();
+    }
+  });
+
+  // 5. Email config (GET + PUT for ConfigPanel and BadgeModal)
+  await page.route('**/api/config/email', async (route) => {
+    if (route.request().method() === 'GET') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: {
+            id: 0, smtpHost: 'smtp.example.com', smtpPort: 587,
+            sender: 'noreply@example.com', encryption: 'starttls',
+            requireAuth: true, username: 'smtp-user', password: 'smtp-pass',
+          },
+        }),
+      });
+    } else if (route.request().method() === 'PUT') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: {
+            id: 0, smtpHost: 'smtp.example.com', smtpPort: 587,
+            sender: 'noreply@example.com', encryption: 'starttls',
+            requireAuth: true, username: 'smtp-user', password: 'smtp-pass',
+          },
+        }),
+      });
+    } else {
+      await route.fallback();
+    }
+  });
+
+  // 6. Logout (POST → success)
+  await page.route('**/api/auth/logout', async (route) => {
+    if (route.request().method() === 'POST') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ success: true }),
+      });
+    } else {
+      await route.fallback();
+    }
+  });
+
+  // 7. WLC login POST (behavior controlled by caller)
+  await page.route('**/api/wlc/login', async (route) => {
+    if (route.request().method() === 'POST') {
+      if (wlcResponse === 'success') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ success: true }),
+        });
+      } else {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            success: false, isUnreachable: true,
+            error: 'WLC non raggiungibile. Verifica che il controller sia online e raggiungibile dalla rete.',
+          }),
+        });
+      }
     } else {
       await route.fallback();
     }
@@ -254,24 +311,7 @@ async function ssoSelectSedeAndFillForm(page: Page): Promise<void> {
  * "Registra Ospite" button visible.
  */
 export async function enterSsoDemoSandbox(page: Page): Promise<void> {
-  await setupSsoCommonRoutes(page);
-
-  // 4. WLC login → unreachable (POST only)
-  await page.route('**/api/wlc/login', async (route) => {
-    if (route.request().method() === 'POST') {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          success: false,
-          isUnreachable: true,
-          error: 'WLC non raggiungibile. Verifica che il controller sia online e raggiungibile dalla rete.',
-        }),
-      });
-    } else {
-      await route.fallback();
-    }
-  });
+  await setupSsoCommonRoutes(page, { wlcPostResponse: 'unreachable' });
 
   await ssoSelectSedeAndFillForm(page);
 
@@ -297,20 +337,7 @@ export async function enterSsoDemoSandbox(page: Page): Promise<void> {
  * "Registra Ospite" button visible and the connected badge showing @ host.
  */
 export async function enterSsoHappyPath(page: Page): Promise<void> {
-  await setupSsoCommonRoutes(page);
-
-  // 4. WLC login → success (POST only)
-  await page.route('**/api/wlc/login', async (route) => {
-    if (route.request().method() === 'POST') {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ success: true }),
-      });
-    } else {
-      await route.fallback();
-    }
-  });
+  await setupSsoCommonRoutes(page, { wlcPostResponse: 'success' });
 
   await ssoSelectSedeAndFillForm(page);
 
