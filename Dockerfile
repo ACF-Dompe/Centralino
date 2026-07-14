@@ -7,7 +7,7 @@
 #   - No SQLite (PostgreSQL via Entra ID / managed identity)
 #   - No entrypoint.sh (ACA injects env vars directly)
 #   - Stateless: no volumes, no local data directory
-#   - Healthcheck via /api/health endpoint (ACA probes this)
+#   - Healthcheck via /api/healthz endpoint (ACA probes this)
 # =============================================================================
 
 # ---------- Stage 1: build ----------
@@ -53,8 +53,10 @@ COPY --from=build /app/backend/dist ./backend/dist
 USER app
 EXPOSE 3000
 
-# Health check via the /api/health endpoint (no curl needed)
+# Health check via the /api/healthz endpoint (no curl needed)
+# Uses /api/healthz (liveness) per standard platform guidelines §4.10.
+# The /api/health endpoint is deprecated and kept only for backward compat.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-  CMD node -e "require('http').get('http://127.0.0.1:'+ (process.env.PORT||3000) +'/api/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1));"
+  CMD node -e "require('http').get('http://127.0.0.1:'+ (process.env.PORT||3000) +'/api/healthz', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1));"
 
 CMD ["node", "backend/dist/index.js"]

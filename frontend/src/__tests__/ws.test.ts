@@ -80,7 +80,7 @@ describe('connectWs', () => {
 
     expect(wsConstructCount).toBe(1);
     expect(currentMockWs).not.toBeNull();
-    expect(currentMockWs!.url).toMatch(/^wss?:\/\/.+\/ws$/);
+    expect(currentMockWs!.url).toMatch(/^wss?:\/\/.+\/api\/ws$/);
 
     client.disconnect();
   });

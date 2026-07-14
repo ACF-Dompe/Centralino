@@ -16,6 +16,7 @@ import passport from 'passport';
 import { log } from '../logger.js';
 import type { SamlUser, SamlStrategy } from '../auth/saml.js';
 import { buildSloRedirectUrl } from '../auth/saml.js';
+import { isLocalUrl } from '../utils/sanitize.js';
 
 interface AuthRouterOptions {
   samlEnabled: boolean;
@@ -68,7 +69,10 @@ export function createAuthRouter(opts: AuthRouterOptions): Router {
    * Initiates the SAML authentication flow by redirecting to Entra ID.
    */
   router.get('/login', (req: Request, res: Response, next: NextFunction) => {
-    const redirectTo = (req.query.redirect as string) || '/';
+    // Validate redirect param to prevent open redirect attacks.
+    // Only local (same-origin) paths are allowed.
+    const rawRedirect = (req.query.redirect as string) || '/';
+    const redirectTo = isLocalUrl(rawRedirect) ? rawRedirect : '/';
     (req.session as unknown as Record<string, unknown>).samlRedirect = redirectTo;
     passport.authenticate('saml')(req, res, next);
   });

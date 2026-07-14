@@ -194,7 +194,7 @@ setup_federated_credentials() {
   )
 
   # Add environment-based subjects (for workflow_dispatch with environments)
-  for env in dev stg prd; do
+  for env in dev stg prod; do
     subjects+=("repo:${repo}:environment:${env}")
   done
 
@@ -322,7 +322,7 @@ print_output() {
   echo "  repo:${GITHUB_REPO}:ref:refs/heads/staging  → push to staging (stg)"
   echo "  repo:${GITHUB_REPO}:environment:dev          → workflow_dispatch dev"
   echo "  repo:${GITHUB_REPO}:environment:stg          → workflow_dispatch stg"
-  echo "  repo:${GITHUB_REPO}:environment:prd          → workflow_dispatch prd"
+  echo "  repo:${GITHUB_REPO}:environment:prod          → workflow_dispatch prod"
   echo ""
   echo -e "${YELLOW}Federated credential details (Azure Portal):${NC}"
   echo "  Entra ID → App registrations → ${APP_NAME} → Certificates & secrets"
@@ -366,7 +366,7 @@ main() {
   setup_federated_credentials "$APP_OBJECT_ID" "$GITHUB_REPO"
 
   # Try assigning KV role for all three environments
-  for env_suffix in dev stg prd; do
+  for env_suffix in dev stg prod; do
     assign_key_vault_role "$APP_ID" "$env_suffix"
   done
 

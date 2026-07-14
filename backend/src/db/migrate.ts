@@ -1,8 +1,18 @@
 /**
  * Schema migration (PostgreSQL only).
  * Idempotent: creates tables/indexes if they do not exist.
+ *
+ * CLI entrypoint:
+ *   node backend/dist/db/migrate.js
+ *
+ * Connects to DATABASE_URL, runs all pending migrations,
+ * and exits with code 0 on success, 1 on failure.
  */
 import type { DbClient } from './index.js';
+import { config } from '../config.js';
+import pg from 'pg';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 
 const PG_SCHEMA = `
 CREATE TABLE IF NOT EXISTS guests (
@@ -104,5 +114,64 @@ export async function runMigrations(client: DbClient): Promise<void> {
     );
   } catch {
     // Best-effort; duplicate bindings prevented by application logic
+  }
+}
+
+// ── CLI entrypoint ─────────────────────────────────────────────────────────
+// When executed directly (node backend/dist/db/migrate.js), creates a DB
+// connection from DATABASE_URL and runs all pending migrations.
+// Exits with code 0 on success, 1 on failure.
+
+/**
+ * Build a minimal DbClient directly from DATABASE_URL, bypassing getDb()
+ * (which would also run migrations/seed based on config flags). The migration
+ * job is an independent ACA job — it must connect and migrate on its own.
+ */
+async function createMigrationClient(): Promise<DbClient> {
+  const parsed = new URL(config.databaseUrl);
+  const pool = new pg.Pool({
+    host: parsed.hostname,
+    port: Number(parsed.port) || 5432,
+    database: parsed.pathname.replace(/^\//, ''),
+    user: decodeURIComponent(parsed.username),
+    password: parsed.password ? decodeURIComponent(parsed.password) : undefined,
+    ssl: { rejectUnauthorized: false },
+    max: 1,
+    connectionTimeoutMillis: 15_000,
+  });
+
+  return {
+    driver: 'postgres',
+    query: async (text, params) => {
+      const res = await pool.query(text, (params ?? []) as never[]);
+      return { rows: res.rows, rowCount: res.rowCount ?? 0 };
+    },
+    exec: async (text) => { await pool.query(text); },
+    close: async () => { await pool.end(); },
+  };
+}
+
+async function main(): Promise<void> {
+  console.log('Migration CLI — connecting to database...');
+  const client = await createMigrationClient();
+  try {
+    await runMigrations(client);
+    console.log('✅ Migrations completed successfully');
+    await client.close();
+    process.exit(0);
+  } catch (err) {
+    console.error('❌ Migration failed:', (err as Error).message);
+    await client.close();
+    process.exit(1);
+  }
+}
+
+// Detect if this module is being executed directly (not imported)
+const __filename = fileURLToPath(import.meta.url);
+const entryArg = process.argv[1];
+if (entryArg) {
+  const resolvedEntry = path.resolve(entryArg);
+  if (resolvedEntry === __filename || resolvedEntry.endsWith(path.sep + 'migrate.js')) {
+    main();
   }
 }

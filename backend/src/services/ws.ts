@@ -35,7 +35,7 @@ export type WsEvent =
 let _wss: WebSocketServer | null = null;
 
 export function initWsServer(server: Server): void {
-  const wss = new WebSocketServer({ server, path: '/ws' });
+  const wss = new WebSocketServer({ server, path: '/api/ws' });
   _wss = wss;
 
   wss.on('connection', (ws: WebSocket) => {
@@ -61,7 +61,7 @@ export function initWsServer(server: Server): void {
     log.error({ err: err.message }, 'WebSocket server error');
   });
 
-  log.info({ path: '/ws' }, 'WebSocket server initialised');
+  log.info({ path: '/api/ws' }, 'WebSocket server initialised');
 }
 
 /**

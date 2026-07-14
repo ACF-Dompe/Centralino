@@ -60,13 +60,19 @@ export const config = {
      * When set, the SSH client verifies the host key against this value
      * (e.g. "ssh-rsa 2048 xx:xx:xx:..."). If empty, host key verification
      * is skipped (local dev / demo mode). In production, always set this.
+     *
+     * Fail-closed in production: if NODE_ENV=production and this is empty,
+     * the app will not make unverified SSH connections to the WLC.
      */
     sshHostKey: readString('WLC_SSH_HOST_KEY', ''),
     /**
      * Whether to reject unauthorized TLS certificates for WLC WebUI connections.
      * Must be true in production; set to false only for local dev with self-signed certs.
+     *
+     * Fail-closed: defaults to true in production, false in development.
      */
-    tlsRejectUnauthorized: readString('WLC_TLS_REJECT_UNAUTHORIZED', 'false').toLowerCase() === 'true',
+    tlsRejectUnauthorized: readString('WLC_TLS_REJECT_UNAUTHORIZED',
+      process.env['NODE_ENV'] === 'production' ? 'true' : 'false').toLowerCase() === 'true',
   },
 
   /**

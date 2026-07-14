@@ -126,3 +126,20 @@ export function validateDurationMinutes(value: unknown, min = 1, max = 525600): 
   }
   return num;
 }
+
+/**
+ * Check if a URL path is a local (same-origin) path — prevents open redirect attacks.
+ * Returns true only for paths starting with '/' and not starting with '//'.
+ * Rejects absolute URLs, protocol-relative URLs, and other non-local patterns.
+ *
+ * Used to validate the `redirect` query parameter in SAML login flow.
+ */
+export function isLocalUrl(url: string): boolean {
+  if (!url || typeof url !== 'string') return false;
+  // Must start with '/' (local path) but not '//' (protocol-relative)
+  if (!url.startsWith('/')) return false;
+  if (url.startsWith('//')) return false;
+  // Block javascript: and data: URIs that could be used for XSS
+  if (/^\s*(javascript|data|vbscript):/i.test(url)) return false;
+  return true;
+}

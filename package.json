@@ -14,11 +14,11 @@
     "start": "npm run start -w backend"
   },
   "devDependencies": {
-    "concurrently": "^10.0.3"
+    "concurrently": "^10.0.3",
+    "@vitest/coverage-v8": "^4.1.9"
   },
   "dependencies": {
     "@microsoft/microsoft-graph-client": "^3.0.7",
-    "@microsoft/microsoft-graph-types": "^2.43.1",
-    "@vitest/coverage-v8": "^4.1.9"
+    "@microsoft/microsoft-graph-types": "^2.43.1"
   }
 }

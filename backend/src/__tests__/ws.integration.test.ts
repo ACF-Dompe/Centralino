@@ -52,7 +52,7 @@ afterAll(() => {
 function connectWs(): Promise<{ messages: unknown[]; close: () => void; rawWs: WebSocket }> {
   return new Promise((resolve, reject) => {
     const messages: unknown[] = [];
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/ws`);
 
     ws.on('message', (data: Buffer) => {
       try {

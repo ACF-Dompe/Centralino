@@ -6,6 +6,15 @@ import type { Guest, WlcConfig, EmailConfig, SmsConfig, SyncLog, GuestStatus, Se
 
 const BASE = '/api';
 
+export class ApiError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     headers: { 'Content-Type': 'application/json', ...(init.headers ?? {}) },
@@ -13,7 +22,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`${res.status} ${res.statusText}: ${text}`);
+    throw new ApiError(res.status, `${res.status} ${res.statusText}: ${text}`);
   }
   return (await res.json()) as T;
 }

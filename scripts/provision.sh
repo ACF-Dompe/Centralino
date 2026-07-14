@@ -90,8 +90,8 @@ if [[ -z "$ENV" ]]; then
 fi
 
 case "$ENV" in
-  dev|stg|prd) ;;
-  *) err "Invalid environment '$ENV'. Use: dev, stg, or prd."; exit 1 ;;
+  dev|stg|prod) ;;
+  *) err "Invalid environment '$ENV'. Use: dev, stg, or prod."; exit 1 ;;
 esac
 
 if [[ "$DRY_RUN" == true ]]; then
@@ -124,7 +124,7 @@ MIN_REPLICAS=1
 MAX_REPLICAS=1  # Autoscaling disabled per platform guidelines
 
 # Entra ID scope for PostgreSQL
-AZURE_SCOPE="https://ossrdbms.database.windows.net/.default"
+AZURE_SCOPE="https://ossrdbms-aad.database.windows.net/.default"
 
 # ── Pre-flight checks ───────────────────────────────────────────────────────
 check_prerequisites() {

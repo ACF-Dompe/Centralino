@@ -17,7 +17,7 @@ import { runMigrations } from './migrate.js';
 import { runSeed } from './seed.js';
 import { log } from '../logger.js';
 
-const AZURE_SCOPE = 'https://ossrdbms.database.windows.net/.default';
+const AZURE_SCOPE = 'https://ossrdbms-aad.database.windows.net/.default';
 const TOKEN_REFRESH_MS = 45 * 60 * 1000; // 45 minutes
 
 export type DbDriver = 'postgres';

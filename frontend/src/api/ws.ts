@@ -1,5 +1,5 @@
 /**
- * WebSocket client that connects to the backend's `/ws` endpoint
+ * WebSocket client that connects to the backend's `/api/ws` endpoint
  * and provides typed event callbacks with automatic reconnection.
  *
  * Usage:
@@ -58,15 +58,19 @@ export interface WsClient {
 }
 
 /**
- * Open a WebSocket connection to the backend's `/ws` endpoint.
+ * Open a WebSocket connection to the backend's `/api/ws` endpoint.
  * The URL is derived from `window.location` so it works in both dev (Vite proxy)
  * and prod (same origin).
+ *
+ * The endpoint is under `/api/` so the Application Gateway routing
+ * `/api/* → backend` works correctly for WebSocket upgrades too.
+ * Authentication is handled by the session cookie (same as REST API).
  */
 export function connectWs(options: WsOptions): WsClient {
   const { onEvent, onConnect, onDisconnect, maxRetries = 10, baseDelayMs = 1000 } = options;
 
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const url = `${protocol}//${window.location.host}/ws`;
+  const url = `${protocol}//${window.location.host}/api/ws`;
 
   let ws: WebSocket | null = null;
   let retryCount = 0;

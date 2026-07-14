@@ -178,11 +178,12 @@ router.post('/wlc/create-user', async (req: Request, res: Response) => {
       'exit',
     ],
   });
+  const safePayload = { ...cfg, targetPassword: '***' };
   await addSyncLog({
     action: `create-user ${safeTargetUser}`,
     method: 'SSH',
     url: `${host}:${sshPort ?? 22}`,
-    payload: JSON.stringify(cfg),
+    payload: JSON.stringify(safePayload),
     statusCode: result.success ? 201 : 401,
   });
   if (!result.success && /access denied|unauthorized/i.test(result.error ?? '')) {
@@ -709,13 +710,26 @@ router.delete('/guests/:id', async (req: Request, res: Response) => {
   res.json({ success: true });
 });
 
-/* ----------------------------- Configs ----------------------------- */
+/* ----------------------------- Configs (secrets stripped on GET) ----------------------------- */
 
-router.get('/config/wlc', async (_req, res) => res.json({ data: await getWlcConfig() }));
+router.get('/config/wlc', async (_req, res) => {
+  const cfg = await getWlcConfig();
+  // Strip the password from GET responses — §4 guidelines: secrets in Key Vault, not DB or API.
+  // The frontend only needs to know authentication status and connection params (host, port, username).
+  res.json({ data: { ...cfg, password: undefined } });
+});
 router.put('/config/wlc', async (req, res) => res.json({ data: await updateWlcConfig(req.body ?? {}) }));
-router.get('/config/email', async (_req, res) => res.json({ data: await getEmailConfig() }));
+router.get('/config/email', async (_req, res) => {
+  const cfg = await getEmailConfig();
+  // Strip password from GET response.
+  res.json({ data: { ...cfg, password: undefined } });
+});
 router.put('/config/email', async (req, res) => res.json({ data: await updateEmailConfig(req.body ?? {}) }));
-router.get('/config/sms', async (_req, res) => res.json({ data: await getSmsConfig() }));
+router.get('/config/sms', async (_req, res) => {
+  const cfg = await getSmsConfig();
+  // Strip apiKey from GET response.
+  res.json({ data: { ...cfg, apiKey: undefined } });
+});
 router.put('/config/sms', async (req, res) => res.json({ data: await updateSmsConfig(req.body ?? {}) }));
 
 /* ----------------------------- Logs ----------------------------- */
