@@ -322,7 +322,7 @@ export default function Dashboard({ config, sede, ssoUser, onDisconnect, onConfi
               <Power className="h-4 w-4" /> <span className="hidden sm:inline">{t('header.disconnect')}</span>
             </button>
             {onSsoLogout && (
-              <button className="btn-ghost text-rose-600 hover:bg-rose-50" onClick={onSsoLogout} title={t('sso.logout')}>
+              <button data-testid="sso-logout-btn" className="btn-ghost text-rose-600 hover:bg-rose-50" onClick={onSsoLogout} title={t('sso.logout')}>
                 <Power className="h-4 w-4" /> <span className="hidden sm:inline">{t('sso.logout')}</span>
               </button>
             )}
@@ -368,7 +368,7 @@ export default function Dashboard({ config, sede, ssoUser, onDisconnect, onConfi
               <button data-testid="settings-button" className="btn-ghost" onClick={() => setShowConfig(true)}>
                 <Settings className="h-4 w-4" /> {t('toolbar.config')}
               </button>
-              <button className="btn-primary" onClick={() => setShowCreate(true)} disabled={!sede} title={sede ? '' : t('login.sede.heading')}>
+              <button data-testid="register-guest-btn" className="btn-primary" onClick={() => setShowCreate(true)} disabled={!sede} title={sede ? '' : t('login.sede.heading')}>
                 <Plus className="h-4 w-4" /> {t('toolbar.register')}
               </button>
             </div>

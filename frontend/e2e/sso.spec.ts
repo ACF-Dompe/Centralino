@@ -87,9 +87,7 @@ test.describe('SSO SAML login screen', () => {
     await expect(page.getByText(/@ 172\.18\.106\.100/i)).toBeVisible();
 
     // SSO logout button should be present
-    await expect(
-      page.getByRole('button', { name: /Esci|Logout|Disconnetti SSO/i }),
-    ).toBeVisible();
+    await expect(page.getByTestId('sso-logout-btn')).toBeVisible();
   });
 
   test('creates a guest from the Dashboard after SSO authentication', async ({
@@ -130,7 +128,7 @@ test.describe('SSO SAML login screen', () => {
     await enterSsoHappyPath(page);
 
     // Click "Registra Ospite" to open the modal
-    await page.getByRole('button', { name: /Registra Ospite/i }).click();
+    await page.getByTestId('register-guest-btn').click();
     await expect(
       page.getByRole('heading', { name: /Registra Nuovo Ospite/i }),
     ).toBeVisible({ timeout: 15_000 });
@@ -358,9 +356,7 @@ test.describe('SSO SAML login screen', () => {
     await expect(page.getByText(/@ 172\.18\.106\.100/i)).not.toBeVisible();
 
     // SSO logout + WLC disconnect buttons should be present
-    await expect(
-      page.getByRole('button', { name: /Esci|Logout|Disconnetti SSO/i }),
-    ).toBeVisible();
+    await expect(page.getByTestId('sso-logout-btn')).toBeVisible();
     await expect(page.getByTitle(/Disconnetti|Disconnect/i)).toBeVisible();
   });
 
@@ -384,7 +380,7 @@ test.describe('SSO SAML login screen', () => {
     // Use force:true because the fixed language selector overlay (z-50)
     // in the top-right corner of all views may intercept pointer events
     // during the Dashboard→SsoLogin transition.
-    await page.getByRole('button', { name: /Esci|Logout|Disconnetti SSO/i }).click({ force: true });
+    await page.getByTestId('sso-logout-btn').click({ force: true });
 
     // After logout, the app transitions to sso-required → SsoLogin screen
     await expect(
@@ -422,7 +418,7 @@ test.describe('SSO SAML login screen', () => {
     // Use force:true because the fixed language selector overlay (z-50)
     // in the top-right corner of all views may intercept pointer events
     // during the transition to the SsoLogin screen.
-    await page.getByRole('button', { name: /Esci|Logout|Disconnetti SSO/i }).click({ force: true });
+    await page.getByTestId('sso-logout-btn').click({ force: true });
 
     // Even though the API call failed, the app force-logs out via .catch()
     await expect(

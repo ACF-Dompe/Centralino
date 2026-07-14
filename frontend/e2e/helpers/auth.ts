@@ -10,11 +10,111 @@ import { expect, type Page } from '@playwright/test';
  * "Registra Ospite" button which exists in both states.
  */
 export async function enterDemoSandbox(page: Page): Promise<void> {
+  // Mock ALL API routes. Uses a single catch-all for everything except auth/me
+  // (which needs a 404) and wlc/login (which needs a specific POST response).
+  //
+  // Individual glob-based mocks for specific paths are deliberately avoided
+  // because Playwright's glob matching against full URLs (protocol + host + path)
+  // can be unreliable in some environments. The catch-all pattern `**/api/**`
+  // is the most reliable way to intercept all API requests.
+
+  // 1. SAML not configured → 404, app skips SSO and shows WLC login directly
+  await page.route('**/api/auth/me', async (route) => {
+    await route.fulfill({
+      status: 404,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        success: false,
+        error: 'SSO is not configured.',
+      }),
+    });
+  });
+
+  // 2. Catch-all for ALL remaining API requests (registered AFTER auth/me).
+  //    Routes are dispatched by path + method inside the handler.
+  await page.route('**/api/**', async (route) => {
+    const url = new URL(route.request().url());
+    const path = url.pathname;
+    const method = route.request().method();
+
+    // WLC login POST → unreachable (triggers Demo Sandbox modal)
+    if (path === '/api/wlc/login' && method === 'POST') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: false,
+          isUnreachable: true,
+          error: 'WLC non raggiungibile. Verifica che il controller sia online e raggiungibile dalla rete.',
+        }),
+      });
+      return;
+    }
+
+    // Sedi list → Dompe Milano HQ
+    if (path === '/api/sedi') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [
+            {
+              id: 1,
+              code: 'MIL',
+              name: 'Dompe Milano HQ',
+              city: 'Milano',
+              address: 'Via Tomada 12',
+              wlcConfigId: 1,
+              createdAt: '2025-01-01T00:00:00.000Z',
+            },
+          ],
+        }),
+      });
+      return;
+    }
+
+    // WLC config GET → unauthenticated (used during init)
+    if (path === '/api/config/wlc') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: {
+            id: 0, host: '172.18.106.100', port: 443, sshPort: 22,
+            username: 'admin_guest', password: '', wlanSsid: 'Dompe Guest',
+            authenticated: false, sedeId: null,
+          },
+        }),
+      });
+      return;
+    }
+
+    // Guest list GET → empty array
+    if (path.startsWith('/api/guests') && method === 'GET') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ data: [] }),
+      });
+      return;
+    }
+
+    // Default fallback: empty data
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ data: [] }),
+    });
+  });
+
   await page.goto('/');
   await expect(page.getByRole('heading', { name: /Seleziona la sede/i })).toBeVisible({
     timeout: 15_000,
   });
   // First card = Milano HQ (or any — order is stable in the seed).
+  await expect(page.getByRole('button', { name: /Dompe Milano HQ/i }).first()).toBeVisible({
+    timeout: 10_000,
+  });
   await page.getByRole('button', { name: /Dompe Milano HQ/i }).first().click();
   // Replace the pre-filled WLC host with a TEST-NET IP so the connection
   // fails fast and the "WLC NON RAGGIUNGIBILE" modal appears.
@@ -27,8 +127,11 @@ export async function enterDemoSandbox(page: Page): Promise<void> {
   await expect(sandboxBtn).toBeVisible({ timeout: 20_000 });
   await sandboxBtn.click();
   // Dashboard renders.
-  await expect(page.getByRole('button', { name: /Registra Ospite/i })).toBeVisible({
-    timeout: 15_000,
+  // Use a shorter per-assertion timeout to help the overall test fit within the
+  // 30s test timeout. If this assertion fails, the previous steps consumed too
+  // much time and the Dashboard simply hasn't rendered yet.
+  await expect(page.getByTestId('register-guest-btn')).toBeVisible({
+    timeout: 5_000,
   });
 }
 
@@ -180,7 +283,7 @@ export async function enterSsoDemoSandbox(page: Page): Promise<void> {
   await sandboxBtn.click();
 
   // Dashboard
-  await expect(page.getByRole('button', { name: /Registra Ospite/i })).toBeVisible({
+  await expect(page.getByTestId('register-guest-btn')).toBeVisible({
     timeout: 15_000,
   });
 }
@@ -215,7 +318,7 @@ export async function enterSsoHappyPath(page: Page): Promise<void> {
   await page.getByRole('button', { name: /Connetti al WLC/i }).click();
 
   // Dashboard
-  await expect(page.getByRole('button', { name: /Registra Ospite/i })).toBeVisible({
+  await expect(page.getByTestId('register-guest-btn')).toBeVisible({
     timeout: 15_000,
   });
 }
@@ -253,6 +356,6 @@ export async function enterSsoUnavailable(page: Page): Promise<void> {
 
 /** Open the "Register Guest" modal and wait for its title. */
 export async function openRegisterGuestModal(page: Page): Promise<void> {
-  await page.getByRole('button', { name: /Registra Ospite/i }).click();
+  await page.getByTestId('register-guest-btn').click();
   await expect(page.getByRole('heading', { name: /Registra Nuovo Ospite/i })).toBeVisible();
 }
