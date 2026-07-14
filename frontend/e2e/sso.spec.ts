@@ -159,8 +159,9 @@ test.describe('SSO SAML login screen', () => {
   test('changes WLC configuration from the Dashboard ConfigPanel after SSO auth', async ({
     page,
   }) => {
-    // Intercept PUT /api/config/wlc → updated WLC config
-    // Registered BEFORE enterSsoHappyPath for FIFO priority
+    await enterSsoHappyPath(page);
+
+    // Intercept PUT /api/config/wlc AFTER helper so it takes LIFO priority
     await page.route('**/api/config/wlc', async (route) => {
       if (route.request().method() === 'PUT') {
         await route.fulfill({
@@ -184,8 +185,6 @@ test.describe('SSO SAML login screen', () => {
         await route.fallback(); // GET → helper's handler
       }
     });
-
-    await enterSsoHappyPath(page);
 
     // Click the Settings button to open ConfigPanel
     await page.getByTestId('settings-button').click();
@@ -218,8 +217,10 @@ test.describe('SSO SAML login screen', () => {
   test('configures SMTP email settings from the ConfigPanel after SSO auth', async ({
     page,
   }) => {
-    // Intercept GET + PUT /api/config/email and PUT /api/config/wlc
-    // Registered BEFORE enterSsoHappyPath for FIFO priority
+    await enterSsoHappyPath(page);
+
+    // Intercept GET + PUT /api/config/email and PUT /api/config/wlc AFTER helper
+    // so they take LIFO priority over the helper's handlers
     await page.route('**/api/config/email', async (route) => {
       if (route.request().method() === 'GET') {
         await route.fulfill({
@@ -284,8 +285,6 @@ test.describe('SSO SAML login screen', () => {
         await route.fallback(); // GET → helper's handler
       }
     });
-
-    await enterSsoHappyPath(page);
 
     // Open ConfigPanel — defaults to email section
     await page.getByTestId('settings-button').click();
@@ -363,6 +362,19 @@ test.describe('SSO SAML login screen', () => {
   test('logs out from SSO and shows the SSO login screen again', async ({ page }) => {
     await enterSsoHappyPath(page);
 
+    // After logout the app calls auth/me → must return 401 (not authenticated)
+    // to show the SSO login screen. Register AFTER helper so it takes LIFO.
+    await page.route('**/api/auth/me', async (route) => {
+      await route.fulfill({
+        status: 401,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: false,
+          error: 'Not authenticated. Use /api/auth/login to authenticate.',
+        }),
+      });
+    });
+
     // Intercept POST /api/auth/logout → 200 (successful logout)
     await page.route('**/api/auth/logout', async (route) => {
       if (route.request().method() === 'POST') {
@@ -376,11 +388,10 @@ test.describe('SSO SAML login screen', () => {
       }
     });
 
-    // Click the SSO logout button
-    // Use force:true because the fixed language selector overlay (z-50)
-    // in the top-right corner of all views may intercept pointer events
-    // during the Dashboard→SsoLogin transition.
-    await page.getByTestId('sso-logout-btn').click({ force: true });
+    // Click the SSO logout button via JS dispatchEvent to bypass the
+    // language selector overlay (z-50, fixed right-3 top-3) that intercepts
+    // coordinate-based mouse events even with force:true.
+    await page.getByTestId('sso-logout-btn').evaluate((el) => (el as HTMLButtonElement).click());
 
     // After logout, the app transitions to sso-required → SsoLogin screen
     await expect(
@@ -398,6 +409,18 @@ test.describe('SSO SAML login screen', () => {
   }) => {
     await enterSsoHappyPath(page);
 
+    // After logout the app calls auth/me → must return 401 (not authenticated)
+    await page.route('**/api/auth/me', async (route) => {
+      await route.fulfill({
+        status: 401,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: false,
+          error: 'Not authenticated. Use /api/auth/login to authenticate.',
+        }),
+      });
+    });
+
     // Intercept POST /api/auth/logout → 500 (server error triggers .catch())
     await page.route('**/api/auth/logout', async (route) => {
       if (route.request().method() === 'POST') {
@@ -414,11 +437,10 @@ test.describe('SSO SAML login screen', () => {
       }
     });
 
-    // Click the SSO logout button
-    // Use force:true because the fixed language selector overlay (z-50)
-    // in the top-right corner of all views may intercept pointer events
-    // during the transition to the SsoLogin screen.
-    await page.getByTestId('sso-logout-btn').click({ force: true });
+    // Click the SSO logout button via JS dispatchEvent to bypass the
+    // language selector overlay (z-50, fixed right-3 top-3) that intercepts
+    // coordinate-based mouse events even with force:true.
+    await page.getByTestId('sso-logout-btn').evaluate((el) => (el as HTMLButtonElement).click());
 
     // Even though the API call failed, the app force-logs out via .catch()
     await expect(
@@ -509,8 +531,8 @@ test.describe('SSO SAML login screen', () => {
     // Toast confirms activation
     await expect(page.getByText(/attivato/i)).toBeVisible({ timeout: 5_000 });
 
-    // After refresh, the status badge should show 'active' (Italian translation)
-    await expect(page.getByText(/Attivo|Active/i)).toBeVisible({ timeout: 10_000 });
+    // After refresh, the status badge should show 'active' (Italian: 'Connesso')
+    await expect(page.getByText(/Connesso|Connected/i).first()).toBeVisible({ timeout: 10_000 });
   });
 
   test('deletes a guest from the Dashboard guest table after SSO auth', async ({

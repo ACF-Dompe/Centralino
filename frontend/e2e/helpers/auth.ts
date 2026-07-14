@@ -201,18 +201,6 @@ export async function setupSsoCommonRoutes(
     });
   });
 
-  // 4. Guest list → empty (GET only)
-  await page.route('**/api/guests**', async (route) => {
-    if (route.request().method() === 'GET') {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ data: [] }),
-      });
-    } else {
-      await route.fallback();
-    }
-  });
 
   // 5. Email config (GET + PUT for ConfigPanel and BadgeModal)
   await page.route('**/api/config/email', async (route) => {
