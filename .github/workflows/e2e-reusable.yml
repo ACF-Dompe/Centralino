@@ -66,6 +66,8 @@ jobs:
       # Start backend + frontend in background
       - name: Start services
         run: |
+          set -euo pipefail
+
           # Start backend
           DATABASE_URL=postgres://postgres:password@localhost:5432/guest_desk \
           NODE_ENV=development PORT=3001 LOG_LEVEL=silent \
@@ -76,14 +78,23 @@ jobs:
           cd frontend && npx vite preview --port 3000 &
           echo "Frontend PID: $!"
 
-          # Wait for both services to be ready
-          for i in $(seq 1 30); do
+          # Wait for both services to be ready (up to 60s)
+          READY=false
+          for i in $(seq 1 60); do
             sleep 1
             BACKEND_OK=$(curl -fsS -m 3 http://localhost:3001/api/healthz >/dev/null 2>&1 && echo 1 || echo 0)
             FRONTEND_OK=$(curl -fsS -m 3 http://localhost:3000/ >/dev/null 2>&1 && echo 1 || echo 0)
             echo "[$i] backend=$BACKEND_OK frontend=$FRONTEND_OK"
-            [ "$BACKEND_OK" = "1" ] && [ "$FRONTEND_OK" = "1" ] && break
+            if [ "$BACKEND_OK" = "1" ] && [ "$FRONTEND_OK" = "1" ]; then
+              READY=true
+              break
+            fi
           done
+
+          if [ "$READY" != "true" ]; then
+            echo "[FAIL] Services did not start within 60s"
+            exit 1
+          fi
 
           curl -fsS -m 5 http://localhost:3001/api/healthz && echo " BACKEND HEALTHY"
           curl -fsS -m 5 http://localhost:3000/ | head -c 200 && echo " FRONTEND SERVING"

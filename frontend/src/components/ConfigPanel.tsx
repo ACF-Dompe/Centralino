@@ -70,7 +70,7 @@ export default function ConfigPanel({ wlcConfig, onClose, onWlcConfigUpdate }: P
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
+    <div data-testid="config-panel" className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
       <div className="card flex h-[90vh] w-full max-w-4xl flex-col overflow-hidden shadow-elev">
         <div className="flex items-start justify-between border-b border-slate-200 px-6 py-4">
           <div>
@@ -88,14 +88,14 @@ export default function ConfigPanel({ wlcConfig, onClose, onWlcConfigUpdate }: P
                 {adminMode ? t('config.adminDisable') : t('config.adminEnable')}
               </span>
             </button>
-            <button onClick={onClose} className="btn-ghost p-1">
+            <button data-testid="config-panel-close" onClick={onClose} className="btn-ghost p-1">
               <X className="h-5 w-5" />
             </button>
           </div>
         </div>
 
         <div className="flex flex-1 overflow-hidden">
-          <nav className="w-52 border-r border-slate-200 bg-slate-50 p-3">
+          <nav data-testid="config-panel-nav" className="w-52 border-r border-slate-200 bg-slate-50 p-3">
             {([
               { id: 'email', label: t('config.smtp.title'), icon: <Mail className="h-4 w-4" /> },
               { id: 'wlc', label: t('config.wlc.title'), icon: <Wifi className="h-4 w-4" /> },

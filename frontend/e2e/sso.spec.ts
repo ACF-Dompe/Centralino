@@ -195,14 +195,11 @@ test.describe('SSO SAML login screen', () => {
       timeout: 10_000,
     });
 
-    // Switch to the WLC section — scope to the config panel sidebar nav
-    // to avoid matching the "Sincronizza WLC" button in the Dashboard header.
-    await page.locator('.fixed.inset-0.z-50 nav').getByRole('button', { name: /WLC|Controller/i }).click();
+    // Switch to the WLC section — use data-testid to scope to ConfigPanel nav
+    await page.getByTestId('config-panel-nav').getByRole('button', { name: /WLC|Controller/i }).click();
 
-    // Change the WLC host — scope to inputs inside ConfigPanel to avoid
-    // matching other inputs outside (e.g. filter, search). The host input
-    // is the only one pre-filled with the WLC IP address.
-    await page.locator('.fixed.inset-0.z-50 input').filter({ hasValue: '172.18.106.100' }).fill('10.0.0.50');
+    // Change the WLC host — scope to inputs inside ConfigPanel via data-testid
+    await page.getByTestId('config-panel').locator('input').filter({ hasValue: '172.18.106.100' }).fill('10.0.0.50');
 
     // Click "Save All"
     await page.getByRole('button', { name: /Salva|Save|Salva tutto/i }).click();
@@ -210,8 +207,8 @@ test.describe('SSO SAML login screen', () => {
     // Wait for save confirmation
     await expect(page.getByText(/Salvato|Saved/i)).toBeVisible({ timeout: 5_000 });
 
-    // Close ConfigPanel — X button has class btn-ghost p-1 (unique, no accessible name)
-    await page.locator('.fixed.inset-0.z-50 .btn-ghost.p-1').click();
+    // Close ConfigPanel
+    await page.getByTestId('config-panel-close').click();
 
     // Verify the updated host appears in the Dashboard header badge
     await expect(page.getByText(/@ 10\.0\.0\.50/i)).toBeVisible();
@@ -304,9 +301,8 @@ test.describe('SSO SAML login screen', () => {
       timeout: 5_000,
     });
 
-    // Change SMTP port — scope to ConfigPanel to avoid matching
-    // number inputs from other sections (e.g. WLC port, duration).
-    await page.locator('.fixed.inset-0.z-50 input[type="number"]').filter({ hasValue: '587' }).fill('465');
+    // Change SMTP port — scope to ConfigPanel via data-testid
+    await page.getByTestId('config-panel').locator('input[type="number"]').filter({ hasValue: '587' }).fill('465');
 
     // Click "Save All"
     await page.getByRole('button', { name: /Salva|Save|Salva tutto/i }).click();
@@ -315,7 +311,7 @@ test.describe('SSO SAML login screen', () => {
     await expect(page.getByText(/Salvato|Saved/i)).toBeVisible({ timeout: 5_000 });
 
     // Close ConfigPanel
-    await page.locator('.fixed.inset-0.z-50 .btn-ghost.p-1').click();
+    await page.getByTestId('config-panel-close').click();
 
     // Dashboard still works after saving
     await expect(page.getByText('Mario Rossi')).toBeVisible();
@@ -327,8 +323,8 @@ test.describe('SSO SAML login screen', () => {
   }) => {
     await enterSsoHappyPath(page);
 
-    // Click the lock button in the header (lock icon, title attrs)
-    await page.getByTitle(/Blocca|Lock|Console/i).click();
+    // Click the lock button in the header — title is 'Blocca Console' (IT) or 'Lock Console' (EN)
+    await page.getByTitle(/Blocca Console|Lock Console/i).click();
 
     // LockOverlay should appear
     await expect(

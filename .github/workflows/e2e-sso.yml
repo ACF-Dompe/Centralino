@@ -66,15 +66,28 @@ jobs:
       # Start Vite preview (frontend only, no backend needed)
       - name: Start frontend
         run: |
+          set -euo pipefail
+
           cd frontend && npx vite preview --port 3000 &
           echo "Frontend PID: $!"
-          # Wait for the frontend to be ready
-          for i in $(seq 1 15); do
+
+          # Wait for the frontend to be ready (up to 30s)
+          READY=false
+          for i in $(seq 1 30); do
             sleep 1
             FRONTEND_OK=$(curl -fsS -m 3 http://localhost:3000/ >/dev/null 2>&1 && echo 1 || echo 0)
             echo "[$i] frontend=$FRONTEND_OK"
-            [ "$FRONTEND_OK" = "1" ] && break
+            if [ "$FRONTEND_OK" = "1" ]; then
+              READY=true
+              break
+            fi
           done
+
+          if [ "$READY" != "true" ]; then
+            echo "[FAIL] Frontend did not start within 30s"
+            exit 1
+          fi
+
           curl -fsS -m 5 http://localhost:3000/ | head -c 200 && echo " FRONTEND SERVING"
 
       - name: Run SSO E2E tests
