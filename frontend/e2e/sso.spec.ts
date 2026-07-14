@@ -12,7 +12,7 @@
  * user has not yet authenticated.
  */
 import { test, expect } from '@playwright/test';
-import { enterSsoDemoSandbox, enterSsoHappyPath, enterSsoUnavailable, setupSsoCommonRoutes } from './helpers/auth';
+import { enterSsoDemoSandbox, enterSsoHappyPath, enterSsoUnavailable, setupSsoCommonRoutes, setupSsoLogoutRoutes } from './helpers/auth';
 
 test.describe('SSO SAML login screen', () => {
   test('shows the WLC login with SSO user tag after SSO authentication', async ({
@@ -362,31 +362,9 @@ test.describe('SSO SAML login screen', () => {
   test('logs out from SSO and shows the SSO login screen again', async ({ page }) => {
     await enterSsoHappyPath(page);
 
-    // After logout the app calls auth/me → must return 401 (not authenticated)
-    // to show the SSO login screen. Register AFTER helper so it takes LIFO.
-    await page.route('**/api/auth/me', async (route) => {
-      await route.fulfill({
-        status: 401,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          success: false,
-          error: 'Not authenticated. Use /api/auth/login to authenticate.',
-        }),
-      });
-    });
-
-    // Intercept POST /api/auth/logout → 200 (successful logout)
-    await page.route('**/api/auth/logout', async (route) => {
-      if (route.request().method() === 'POST') {
-        await route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify({ success: true }),
-        });
-      } else {
-        await route.fallback();
-      }
-    });
+    // Set up logout routes (auth/me → 401, auth/logout → 200) AFTER helper
+    // so they take LIFO priority over setupSsoCommonRoutes's handlers.
+    await setupSsoLogoutRoutes(page, { logoutStatus: 200 });
 
     // Click the SSO logout button via JS dispatchEvent to bypass the
     // language selector overlay (z-50, fixed right-3 top-3) that intercepts
@@ -409,33 +387,9 @@ test.describe('SSO SAML login screen', () => {
   }) => {
     await enterSsoHappyPath(page);
 
-    // After logout the app calls auth/me → must return 401 (not authenticated)
-    await page.route('**/api/auth/me', async (route) => {
-      await route.fulfill({
-        status: 401,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          success: false,
-          error: 'Not authenticated. Use /api/auth/login to authenticate.',
-        }),
-      });
-    });
-
-    // Intercept POST /api/auth/logout → 500 (server error triggers .catch())
-    await page.route('**/api/auth/logout', async (route) => {
-      if (route.request().method() === 'POST') {
-        await route.fulfill({
-          status: 500,
-          contentType: 'application/json',
-          body: JSON.stringify({
-            success: false,
-            error: 'Internal server error.',
-          }),
-        });
-      } else {
-        await route.fallback();
-      }
-    });
+    // Set up logout routes with logoutStatus: 500 to simulate a server
+    // error that triggers the .catch() force-logout path.
+    await setupSsoLogoutRoutes(page, { logoutStatus: 500 });
 
     // Click the SSO logout button via JS dispatchEvent to bypass the
     // language selector overlay (z-50, fixed right-3 top-3) that intercepts

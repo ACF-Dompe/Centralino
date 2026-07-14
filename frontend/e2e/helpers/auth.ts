@@ -271,6 +271,55 @@ export async function setupSsoCommonRoutes(
   });
 }
 
+/**
+ * Set up SSO logout routes: auth/me → 401 (not authenticated) and
+ * auth/logout → configurable status (200 success or 500 failure).
+ *
+ * Register this AFTER enterSsoHappyPath so it takes LIFO priority
+ * over setupSsoCommonRoutes's handlers.
+ */
+export async function setupSsoLogoutRoutes(
+  page: Page,
+  options?: { logoutStatus?: 200 | 500 },
+): Promise<void> {
+  // After logout the app calls auth/me → must return 401
+  await page.route('**/api/auth/me', async (route) => {
+    await route.fulfill({
+      status: 401,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        success: false,
+        error: 'Not authenticated. Use /api/auth/login to authenticate.',
+      }),
+    });
+  });
+
+  // Intercept POST /api/auth/logout with configurable HTTP status
+  const logoutStatus = options?.logoutStatus ?? 200;
+  await page.route('**/api/auth/logout', async (route) => {
+    if (route.request().method() === 'POST') {
+      if (logoutStatus === 200) {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ success: true }),
+        });
+      } else {
+        await route.fulfill({
+          status: 500,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            success: false,
+            error: 'Internal server error.',
+          }),
+        });
+      }
+    } else {
+      await route.fallback();
+    }
+  });
+}
+
 /** Shared: navigate, select sede, and fill WLC form (before clicking Connect). */
 async function ssoSelectSedeAndFillForm(page: Page): Promise<void> {
   await page.goto('/');
