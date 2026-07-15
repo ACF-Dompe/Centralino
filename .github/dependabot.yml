@@ -1,0 +1,62 @@
+# =============================================================================
+# Dependabot — version updates
+# =============================================================================
+# Automatic dependency updates for npm packages, Docker images, and GitHub
+# Actions used in CI/CD workflows.
+#
+# Schedule: weekly on Monday (reduces noise vs. daily)
+# PRs opened by Dependabot trigger the CI workflow (ci.yml) automatically.
+# =============================================================================
+
+version: 2
+updates:
+
+  # ── npm (root workspace → covers backend + frontend) ────────────────────
+  - package-ecosystem: 'npm'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+      time: '09:00'
+      timezone: 'Europe/Rome'
+    versioning-strategy: 'increase'
+    open-pull-requests-limit: 10
+    labels:
+      - 'dependencies'
+      - 'npm'
+    # Group non-breaking updates together to reduce PR noise
+    groups:
+      minor-and-patch:
+        applies-to: version-updates
+        patterns:
+          - '*'
+        update-types:
+          - 'minor'
+          - 'patch'
+
+  # ── Docker ──────────────────────────────────────────────────────────────
+  - package-ecosystem: 'docker'
+    directory: '/'
+    dockerfile-regex: '^Dockerfile(\..+)?$'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+      time: '09:00'
+      timezone: 'Europe/Rome'
+    open-pull-requests-limit: 3
+    labels:
+      - 'dependencies'
+      - 'docker'
+
+  # ── GitHub Actions ──────────────────────────────────────────────────────
+  - package-ecosystem: 'github-actions'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+      time: '09:00'
+      timezone: 'Europe/Rome'
+    open-pull-requests-limit: 5
+    labels:
+      - 'dependencies'
+      - 'github-actions'
