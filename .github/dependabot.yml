@@ -19,11 +19,20 @@ updates:
       day: 'monday'
       time: '09:00'
       timezone: 'Europe/Rome'
+    # Only non-breaking updates (minor + patch) — no automatic major version PRs
+    allow:
+      - dependency-type: 'direct'
+    ignore:
+      - dependency-type: 'direct'
+        update-types:
+          - 'version-update:semver-major'
     versioning-strategy: 'increase'
     open-pull-requests-limit: 10
     labels:
       - 'dependencies'
       - 'npm'
+    reviewers:
+      - 'antoniodompe'
     # Group non-breaking updates together to reduce PR noise
     groups:
       minor-and-patch:
