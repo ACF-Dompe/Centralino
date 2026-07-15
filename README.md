@@ -1,8 +1,9 @@
 # Cisco Catalyst 9800 — Guest Management Desk
 
-[![Deploy to ACA](https://github.com/dompe/centralino/actions/workflows/deploy-azure.yml/badge.svg)](https://github.com/dompe/centralino/actions/workflows/deploy-azure.yml)
-[![E2E Postgres](https://github.com/dompe/centralino/actions/workflows/e2e-postgres.yml/badge.svg)](https://github.com/dompe/centralino/actions/workflows/e2e-postgres.yml)
-[![E2E SSO](https://github.com/dompe/centralino/actions/workflows/e2e-sso.yml/badge.svg)](https://github.com/dompe/centralino/actions/workflows/e2e-sso.yml)
+[![CI — TypeCheck & Unit Tests](https://github.com/ACF-Dompe/Centralino/actions/workflows/ci.yml/badge.svg)](https://github.com/ACF-Dompe/Centralino/actions/workflows/ci.yml)
+[![E2E Postgres](https://github.com/ACF-Dompe/Centralino/actions/workflows/e2e-postgres.yml/badge.svg)](https://github.com/ACF-Dompe/Centralino/actions/workflows/e2e-postgres.yml)
+[![E2E SSO](https://github.com/ACF-Dompe/Centralino/actions/workflows/e2e-sso.yml/badge.svg)](https://github.com/ACF-Dompe/Centralino/actions/workflows/e2e-sso.yml)
+[![Deploy to ACA](https://github.com/ACF-Dompe/Centralino/actions/workflows/deploy-azure.yml/badge.svg)](https://github.com/ACF-Dompe/Centralino/actions/workflows/deploy-azure.yml)
 
 A full-stack operator console for administering a **Cisco Catalyst 9800 WLC**:
 authenticate (HTTPS + SSH), create/manage guest Wi-Fi accounts, send credentials
