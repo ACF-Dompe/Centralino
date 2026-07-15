@@ -1,0 +1,82 @@
+# =============================================================================
+# Project Rules — Cisco Guest Desk (`centralino`)
+# =============================================================================
+# This file defines conventions for AI-assisted development. It is read by
+# AI coding assistants to understand project standards.
+# =============================================================================
+
+## General
+
+- **Language:** TypeScript (strict mode) for backend and frontend.
+- **Package manager:** npm workspaces (`backend/`, `frontend/`).
+- **Module system:** ESM (`"type": "module"` in package.json).
+- **Node.js version:** 20 LTS.
+- **Makefile:** Use `make` targets for common tasks (`make test`, `make typecheck-backend`, `make compose-up`, etc.). Never use raw npx/npm commands when a Makefile target exists.
+- **Commands:** `make test` runs all 391 unit tests, `make typecheck` checks both workspaces, `make install` installs deps.
+
+## Code Style
+
+- **TypeScript strict mode** — no `any`, no implicit returns.
+- **Named exports** preferred over default exports.
+- **Async/await** with try/catch on every async handler (no unhandled rejections).
+- **No secrets hardcoded** — all secrets via env vars (Key Vault references in production).
+- **Path aliases:** Use relative imports within workspaces.
+- **Formatting:** Standard TypeScript conventions (2-space indent, semicolons).
+
+## Testing
+
+- **Backend tests:** Vitest, 221 tests across 14 files. Run: `make test-backend`.
+- **Frontend tests:** Vitest + React Testing Library, 170 tests across 10 files. Run: `make test-frontend`.
+- **E2E tests:** Playwright, 22 tests (17 SSO mock + 5 calendar). CI-only.
+- **Coverage:** Aim for >80% on new code. Run `npx vitest run --coverage` per workspace.
+- **Test conventions:**
+  - Use `data-testid` attributes on components for selectors (never getByTitle with broad regex).
+  - Mock external services (WLC, email, Graph API) with `vi.mock()`.
+  - Test happy path + error path + edge cases.
+  - Use `screen` queries from `@testing-library/react`.
+  - `userEvent` for interactions (not `fireEvent`).
+
+## Docker
+
+- **Dockerfiles:** Multi-stage builds, non-root users (`app` for backend, `nginx` for frontend).
+- **Base images:** `node:20-alpine` (backend), `nginx:1.27-alpine` (frontend).
+- **apk upgrade:** Always include `RUN apk upgrade --no-cache` in runtime stages.
+- **.dockerignore:** Keep exclusions up to date. Exclude `.git/`, `node_modules/`, `.github/`, `scripts/`, `.env*`, build artifacts.
+- **docker-compose:** Available at root for full-stack local testing. Uses custom nginx configs in `docker/` directory.
+- **Healthchecks:** Backend: `/api/healthz` (liveness) + `/api/readyz` (readiness). Frontend: nginx health endpoints.
+
+## CI/CD
+
+- **7 workflows** in `.github/workflows/`:
+  1. `ci.yml` — TypeCheck + Unit Tests (every push/PR)
+  2. `docker-security.yml` — Trivy scan on Docker images (every push/PR)
+  3. `e2e-sso.yml` — SSO E2E tests (frontend-only, mocked)
+  4. `e2e-postgres.yml` — Full E2E with PostgreSQL container
+  5. `deploy-azure.yml` — 5-stage deploy to Azure Container Apps
+  6. `provision-infra.yml` — Azure infrastructure provisioning
+  7. `e2e-reusable.yml` — Reusable E2E workflow (called by e2e-postgres.yml)
+- **Dependabot:** Configured for weekly minor+patch updates only (no major auto-PRs) via `.github/dependabot.yml`.
+- **CI must pass** before merging (typecheck + unit tests + Docker scan for CRITICAL/HIGH).
+
+## Database
+
+- **PostgreSQL 15+** — via Azure Database for PostgreSQL Flexible Server (production), local instance (dev), or Docker (docker-compose).
+- **Migrations:** Auto-run on startup unless `SKIP_MIGRATIONS=true`.
+- **SSL:** `DB_SSL_ENABLED` env var controls SSL (required in production with Azure, disabled for local Docker).
+- **Graph API email:** `MAIL_GRAPH_ENABLED` controls Microsoft Graph integration. Falls back to SMTP if disabled.
+
+## Security
+
+- **Vulnerabilities:** All CRITICAL/HIGH must be addressed before deployment.
+- **npm packages:** Regular updates via Dependabot (weekly). Major versions reviewed manually.
+- **Docker images:** Trivy scan on every push (via `docker-security.yml`).
+- **Secrets:** Never hardcoded. Key Vault references in production (`@Microsoft.KeyVault(...)`).
+- **Runtime:** Non-root users in all containers.
+- **Session:** Signed cookies via `SESSION_SECRET`, stored in PostgreSQL via `connect-pg-simple`.
+
+## Documentation
+
+- **README.md:** Keep badges, quick start guides, and configuration docs updated.
+- **CHANGELOG.md:** Follow Keep a Changelog format. Document all significant changes.
+- **Code comments:** Use JSDoc for exported functions. Inline comments for non-obvious logic.
+- **Env vars:** Document all env vars in `.env.example` with defaults and descriptions.
