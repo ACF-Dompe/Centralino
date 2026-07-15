@@ -498,3 +498,7 @@ repository (Settings → Secrets and variables → Actions):
    - This is idempotent: existing values are updated, new ones added
 3. **Secret rotation**: Update the secret in Key Vault, then restart the ACA
    revision for changes to take effect
+
+---
+
+> 📄 **Changelog** — See [CHANGELOG.md](./CHANGELOG.md) for the full history of changes, security fixes, and updates.
