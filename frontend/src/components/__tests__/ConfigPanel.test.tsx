@@ -104,6 +104,10 @@ describe('ConfigPanel', () => {
     localStorage.removeItem('cgd:adminMode');
   });
 
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it('renders the config title', async () => {
     render(<ConfigPanel wlcConfig={wlcConfig} onClose={onClose} onWlcConfigUpdate={onWlcConfigUpdate} />);
 
@@ -166,6 +170,90 @@ describe('ConfigPanel', () => {
     // Use testid to verify WLC section is active, then check status text
     expect(screen.getByTestId('wlc-host')).toHaveDisplayValue('172.18.106.100');
     expect(screen.getByText(/Online/)).toBeInTheDocument();
+  });
+
+  // ── WLC Test Connection ────────────────────────────────────────────────
+
+  it('calls wlcLogin with WLC credentials on Test Connessione', async () => {
+    const alertMock = vi.fn();
+    vi.stubGlobal('alert', alertMock);
+    const user = userEvent.setup();
+    render(<ConfigPanel wlcConfig={wlcConfig} onClose={onClose} onWlcConfigUpdate={onWlcConfigUpdate} />);
+
+    // Navigate to WLC section
+    await user.click(screen.getByText('Controller WLC'));
+    await screen.findByTestId('wlc-host');
+
+    await user.click(screen.getByText('Test Connessione'));
+
+    await waitFor(() => {
+      expect(mockWlcLogin).toHaveBeenCalledOnce();
+    });
+    expect(mockWlcLogin).toHaveBeenCalledWith({
+      host: '172.18.106.100',
+      port: 443,
+      username: 'admin_guest',
+      password: 'secret123',
+    });
+    expect(alertMock).not.toHaveBeenCalled();
+  });
+
+  it('updates WLC status on successful connection test', async () => {
+    vi.stubGlobal('alert', vi.fn());
+    const user = userEvent.setup();
+    render(<ConfigPanel wlcConfig={wlcConfig} onClose={onClose} onWlcConfigUpdate={onWlcConfigUpdate} />);
+
+    await user.click(screen.getByText('Controller WLC'));
+    await screen.findByTestId('wlc-host');
+
+    await user.click(screen.getByText('Test Connessione'));
+
+    await waitFor(() => {
+      // wlcLogin succeeds → updateWlcConfig called with authenticated:true
+      expect(mockUpdateWlcConfig).toHaveBeenCalledWith(
+        expect.objectContaining({ authenticated: true }),
+      );
+    });
+    expect(onWlcConfigUpdate).toHaveBeenCalledOnce();
+  });
+
+  it('shows alert when connection test fails', async () => {
+    mockWlcLogin.mockResolvedValue({ success: false, error: 'WLC timeout' });
+    const alertMock = vi.fn();
+    vi.stubGlobal('alert', alertMock);
+    const user = userEvent.setup();
+    render(<ConfigPanel wlcConfig={wlcConfig} onClose={onClose} onWlcConfigUpdate={onWlcConfigUpdate} />);
+
+    await user.click(screen.getByText('Controller WLC'));
+    await screen.findByTestId('wlc-host');
+
+    await user.click(screen.getByText('Test Connessione'));
+
+    await waitFor(() => {
+      expect(alertMock).toHaveBeenCalledWith('WLC timeout');
+    });
+    // onWlcConfigUpdate should NOT be called on failure
+    expect(onWlcConfigUpdate).not.toHaveBeenCalled();
+  });
+
+  it('uses default error message when wlcLogin returns no error text', async () => {
+    mockWlcLogin.mockResolvedValue({ success: false, error: undefined });
+    const alertMock = vi.fn();
+    vi.stubGlobal('alert', alertMock);
+    const user = userEvent.setup();
+    render(<ConfigPanel wlcConfig={wlcConfig} onClose={onClose} onWlcConfigUpdate={onWlcConfigUpdate} />);
+
+    await user.click(screen.getByText('Controller WLC'));
+    await screen.findByTestId('wlc-host');
+
+    await user.click(screen.getByText('Test Connessione'));
+
+    await waitFor(() => {
+      expect(alertMock).toHaveBeenCalled();
+    });
+    // The fallback is `r.error ?? t('config.wlc.connectionError')`
+    // t('config.wlc.connectionError') is not in the mock dict, so it returns the key itself
+    expect(alertMock.mock.calls[0][0]).toBe('config.wlc.connectionError');
   });
 
   it('calls updateWlcConfig when save is clicked', async () => {
