@@ -133,10 +133,10 @@ describe('ConfigPanel', () => {
     render(<ConfigPanel wlcConfig={wlcConfig} onClose={onClose} onWlcConfigUpdate={onWlcConfigUpdate} />);
 
     await waitFor(() => {
-      expect(screen.getByDisplayValue('smtp.dompe.com')).toBeInTheDocument();
+      expect(screen.getByTestId('smtp-host')).toHaveDisplayValue('smtp.dompe.com');
     });
-    expect(screen.getByDisplayValue('587')).toBeInTheDocument();
-    expect(screen.getByDisplayValue('noreply@dompe.com')).toBeInTheDocument();
+    expect(screen.getByTestId('smtp-port')).toHaveDisplayValue('587');
+    expect(screen.getByTestId('smtp-sender')).toHaveDisplayValue('noreply@dompe.com');
   });
 
   it('switches to WLC section when clicking the WLC nav button', async () => {
@@ -151,8 +151,8 @@ describe('ConfigPanel', () => {
     await user.click(wlcNavBtn);
 
     // WLC fields should be visible
-    expect(screen.getByDisplayValue('172.18.106.100')).toBeInTheDocument();
-    expect(screen.getByDisplayValue('admin_guest')).toBeInTheDocument();
+    expect(screen.getByTestId('wlc-host')).toHaveDisplayValue('172.18.106.100');
+    expect(screen.getByTestId('wlc-username')).toHaveDisplayValue('admin_guest');
   });
 
   it('shows connected status when WLC is authenticated', async () => {
@@ -163,6 +163,8 @@ describe('ConfigPanel', () => {
     const wlcNavBtn = screen.getByText('Controller WLC');
     await user.click(wlcNavBtn);
 
+    // Use testid to verify WLC section is active, then check status text
+    expect(screen.getByTestId('wlc-host')).toHaveDisplayValue('172.18.106.100');
     expect(screen.getByText(/Online/)).toBeInTheDocument();
   });
 
@@ -248,7 +250,7 @@ describe('ConfigPanel', () => {
     render(<ConfigPanel wlcConfig={wlcConfig} onClose={onClose} onWlcConfigUpdate={onWlcConfigUpdate} />);
 
     await waitFor(() => {
-      expect(screen.getByDisplayValue('smtp.dompe.com')).toBeInTheDocument();
+      expect(screen.getByTestId('smtp-host')).toBeInTheDocument();
     });
 
     await user.click(screen.getByText('Salva'));
@@ -269,7 +271,7 @@ describe('ConfigPanel', () => {
     render(<ConfigPanel wlcConfig={wlcConfig} onClose={onClose} onWlcConfigUpdate={onWlcConfigUpdate} />);
 
     await waitFor(() => {
-      expect(screen.getByDisplayValue('smtp.dompe.com')).toBeInTheDocument();
+      expect(screen.getByTestId('smtp-host')).toBeInTheDocument();
     });
 
     await user.click(screen.getByText('Salva'));
@@ -286,7 +288,7 @@ describe('ConfigPanel', () => {
     render(<ConfigPanel wlcConfig={wlcConfig} onClose={onClose} onWlcConfigUpdate={onWlcConfigUpdate} />);
 
     await waitFor(() => {
-      expect(screen.getByDisplayValue('smtp.dompe.com')).toBeInTheDocument();
+      expect(screen.getByTestId('smtp-host')).toBeInTheDocument();
     });
 
     await user.click(screen.getByText('Salva'));
@@ -307,7 +309,7 @@ describe('ConfigPanel', () => {
     render(<ConfigPanel wlcConfig={wlcConfig} onClose={onClose} onWlcConfigUpdate={onWlcConfigUpdate} />);
 
     await waitFor(() => {
-      expect(screen.getByDisplayValue('smtp.dompe.com')).toBeInTheDocument();
+      expect(screen.getByTestId('smtp-host')).toBeInTheDocument();
     });
 
     await user.click(screen.getByText('Salva'));

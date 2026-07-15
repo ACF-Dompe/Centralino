@@ -132,15 +132,15 @@ export default function ConfigPanel({ wlcConfig, onClose, onWlcConfigUpdate }: P
                 <div className="grid gap-4 sm:grid-cols-2">
                   <div>
                     <label className="label">{t('config.smtp.host')}</label>
-                    <input className="input" value={email.smtpHost ?? ''} onChange={(e) => setEmail({ ...email, smtpHost: e.target.value })} />
+                    <input data-testid="smtp-host" className="input" value={email.smtpHost ?? ''} onChange={(e) => setEmail({ ...email, smtpHost: e.target.value })} />
                   </div>
                   <div>
                     <label className="label">{t('config.smtp.port')}</label>
-                    <input className="input" type="number" value={email.smtpPort} onChange={(e) => setEmail({ ...email, smtpPort: Number(e.target.value) })} />
+                    <input data-testid="smtp-port" className="input" type="number" value={email.smtpPort} onChange={(e) => setEmail({ ...email, smtpPort: Number(e.target.value) })} />
                   </div>
                   <div>
                     <label className="label">{t('config.smtp.sender')}</label>
-                    <input className="input" value={email.sender ?? ''} onChange={(e) => setEmail({ ...email, sender: e.target.value })} />
+                    <input data-testid="smtp-sender" className="input" value={email.sender ?? ''} onChange={(e) => setEmail({ ...email, sender: e.target.value })} />
                   </div>
                   <div>
                     <label className="label">{t('config.smtp.encryption')}</label>
@@ -206,15 +206,15 @@ export default function ConfigPanel({ wlcConfig, onClose, onWlcConfigUpdate }: P
                 <div className="grid gap-4 sm:grid-cols-2">
                   <div>
                     <label className="label">{t('config.wlc.account')}</label>
-                    <input className="input" value={wlc.username} onChange={(e) => setWlc({ ...wlc, username: e.target.value })} />
+                    <input data-testid="wlc-username" className="input" value={wlc.username} onChange={(e) => setWlc({ ...wlc, username: e.target.value })} />
                   </div>
                   <div>
                     <label className="label">{t('config.wlc.ssid')}</label>
-                    <input className="input" value={wlc.wlanSsid} onChange={(e) => setWlc({ ...wlc, wlanSsid: e.target.value })} />
+                    <input data-testid="wlc-ssid" className="input" value={wlc.wlanSsid} onChange={(e) => setWlc({ ...wlc, wlanSsid: e.target.value })} />
                   </div>
                   <div>
                     <label className="label">{t('config.wlc.host')}</label>
-                    <input className="input" value={wlc.host} onChange={(e) => setWlc({ ...wlc, host: e.target.value })} />
+                    <input data-testid="wlc-host" className="input" value={wlc.host} onChange={(e) => setWlc({ ...wlc, host: e.target.value })} />
                   </div>
                   <div>
                     <label className="label">{t('config.wlc.port')}</label>
