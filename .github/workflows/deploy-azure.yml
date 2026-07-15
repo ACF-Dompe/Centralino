@@ -268,7 +268,8 @@ jobs:
       id-token: write
     env:
       BACKEND_ACR_IMAGE: ${{ secrets.ACR_NAME }}.azurecr.io/cgd-backend:${{ github.sha }}
-    environment: ${{ github.event_name == 'workflow_call' && inputs.environment || (github.event_name == 'workflow_dispatch' && (github.event.inputs.environment == 'dev' && 'dev' || github.event.inputs.environment == 'staging' && 'stg' || 'prod')) || (github.ref_name == 'main' && 'prod' || 'stg') }}
+    # Reuses the top-level ENV_SUFFIX logic (env context is available at job field level)
+    environment: ${{ env.ENV_SUFFIX }}
 
     steps:
       - name: Checkout
@@ -343,7 +344,8 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    environment: ${{ github.event_name == 'workflow_call' && inputs.environment || (github.event_name == 'workflow_dispatch' && (github.event.inputs.environment == 'dev' && 'dev' || github.event.inputs.environment == 'staging' && 'stg' || 'prod')) || (github.ref_name == 'main' && 'prod' || 'stg') }}
+    # Reuses the top-level ENV_SUFFIX logic (env context is available at job field level)
+    environment: ${{ env.ENV_SUFFIX }}
 
     steps:
       - name: Log in to Azure (OIDC)
@@ -370,7 +372,8 @@ jobs:
     env:
       BACKEND_ACR_IMAGE: ${{ secrets.ACR_NAME }}.azurecr.io/cgd-backend:${{ github.sha }}
       FRONTEND_ACR_IMAGE: ${{ secrets.ACR_NAME }}.azurecr.io/cgd-frontend:${{ github.sha }}
-    environment: ${{ github.event_name == 'workflow_call' && inputs.environment || (github.event_name == 'workflow_dispatch' && (github.event.inputs.environment == 'dev' && 'dev' || github.event.inputs.environment == 'staging' && 'stg' || 'prod')) || (github.ref_name == 'main' && 'prod' || 'stg') }}
+    # Reuses the top-level ENV_SUFFIX logic (env context is available at job field level)
+    environment: ${{ env.ENV_SUFFIX }}
     permissions:
       contents: read
       id-token: write
