@@ -28,12 +28,10 @@ RUN npm run build -w frontend
 FROM nginx:1.28-alpine AS runtime
 
 # Upgrade system packages to latest available versions
-RUN apk upgrade --no-cache
-
-# Targeted fix for CVE-2026-31789: OpenSSL heap buffer overflow on 32-bit
-# (not exploitable on amd64, but applies the fix regardless).
-# Can be removed once nginx:1.28-alpine base image ships libcrypto3 >= 3.5.6.
-RUN apk add --upgrade libcrypto3 libssl3
+# Includes targeted fix for CVE-2026-31789 (libcrypto3/libssl3 >= 3.5.6)
+# Can remove 'apk add --upgrade libcrypto3 libssl3' once nginx:1.28-alpine
+# base image ships libcrypto3 >= 3.5.6 by default.
+RUN apk upgrade --no-cache && apk add --upgrade libcrypto3 libssl3
 
 # Copy the built frontend
 COPY --from=build /app/frontend/dist /usr/share/nginx/html
