@@ -9,7 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+#### Compliance — Pipeline & Workflows
+- **`.github/workflows/provision-infra.yml`** — Environment options `prd` -> `prod` (allineato con `provision.sh`)
+- **`.github/workflows/deploy-azure.yml`** (Stage 2) — DB bootstrap fail-fast: `exit 0` -> `exit 1` se PostgreSQL server non trovato
+- **`.github/workflows/deploy-azure.yml`** (Stage 1) — Trivy gate: filesystem + image scan bloccano solo CRITICAL (non HIGH). Image scan ora hanno `exit-code: '1'`
+- **`.github/workflows/deploy-azure.yml`** (Stage 5) — Rimossa mutazione Application Gateway (competenza piattaforma)
+
+#### Documentation
+- **`COMPLIANCE.md`** — New file: report dettagliato di conformita contro `ANALISI-CONFORMITA-centralino-v2.md`. Checklist para13, P0-P3 backlog, metriche
+- **README.md** — Aggiunto badge Compliance (12/16 green) che linka a COMPLIANCE.md
+
+### Removed
+- **Stage 5 deploy-azure.yml** — Rimosso intero step "Update shared App Gateway backend pools" (lascia gestione AGW al team infrastruttura)
+
+
 ### Added
+
+#### Compliance & Documentation
+- **`COMPLIANCE.md`** — Detailed compliance report against `ANALISI-CONFORMITA-centralino-v2.md`: 18-point para13 checklist, P0-P3 remediation backlog, per-item status with fix verification. Badge added to README.
+- **README.md** — Added Compliance badge linking to COMPLIANCE.md
 
 #### CI/CD & Workflows
 - **`.github/workflows/docker-security.yml`** — New workflow that builds both Docker images and runs Trivy vulnerability scan (CRITICAL/HIGH) on every push/PR to main/develop. Uploads SARIF results to GitHub Security tab. Uses `continue-on-error` pattern to ensure all scans and uploads complete before the gating step.
@@ -59,6 +79,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | TypeScript errors | 0 | 0 |
 | CRITICAL/HIGH CVEs | 6 | **0** |
 | Total real vulnerabilities | 11 | **1** (low, Windows-only) |
+| Compliance §13 (applicable) | — | **12/16 🟢** |
 | CI/CD workflows | 6 | **7** |
 | Commits today | — | **40+** |
-| New files created | — | **8** |
+| New files created | — | **9** |
