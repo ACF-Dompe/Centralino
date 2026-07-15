@@ -135,7 +135,7 @@ async function createMigrationClient(): Promise<DbClient> {
     database: parsed.pathname.replace(/^\//, ''),
     user: decodeURIComponent(parsed.username),
     password: parsed.password ? decodeURIComponent(parsed.password) : undefined,
-    ssl: { rejectUnauthorized: false },
+    ssl: config.db.sslEnabled ? { rejectUnauthorized: false } : false,
     max: 1,
     connectionTimeoutMillis: 15_000,
   });

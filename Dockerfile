@@ -47,7 +47,7 @@ WORKDIR /app
 # Install only backend production deps
 COPY package.json package-lock.json* ./
 COPY backend/package.json ./backend/package.json
-RUN npm install --omit=dev --workspace=backend --no-audit --no-fund \
+RUN npm install --omit=dev --workspace=backend --include-workspace-root --no-audit --no-fund \
     && npm cache clean --force
 
 # Copy built artifacts only
