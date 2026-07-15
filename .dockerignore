@@ -1,7 +1,10 @@
 node_modules
+**/node_modules
 .git
 .gitignore
+.gitattributes
 .env
+.env.example
 .env.local
 .env.*.local
 *.log
@@ -11,8 +14,15 @@ yarn-error.log*
 .DS_Store
 .vscode
 .idea
+.github
+scripts
 dist
 build
 coverage
 *.tsbuildinfo
+*.tsconfig.tsbuildinfo
 README.md
+LICENSE
+.DS_Store?
+._DS_Store
+.dockerignore
