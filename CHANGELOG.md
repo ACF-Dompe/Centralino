@@ -18,18 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`.github/workflows/deploy-azure.yml`** (Stage 5) — Rimossa mutazione Application Gateway (competenza piattaforma)
 
 #### Documentation
-- **`COMPLIANCE.md`** — New file: report dettagliato di conformita contro `ANALISI-CONFORMITA-centralino-v2.md`. Checklist para13, P0-P3 backlog, metriche
-- **README.md** — Aggiunto badge Compliance (12/16 green) che linka a COMPLIANCE.md
+- **`COMPLIANCE.md`** — New file: report dettagliato di conformita contro `ANALISI-CONFORMITA-centralino-v2.md`. Checklist §13, P0-P3 backlog, metriche, badge nel README
 
 ### Removed
 - **Stage 5 deploy-azure.yml** — Rimosso intero step "Update shared App Gateway backend pools" (lascia gestione AGW al team infrastruttura)
 
 
 ### Added
-
-#### Compliance & Documentation
-- **`COMPLIANCE.md`** — Detailed compliance report against `ANALISI-CONFORMITA-centralino-v2.md`: 18-point para13 checklist, P0-P3 remediation backlog, per-item status with fix verification. Badge added to README.
-- **README.md** — Added Compliance badge linking to COMPLIANCE.md
 
 #### CI/CD & Workflows
 - **`.github/workflows/docker-security.yml`** — New workflow that builds both Docker images and runs Trivy vulnerability scan (CRITICAL/HIGH) on every push/PR to main/develop. Uploads SARIF results to GitHub Security tab. Uses `continue-on-error` pattern to ensure all scans and uploads complete before the gating step.
