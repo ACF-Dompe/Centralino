@@ -80,7 +80,7 @@ jobs:
       - name: Trivy vulnerability scan (backend image)
         id: trivy-backend
         continue-on-error: true
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: 'image'
           image-ref: 'cgd-backend:ci-${{ github.sha }}'
@@ -88,11 +88,12 @@ jobs:
           output: 'trivy-backend-results.sarif'
           severity: 'CRITICAL'
           exit-code: '1'
+          trivyignores: '.trivyignore'
 
       - name: Trivy vulnerability scan (frontend image)
         id: trivy-frontend
         continue-on-error: true
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: 'image'
           image-ref: 'cgd-frontend:ci-${{ github.sha }}'
@@ -100,6 +101,7 @@ jobs:
           output: 'trivy-frontend-results.sarif'
           severity: 'CRITICAL'
           exit-code: '1'
+          trivyignores: '.trivyignore'
 
       # ── Upload results to GitHub Security tab ────────────────────────
 
