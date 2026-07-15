@@ -63,6 +63,41 @@ The backend boots, runs migrations and seeds demo data automatically.
 > `SAML_CALLBACK_URL` and `SAML_CERT` to enable it. Without SAML, the app shows
 > the WLC login screen directly.
 
+## Docker Compose (local testing)
+
+Runs the full stack in containers using the **same Docker images built for production**
+(including `apk upgrade --no-cache` applied to both Dockerfiles).
+
+```bash
+# Prerequisites: Docker Engine 24+
+docker compose up --build   # builds images and starts all services
+# open http://localhost:8080
+```
+
+Three containers are started:
+
+| Service   | Port (host) | Base image | Runs as |
+|-----------|-------------|------------|---------|
+| PostgreSQL | `5432`      | `postgres:15-alpine` | `postgres` |
+| Backend   | `3000`      | `node:20-alpine`     | `app` (non-root) |
+| Frontend  | `8080`      | `nginx:1.27-alpine`  | `nginx` (non-root) |
+
+The frontend nginx proxies `/api/*` requests to the backend container
+(in production, this routing is handled by the Azure Application Gateway).
+WebSocket connections for real-time guest timer updates are also proxied.
+
+To stop and clean up (including the PostgreSQL data volume):
+
+```bash
+docker compose down -v
+```
+
+> 🧪 **SSO is disabled by default.** The `SAML_*` env vars are commented out in
+> `docker-compose.yml`. Uncomment them to test SSO against a real Entra ID tenant.
+>
+> **Database migrations run automatically on startup.** Set `SKIP_MIGRATIONS: 'true'`
+> in the backend environment to skip them.
+
 ## SSO SAML 2.0 via Microsoft Entra ID
 
 The application supports **Single Sign-On** via SAML 2.0 using **Microsoft Entra ID**
