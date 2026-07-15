@@ -6,6 +6,7 @@
 [![Deploy to ACA](https://github.com/ACF-Dompe/Centralino/actions/workflows/deploy-azure.yml/badge.svg)](https://github.com/ACF-Dompe/Centralino/actions/workflows/deploy-azure.yml)
 [![Docker Security — Trivy Scan](https://github.com/ACF-Dompe/Centralino/actions/workflows/docker-security.yml/badge.svg)](https://github.com/ACF-Dompe/Centralino/actions/workflows/docker-security.yml)
 [![Security — 0 critical · 0 high · 0 moderate · 1 low](https://img.shields.io/badge/Security-0%20critical%20%7C%200%20high%20%7C%200%20moderate%20%7C%201%20low-brightgreen?logo=npm)](https://github.com/ACF-Dompe/Centralino/security/dependabot)
+[![Compliance — 12/16 🟢](https://img.shields.io/badge/Compliance-12%2F16%20%F0%9F%9F%A2-green?logo=azuredevops)](./COMPLIANCE.md)
 
 A full-stack operator console for administering a **Cisco Catalyst 9800 WLC**:
 authenticate (HTTPS + SSH), create/manage guest Wi-Fi accounts, send credentials
