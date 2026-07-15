@@ -32,6 +32,9 @@ RUN npm run build -w backend
 # ---------- Stage 2: runtime ----------
 FROM node:20-alpine AS runtime
 
+# Upgrade system packages to latest available versions
+RUN apk upgrade --no-cache
+
 ENV NODE_ENV=production \
     PORT=3000 \
     NPM_CONFIG_UPDATE_NOTIFIER=false

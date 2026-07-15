@@ -27,6 +27,9 @@ RUN npm run build -w frontend
 # ---------- Stage 2: nginx runtime ----------
 FROM nginx:1.27-alpine AS runtime
 
+# Upgrade system packages to latest available versions
+RUN apk upgrade --no-cache
+
 # Copy the built frontend
 COPY --from=build /app/frontend/dist /usr/share/nginx/html
 
