@@ -108,12 +108,14 @@ jobs:
         if: always()
         with:
           sarif_file: 'trivy-backend-results.sarif'
+          category: trivy-backend
 
       - name: Upload frontend SARIF results
         uses: github/codeql-action/upload-sarif@v3
         if: always()
         with:
           sarif_file: 'trivy-frontend-results.sarif'
+          category: trivy-frontend
 
       # ── Gate: fail the workflow if any scan found vulnerabilities ────
 
