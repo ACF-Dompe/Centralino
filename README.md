@@ -297,13 +297,13 @@ WLC login directly (useful for local development without Azure AD access).
 │   ├── tailwind.config.js
 │   └── vite.config.ts
 ├── .github/workflows/          # CI/CD pipelines
-│   ├── ci.yml                  # TypeCheck + unit test su ogni push
+│   ├── ci.yml                  # TypeCheck + unit tests on every push
 │   ├── deploy-azure.yml        # 5-stage: Build → Bootstrap → Migrate → Deploy → Verify
-│   ├── docker-security.yml     # Trivy scan immagini Docker su ogni push/PR
+│   ├── docker-security.yml     # Trivy vulnerability scan on every push/PR
 │   ├── e2e-postgres.yml        # Full E2E suite (calls e2e-reusable.yml)
 │   ├── e2e-reusable.yml        # Reusable E2E workflow (PostgreSQL + full suite)
 │   ├── e2e-sso.yml             # SSO SAML login screen tests (frontend-only, lightweight)
-│   └── provision-infra.yml     # Provisioning Azure (workflow_dispatch manuale)
+│   └── provision-infra.yml     # Azure resource provisioning (manual workflow_dispatch)
 ├── Dockerfile                  # Backend Docker image (multi-stage)
 ├── Dockerfile.frontend         # Frontend Docker image (nginx)
 ├── .env.example
