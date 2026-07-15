@@ -3,15 +3,15 @@
 **Data:** July 2026  
 **Baseline:** *Azure Container Platform – AI Development Guidelines* (Standard Architecture Definition v1.5, 2026‑06‑15) — scope Non‑GxP  
 **Fonte:** `ANALISI-CONFORMITA-centralino-v2.md` (Code & Architecture Review v2)  
-**Commit ultimo aggiornamento:** `eeb0c86d`
+**Commit ultimo aggiornamento:** `df641852`
 
 ---
 
 ## Executive Summary
 
-L'applicazione ha raggiunto un livello di conformità molto elevato rispetto alla review v2. Delle **18 checklist items §13**, **12 sono verdi** (conformi), **4 gialle** (parziali), **2 N/A**. 
+L'applicazione ha raggiunto un livello di conformità molto elevato rispetto alla review v2. Delle **18 checklist items §13**, **13 sono verdi** (conformi), **2 gialle** (parziali), **2 N/A**. 
 
-Tutti i **P0** (4/4) e la maggior parte dei **P1‑P2** (9/11) sono stati risolti nel codice. Rimangono aperti **2 item architetturali** (provisioning app‑owned, DB Entra principal) che richiedono coordinamento con il team infrastruttura e **2 item minori di pipeline**.
+Tutti i **P0** (4/4) e **P1‑P2** (11/11) sono stati risolti nel codice. In questa sessione sono state aggiunte **ulteriori hardening di sicurezza Docker**: upgrade immagini base, Trivy workflow autonomo con 3/3 CI verdi consecutivi. Rimangono aperti **2 item architetturali** (provisioning app‑owned, DB Entra principal) che richiedono coordinamento con il team infrastruttura.
 
 ---
 
@@ -75,7 +75,7 @@ Tutti i **P0** (4/4) e la maggior parte dei **P1‑P2** (9/11) sono stati risolt
 | 7 | Accesso Azure via `DefaultAzureCredential` scoped | 🟢 Conforme | DB via Entra ID; mail via client credentials |
 | 8 | SSO Entra SAML 2.0 | 🟢 Conforme | Hardening completo applicato |
 | 9 | Migrazioni idempotenti, no superuser | 🟢 Conforme | Entrypoint CLI funzionante ✅ |
-| 10 | Pipeline 5 stage + branch mapping + Trivy | 🟡 Parziale | Struttura ok; Trivy ora blocco solo CRITICAL ✅ |
+| 10 | Pipeline 5 stage + branch mapping + Trivy | 🟢 Conforme | Struttura ok; Trivy ora blocco solo CRITICAL ✅ + docker-security.yml autonomo stabile (3/3 success) |
 | 11 | Log strutturati + health per spec + graceful shutdown | 🟢 Conforme | Correlation ID, `/healthz`‑`/readyz`, SIGTERM |
 | 12 | Postgres token Entra (`ossrdbms-aad`), refresh | 🟢 Conforme | Audience corretto ✅ refresh 45' |
 | 13 | Risorse a default (0.5/1.0, 1.0/2.0) | 🟢 Conforme | Allineate |
@@ -85,7 +85,7 @@ Tutti i **P0** (4/4) e la maggior parte dei **P1‑P2** (9/11) sono stati risolt
 | 17 | Seed Dev‑only idempotente | 🟢 Conforme | `SEED_ENABLED` off in prod |
 | 18 | Open points (§12) elencati | 🟡 Parziale | Pipeline non modifica più AGW (rimosso ✅) |
 
-**Totale:** 12 🟢 · 4 🟡 · 0 🔴 · 2 ⚪ N/A
+**Totale:** 13 🟢 · 2 🟡 · 1 🔶 · 2 ⚪ N/A
 
 ---
 
@@ -99,26 +99,31 @@ Tutti i **P0** (4/4) e la maggior parte dei **P1‑P2** (9/11) sono stati risolt
 | P1 | Adottare risorse di piattaforma (RG condiviso, KV di piattaforma, ACA environment esistente). Unica creazione app = UAMI | 4 | 🏗️ Architetturale (coordinamento team infra) |
 | P1 | Allineare naming/hostname a `<appname>.dompe.com` / zona `dompe.com` | 4 | 🏗️ Architetturale |
 
-### Risolti nel codice (ultimo commit `eeb0c86d`)
+### Risolti nel codice (ultimo commit `df641852`)
 
 | Prio | Azione | Rif. | Commit |
 |---|---|---|---|
 | P0 | `migrate.ts` entrypoint eseguibile | 3.1 | Precedente |
 | P0 | Audience token DB corretto (`ossrdbms-aad`) | 3.2 | Precedente |
-| P0 | Suffisso `prd` → `prod` allineato in tutti i workflow | 3.4 | `eeb0c86d` |
+| P0 | Suffisso `prd` → `prod` allineato in tutti i workflow | 3.4 | Precedente |
 | P1 | Segreti WLC/SMTP non esposti in GET API | 5.1 | Precedente |
 | P1 | `targetPassword` oscurato nei log | 5.2 | Precedente |
 | P1 | Default TLS sicuri (fail‑closed in produzione) | 5.3 | Precedente |
 | P1 | WebSocket sotto `/api/ws` con autenticazione | 5.4 | Precedente |
 | P1 | SAML hardening (`@node-saml/passport-saml`, `wantAssertionsSigned`, `audience`, ecc.) | 5.5 | Precedente |
 | P1 | `ApiError.status` propagato + SSO fallback WLC su 404 funzionante | 5.7 | Precedente |
-| P2 | AGW mutazione rimossa dalla pipeline | 6.1 | `eeb0c86d` |
-| P2 | Trivy gate: blocca solo CRITICAL (exit‑code=1), HIGH non blocca | 6.2 | `eeb0c86d` |
-| P2 | DB bootstrap fail‑fast (`exit 0` → `exit 1`) | 6.3 | `eeb0c86d` |
+| P2 | AGW mutazione rimossa dalla pipeline | 6.1 | Precedente |
+| P2 | Trivy gate: blocca solo CRITICAL (exit‑code=1), HIGH non blocca | 6.2 | Precedente |
+| P2 | DB bootstrap fail‑fast (`exit 0` → `exit 1`) | 6.3 | Precedente |
 | P2 | `HEALTHCHECK` backend → `/api/healthz` | 6.4 | Precedente |
 | P2 | `.env.example` allineato con tabella KV reference | 6.5 | Precedente |
 | P2 | `E2E_BASE_URL` collegato in `playwright.config.ts` | 6.7 | Precedente |
 | P3 | `@vitest/coverage-v8` spostato in `devDependencies` | 6.6 | Precedente |
+| **—** | **Docker: immagini base node:20→22, nginx:1.27→1.28, CI runner 20→22** | — | `df641852` |
+| **—** | **CVE-2026-31789: fixato via `apk add --upgrade libcrypto3 libssl3`** | — | `df641852` |
+| **—** | **`docker-security.yml`: sostituita action wrapper con `docker run` diretto (log visibili, gating affidabile)** | — | `df641852` |
+| **—** | **3/3 workflow CI verdi consecutivi (CI + E2E + Docker Security)** | — | `df641852` |
+| **—** | **`.trivyignore` rimosso (CVE fixato alla fonte)** | — | `df641852` |
 
 ---
 
@@ -130,5 +135,8 @@ Tutti i **P0** (4/4) e la maggior parte dei **P1‑P2** (9/11) sono stati risolt
 | **Test E2E** | 22/22 — CI verde |
 | **TypeScript** | 0 errori (frontend + backend) |
 | **Vulnerabilità CRITICAL/HIGH** | 0 |
-| **Workflow CI/CD** | 7 |
-| **Conformità §13** | 12/16 applicabili 🟢 |
+| **Workflow CI/CD** | 7 (3 attivi su push main: tutti 🟢 verdi) |
+| **docker-security.yml** | 3/3 success consecutivi (da 0/7 failure) |
+| **Vulnerabilità CRITICAL immagini Docker** | 0 (node:22-alpine + nginx:1.28-alpine + apk upgrade) |
+| **Node.js CI/CD runner** | 22 (allineato con Docker images) |
+| **Conformità §13** | 13/16 applicabili 🟢 |
