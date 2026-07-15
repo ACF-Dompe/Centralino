@@ -617,6 +617,30 @@ describe('Dashboard', () => {
     expect(handlers.onDisconnect).toHaveBeenCalledOnce();
   });
 
+  it('still disconnects when the API call fails (silent catch)', async () => {
+    mockUpdateWlcConfig.mockRejectedValue(new Error('Network error'));
+    const user = userEvent.setup();
+    render(<Dashboard config={wlcConfig} sede={sede} {...handlers} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('guest-table')).toBeInTheDocument();
+    });
+
+    const disconnectBtn = screen.getByTitle('Disconnetti');
+    await user.click(disconnectBtn);
+
+    // The API was called and rejected
+    await waitFor(() => {
+      expect(mockUpdateWlcConfig).toHaveBeenCalledWith({ authenticated: false });
+    });
+
+    // onDisconnect is still called (the catch silently ignores the error)
+    expect(handlers.onDisconnect).toHaveBeenCalledOnce();
+
+    // No error toast should appear (the catch block is silent: catch { /* ignore */ })
+    expect(screen.queryByTestId('toast')).not.toBeInTheDocument();
+  });
+
   // ── WebSocket events ────────────────────────────────────────────────────
 
   it('refreshes guest list on guest:created WebSocket event', async () => {
