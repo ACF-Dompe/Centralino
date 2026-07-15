@@ -52,7 +52,7 @@ with **SSO SAML 2.0** authentication via **Microsoft Entra ID**.
 ```bash
 # Prerequisites: Node.js 20+, PostgreSQL running locally
 cp .env.example .env       # adjust DATABASE_URL for your local Postgres
-npm install
+make install               # npm install across all workspaces
 npm run dev                # runs backend (3000) and frontend (5173) in parallel
 # open http://localhost:5173
 ```
