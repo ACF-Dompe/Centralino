@@ -92,19 +92,16 @@ on:
 
 env:
   # ---- Environment suffix: resolves to (dev|stg|prod) ----
+  # NOTE: Only ENV_SUFFIX, IMAGE_TAG, BACKEND_IMAGE_NAME, FRONTEND_IMAGE_NAME
+  # are defined here because they only use `github` / `inputs` contexts.
+  # Env vars that reference `env.*`, `secrets.*`, or combine multiple
+  # contexts are defined in each job's `env` section where those contexts
+  # ARE supported.
   ENV_SUFFIX: ${{ github.event_name == 'workflow_call' && inputs.environment || github.event_name == 'workflow_dispatch' && (github.event.inputs.environment == 'dev' && 'dev' || github.event.inputs.environment == 'staging' && 'stg' || 'prod') || (github.ref_name == 'main' && 'prod' || 'stg') }}
 
-  # ---- Azure resource names ----
-  AZURE_RESOURCE_GROUP: rg-cgd-${{ github.event_name == 'workflow_call' && inputs.environment || github.event_name == 'workflow_dispatch' && (github.event.inputs.environment == 'dev' && 'dev' || github.event.inputs.environment == 'staging' && 'stg' || 'prod') || (github.ref_name == 'main' && 'prod' || 'stg') }}
-  AZURE_CONTAINER_APP_ENV: cae-cgd-${{ github.event_name == 'workflow_call' && inputs.environment || github.event_name == 'workflow_dispatch' && (github.event.inputs.environment == 'dev' && 'dev' || github.event.inputs.environment == 'staging' && 'stg' || 'prod') || (github.ref_name == 'main' && 'prod' || 'stg') }}
-  ACR_NAME: ${{ secrets.ACR_NAME }}
-
-  # ---- Image references ----
   IMAGE_TAG: ${{ github.sha }}
   BACKEND_IMAGE_NAME: cgd-backend
   FRONTEND_IMAGE_NAME: cgd-frontend
-  BACKEND_ACR_IMAGE: ${{ secrets.ACR_NAME }}.azurecr.io/cgd-backend:${{ github.sha }}
-  FRONTEND_ACR_IMAGE: ${{ secrets.ACR_NAME }}.azurecr.io/cgd-frontend:${{ github.sha }}
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -116,6 +113,10 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    env:
+      ACR_NAME: ${{ secrets.ACR_NAME }}
+      BACKEND_ACR_IMAGE: ${{ secrets.ACR_NAME }}.azurecr.io/cgd-backend:${{ github.sha }}
+      FRONTEND_ACR_IMAGE: ${{ secrets.ACR_NAME }}.azurecr.io/cgd-frontend:${{ github.sha }}
 
     steps:
       - name: Checkout
@@ -264,7 +265,11 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    environment: ${{ env.ENV_SUFFIX }}
+    env:
+      AZURE_RESOURCE_GROUP: rg-cgd-${{ env.ENV_SUFFIX }}
+      AZURE_CONTAINER_APP_ENV: cae-cgd-${{ env.ENV_SUFFIX }}
+      BACKEND_ACR_IMAGE: ${{ secrets.ACR_NAME }}.azurecr.io/cgd-backend:${{ github.sha }}
+    environment: ${{ github.event_name == 'workflow_call' && inputs.environment || (github.event_name == 'workflow_dispatch' && (github.event.inputs.environment == 'dev' && 'dev' || github.event.inputs.environment == 'staging' && 'stg' || 'prod')) || (github.ref_name == 'main' && 'prod' || 'stg') }}
 
     steps:
       - name: Checkout
@@ -339,7 +344,9 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    environment: ${{ env.ENV_SUFFIX }}
+    env:
+      AZURE_RESOURCE_GROUP: rg-cgd-${{ env.ENV_SUFFIX }}
+    environment: ${{ github.event_name == 'workflow_call' && inputs.environment || (github.event_name == 'workflow_dispatch' && (github.event.inputs.environment == 'dev' && 'dev' || github.event.inputs.environment == 'staging' && 'stg' || 'prod')) || (github.ref_name == 'main' && 'prod' || 'stg') }}
 
     steps:
       - name: Log in to Azure (OIDC)
@@ -363,7 +370,11 @@ jobs:
     name: '4/5 Deploy to ACA'
     needs: [build-and-scan, db-migrate]
     runs-on: ubuntu-latest
-    environment: ${{ env.ENV_SUFFIX }}
+    env:
+      AZURE_RESOURCE_GROUP: rg-cgd-${{ env.ENV_SUFFIX }}
+      BACKEND_ACR_IMAGE: ${{ secrets.ACR_NAME }}.azurecr.io/cgd-backend:${{ github.sha }}
+      FRONTEND_ACR_IMAGE: ${{ secrets.ACR_NAME }}.azurecr.io/cgd-frontend:${{ github.sha }}
+    environment: ${{ github.event_name == 'workflow_call' && inputs.environment || (github.event_name == 'workflow_dispatch' && (github.event.inputs.environment == 'dev' && 'dev' || github.event.inputs.environment == 'staging' && 'stg' || 'prod')) || (github.ref_name == 'main' && 'prod' || 'stg') }}
     permissions:
       contents: read
       id-token: write
@@ -448,6 +459,8 @@ jobs:
     name: '5/5 Post-deploy Verify'
     needs: [deploy]
     runs-on: ubuntu-latest
+    env:
+      AZURE_RESOURCE_GROUP: rg-cgd-${{ env.ENV_SUFFIX }}
     permissions:
       contents: read
       id-token: write
