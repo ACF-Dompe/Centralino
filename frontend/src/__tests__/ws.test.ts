@@ -228,6 +228,59 @@ describe('connectWs', () => {
     expect(onDisconnect).not.toHaveBeenCalled();
   });
 
+  // ── Default options ───────────────────────────────────────────────────
+
+  it('uses default maxRetries=10 and calls onDisconnect after exhaustion', () => {
+    const onDisconnect = vi.fn();
+    connectWs({ onEvent: vi.fn(), onDisconnect, baseDelayMs: 10 });
+    // No explicit maxRetries — should default to 10
+
+    // Run through 10 retries. Delays: 10+20+40+80+160+320+640+1280+2560+5120 = 10230ms total
+    for (let i = 0; i < 10; i++) {
+      closeWs();
+      const delay = 10 * Math.pow(2, i);
+      vi.advanceTimersByTime(delay);
+      if (i < 9) {
+        expect(wsConstructCount).toBe(i + 2); // new WS created each time
+      }
+    }
+
+    // 11th close: retryCount = 10, NOT < 10 → onDisconnect
+    closeWs();
+    expect(onDisconnect).toHaveBeenCalledOnce();
+    expect(wsConstructCount).toBe(11); // no new connection after retry 10
+  });
+
+  it('does not throw when onDisconnect is not provided and retries exhaust', () => {
+    connectWs({ onEvent: vi.fn(), maxRetries: 1, baseDelayMs: 10 });
+
+    // First close: retryCount 0 < 1 → reconnect
+    closeWs();
+    vi.advanceTimersByTime(10);
+    expect(wsConstructCount).toBe(2);
+
+    // Second close: retryCount 1 is NOT < 1 → would call onDisconnect, but it's undefined
+    expect(() => {
+      closeWs();
+    }).not.toThrow();
+  });
+
+  it('uses wss:// URL when page is served over HTTPS', () => {
+    // Temporarily change window.location.protocol
+    const originalLocation = window.location;
+    // @ts-expect-error: we're reassigning a read-only property for the test
+    delete window.location;
+    window.location = { ...originalLocation, protocol: 'https:' };
+
+    try {
+      const client = connectWs({ onEvent: vi.fn() });
+      expect(currentMockWs!.url).toMatch(/^wss:\/\//);
+      client.disconnect();
+    } finally {
+      window.location = originalLocation;
+    }
+  });
+
   // ── disconnect() ───────────────────────────────────────────────────────
 
   it('disconnect() prevents reconnection', () => {
