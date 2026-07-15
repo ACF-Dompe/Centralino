@@ -48,7 +48,7 @@ Tutti i **P0** (4/4) e la maggior parte dei **P1‑P2** (9/11) sono stati risolt
 
 ---
 
-## P2‑P3 — Pipeline (5/7 risolti ✅)
+## P2‑P3 — Pipeline (7/7 risolti ✅)
 
 | # | Difetto | Stato | Dettaglio |
 |---|---|---|---|
