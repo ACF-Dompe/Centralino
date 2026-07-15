@@ -1,7 +1,7 @@
 /**
  * Unit tests for ConfigPanel component.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ConfigPanel from '../ConfigPanel';
@@ -240,6 +240,123 @@ describe('ConfigPanel', () => {
 
     await waitFor(() => {
       expect(screen.getByText('Abilita Modalità Admin')).toBeInTheDocument();
+    });
+  });
+
+  // ── Admin mode (dev convenience, no PIN) ───────────────────────────────
+
+  it('toggles admin mode on/off when no PIN is configured (dev convenience)', async () => {
+    const user = userEvent.setup();
+    render(<ConfigPanel wlcConfig={wlcConfig} onClose={onClose} onWlcConfigUpdate={onWlcConfigUpdate} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('I campi sensibili sono nascosti.')).toBeInTheDocument();
+    });
+
+    // Enable admin mode
+    const toggleBtn = screen.getByText('Abilita Modalità Admin');
+    await user.click(toggleBtn);
+
+    // Sensitive banner should disappear
+    expect(screen.queryByText('I campi sensibili sono nascosti.')).not.toBeInTheDocument();
+    // Button text should change to disable
+    expect(screen.getByText('Disabilita Modalità Admin')).toBeInTheDocument();
+
+    // Disable admin mode
+    await user.click(screen.getByText('Disabilita Modalità Admin'));
+    expect(screen.getByText('Abilita Modalità Admin')).toBeInTheDocument();
+    // Banner should reappear
+    expect(screen.getByText('I campi sensibili sono nascosti.')).toBeInTheDocument();
+  });
+
+  // ── Admin mode with PIN configured ─────────────────────────────────────
+
+  describe('Admin mode with PIN (VITE_ADMIN_PIN set)', () => {
+    beforeEach(() => {
+      vi.stubEnv('VITE_ADMIN_PIN', '1234');
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('shows PIN prompt when clicking admin toggle', async () => {
+      const user = userEvent.setup();
+      render(<ConfigPanel wlcConfig={wlcConfig} onClose={onClose} onWlcConfigUpdate={onWlcConfigUpdate} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Abilita Modalità Admin')).toBeInTheDocument();
+      });
+
+      await user.click(screen.getByText('Abilita Modalità Admin'));
+
+      // PIN prompt modal should appear
+      expect(screen.getByText('Inserisci PIN amministratore')).toBeInTheDocument();
+    });
+
+    it('shows error on wrong PIN', async () => {
+      const user = userEvent.setup();
+      render(<ConfigPanel wlcConfig={wlcConfig} onClose={onClose} onWlcConfigUpdate={onWlcConfigUpdate} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Abilita Modalità Admin')).toBeInTheDocument();
+      });
+
+      await user.click(screen.getByText('Abilita Modalità Admin'));
+
+      // Type wrong PIN using data-testid
+      const pinInput = screen.getByTestId('admin-pin-input');
+      await user.type(pinInput, '0000');
+      await user.click(screen.getByTestId('admin-pin-submit'));
+
+      expect(screen.getByText('PIN errato')).toBeInTheDocument();
+      // Admin mode should NOT be enabled (banner still visible)
+      await waitFor(() => {
+        expect(screen.getByText('I campi sensibili sono nascosti.')).toBeInTheDocument();
+      });
+    });
+
+    it('enables admin mode on correct PIN', async () => {
+      const user = userEvent.setup();
+      render(<ConfigPanel wlcConfig={wlcConfig} onClose={onClose} onWlcConfigUpdate={onWlcConfigUpdate} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('I campi sensibili sono nascosti.')).toBeInTheDocument();
+      });
+
+      await user.click(screen.getByText('Abilita Modalità Admin'));
+
+      // Type correct PIN using data-testid
+      const pinInput = screen.getByTestId('admin-pin-input');
+      await user.type(pinInput, '1234');
+      await user.click(screen.getByTestId('admin-pin-submit'));
+
+      // Admin mode enabled — banner should disappear
+      await waitFor(() => {
+        expect(screen.queryByText('I campi sensibili sono nascosti.')).not.toBeInTheDocument();
+      });
+      expect(screen.getByText('Disabilita Modalità Admin')).toBeInTheDocument();
+    });
+
+    it('cancels PIN prompt without enabling admin mode', async () => {
+      const user = userEvent.setup();
+      render(<ConfigPanel wlcConfig={wlcConfig} onClose={onClose} onWlcConfigUpdate={onWlcConfigUpdate} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Abilita Modalità Admin')).toBeInTheDocument();
+      });
+
+      await user.click(screen.getByText('Abilita Modalità Admin'));
+      expect(screen.getByText('Inserisci PIN amministratore')).toBeInTheDocument();
+
+      // Click cancel
+      await user.click(screen.getByText('Annulla'));
+
+      // Prompt should close, admin mode NOT enabled
+      await waitFor(() => {
+        expect(screen.queryByText('Inserisci PIN amministratore')).not.toBeInTheDocument();
+      });
+      expect(screen.getByText('I campi sensibili sono nascosti.')).toBeInTheDocument();
     });
   });
 

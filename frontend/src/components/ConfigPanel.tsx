@@ -13,10 +13,11 @@ interface Props {
 
 type Section = 'email' | 'wlc';
 
-const ADMIN_PIN = (import.meta.env.VITE_ADMIN_PIN as string | undefined) ?? '';
 const ADMIN_MODE_KEY = 'cgd:adminMode';
 
 export default function ConfigPanel({ wlcConfig, onClose, onWlcConfigUpdate }: Props) {
+  // Evaluate each render so tests can stub VITE_ADMIN_PIN at runtime
+  const ADMIN_PIN = (import.meta.env.VITE_ADMIN_PIN as string | undefined) ?? '';
   const [, , t] = useLocale();
   const [section, setSection] = useState<Section>('email');
   const [email, setEmail] = useState<EmailConfig | null>(null);
@@ -264,6 +265,7 @@ export default function ConfigPanel({ wlcConfig, onClose, onWlcConfigUpdate }: P
               </div>
             </div>
             <input
+              data-testid="admin-pin-input"
               className="input mt-4"
               type="password"
               autoFocus
@@ -275,7 +277,7 @@ export default function ConfigPanel({ wlcConfig, onClose, onWlcConfigUpdate }: P
               <button type="button" className="btn-ghost" onClick={() => setShowAdminPrompt(false)}>
                 {t('create.cancel')}
               </button>
-              <button type="submit" className="btn-primary">{t('config.save')}</button>
+              <button type="submit" data-testid="admin-pin-submit" className="btn-primary">{t('config.save')}</button>
             </div>
           </form>
         </div>
