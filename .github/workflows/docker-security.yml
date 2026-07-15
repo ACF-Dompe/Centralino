@@ -78,33 +78,51 @@ jobs:
           no-cache: true
           pull: true
 
-      # ── Trivy scans ──────────────────────────────────────────────────
+      # ── Trivy scans (direct via Docker) ────────────────────────────
+      # Using `docker run` instead of the action wrapper gives full control
+      # over Trivy flags, visible logs, and explicit --ignorefile support.
+      # The aquasecurity/trivy-action wrapper was abandoned due to opaque
+      # outcome reporting and untestable log behavior.
 
       - name: Trivy vulnerability scan (backend image)
         id: trivy-backend
-        continue-on-error: true
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          scan-type: 'image'
-          image-ref: 'cgd-backend:ci-${{ github.sha }}'
-          format: 'sarif'
-          output: 'trivy-backend-results.sarif'
-          severity: 'CRITICAL'
-          exit-code: '1'
-          trivyignores: '.trivyignore'
+        run: |
+          mkdir -p trivy-output
+          # Run Trivy with exit-code 1 (exits 1 if CRITICAL found).
+          # &&/|| pattern sets GITHUB_ENV based on exit code.
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "${PWD}/.trivyignore":/.trivyignore:ro \
+            -v "${PWD}/trivy-output":/output \
+            aquasec/trivy:0.70.0 \
+            image \
+            --severity CRITICAL \
+            --ignorefile /.trivyignore \
+            --exit-code 1 \
+            --format sarif \
+            --output /output/trivy-backend-results.sarif \
+            'cgd-backend:ci-${{ github.sha }}' \
+          && { echo "BACKEND_HAS_VULNS=no" >> "$GITHUB_ENV"; echo "No CRITICAL vulnerabilities in backend image."; } \
+          || { echo "BACKEND_HAS_VULNS=yes" >> "$GITHUB_ENV"; echo "CRITICAL vulnerabilities found in backend image!"; }
 
       - name: Trivy vulnerability scan (frontend image)
         id: trivy-frontend
-        continue-on-error: true
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          scan-type: 'image'
-          image-ref: 'cgd-frontend:ci-${{ github.sha }}'
-          format: 'sarif'
-          output: 'trivy-frontend-results.sarif'
-          severity: 'CRITICAL'
-          exit-code: '1'
-          trivyignores: '.trivyignore'
+        run: |
+          mkdir -p trivy-output
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "${PWD}/.trivyignore":/.trivyignore:ro \
+            -v "${PWD}/trivy-output":/output \
+            aquasec/trivy:0.70.0 \
+            image \
+            --severity CRITICAL \
+            --ignorefile /.trivyignore \
+            --exit-code 1 \
+            --format sarif \
+            --output /output/trivy-frontend-results.sarif \
+            'cgd-frontend:ci-${{ github.sha }}' \
+          && { echo "FRONTEND_HAS_VULNS=no" >> "$GITHUB_ENV"; echo "No CRITICAL vulnerabilities in frontend image."; } \
+          || { echo "FRONTEND_HAS_VULNS=yes" >> "$GITHUB_ENV"; echo "CRITICAL vulnerabilities found in frontend image!"; }
 
       # ── Upload results to GitHub Security tab ────────────────────────
 
@@ -112,14 +130,14 @@ jobs:
         uses: github/codeql-action/upload-sarif@v3
         if: always()
         with:
-          sarif_file: 'trivy-backend-results.sarif'
+          sarif_file: 'trivy-output/trivy-backend-results.sarif'
           category: trivy-backend
 
       - name: Upload frontend SARIF results
         uses: github/codeql-action/upload-sarif@v3
         if: always()
         with:
-          sarif_file: 'trivy-frontend-results.sarif'
+          sarif_file: 'trivy-output/trivy-frontend-results.sarif'
           category: trivy-frontend
 
       # ── Gate: fail the workflow if any CRITICAL vulnerability found ──
@@ -127,12 +145,10 @@ jobs:
       - name: Fail if CRITICAL vulnerabilities found
         if: always()
         run: |
-          BACKEND_OUTCOME="${{ steps.trivy-backend.outcome }}"
-          FRONTEND_OUTCOME="${{ steps.trivy-frontend.outcome }}"
-          echo "Backend scan outcome: ${BACKEND_OUTCOME}"
-          echo "Frontend scan outcome: ${FRONTEND_OUTCOME}"
-          if [[ "${BACKEND_OUTCOME}" == "failure" || "${FRONTEND_OUTCOME}" == "failure" ]]; then
-            echo "ERROR: CRITICAL vulnerabilities found!"
+          echo "Backend has CRITICAL vulns: ${{ env.BACKEND_HAS_VULNS }}"
+          echo "Frontend has CRITICAL vulns: ${{ env.FRONTEND_HAS_VULNS }}"
+          if [[ "${{ env.BACKEND_HAS_VULNS }}" == "yes" || "${{ env.FRONTEND_HAS_VULNS }}" == "yes" ]]; then
+            echo "ERROR: CRITICAL vulnerabilities found in Docker images!"
             exit 1
           fi
           echo "OK: No CRITICAL vulnerabilities found."
