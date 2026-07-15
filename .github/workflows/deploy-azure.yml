@@ -133,13 +133,13 @@ jobs:
         run: npm ci --no-audit --no-fund
 
       - name: TypeCheck backend
-        run: npx -w backend tsc --noEmit
+        run: make typecheck-backend
 
       - name: TypeCheck frontend
-        run: npx -w frontend tsc --noEmit
+        run: make typecheck-frontend
 
       - name: Run unit tests (backend)
-        run: npm run test -w backend
+        run: make test-backend
 
       - name: Build backend
         run: npm run build -w backend
