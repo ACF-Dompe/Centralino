@@ -1,0 +1,13 @@
+# ── Trivy Ignore List ─────────────────────────────────────────────────────────
+# This file tells Trivy to suppress specific vulnerability IDs during scans.
+# Add entries only for confirmed false positives or accepted risks.
+# Format: <CVE-ID> [optional comment]
+# ──────────────────────────────────────────────────────────────────────────────
+
+# CVE-2026-31789 — libcrypto3 / libssl3 (OpenSSL)
+# Heap buffer overflow on 32-bit systems from large X.509 certificate.
+# NOT exploitable on 64-bit x86_64 (Azure Container Apps runs on amd64).
+# Present in nginx:1.28-alpine base image (libcrypto3 3.5.5-r0).
+# Fixed in: libcrypto3/libssl3 3.5.6-r0.
+# Expected until the nginx:1.28-alpine image is rebuilt with the fix.
+CVE-2026-31789
