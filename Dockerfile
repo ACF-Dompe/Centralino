@@ -11,7 +11,7 @@
 # =============================================================================
 
 # ---------- Stage 1: build ----------
-FROM node:20-alpine AS build
+FROM node:22-alpine AS build
 
 WORKDIR /app
 
@@ -30,7 +30,7 @@ COPY backend ./backend
 RUN npm run build -w backend
 
 # ---------- Stage 2: runtime ----------
-FROM node:20-alpine AS runtime
+FROM node:22-alpine AS runtime
 
 # Upgrade system packages to latest available versions
 RUN apk upgrade --no-cache
