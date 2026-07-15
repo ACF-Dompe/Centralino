@@ -268,8 +268,9 @@ describe('connectWs', () => {
   it('uses wss:// URL when page is served over HTTPS', () => {
     // Temporarily change window.location.protocol
     const originalLocation = window.location;
-    // @ts-expect-error: we're reassigning a read-only property for the test
+    // @ts-expect-error: reassigning readonly Location for testing
     delete window.location;
+    // @ts-expect-error: spreading Location into a plain object loses the Location type
     window.location = { ...originalLocation, protocol: 'https:' };
 
     try {
@@ -277,6 +278,7 @@ describe('connectWs', () => {
       expect(currentMockWs!.url).toMatch(/^wss:\/\//);
       client.disconnect();
     } finally {
+      // @ts-expect-error: restoring Location reference
       window.location = originalLocation;
     }
   });
