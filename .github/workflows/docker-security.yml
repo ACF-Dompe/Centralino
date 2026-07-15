@@ -35,9 +35,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Debug - verify .trivyignore
-        run: ls -la .trivyignore && echo '---' && head -5 .trivyignore
-
       - name: Set up Node.js 22
         uses: actions/setup-node@v4
         with:
@@ -65,8 +62,9 @@ jobs:
           file: Dockerfile
           load: true
           tags: cgd-backend:ci-${{ github.sha }}
-          no-cache: true
           pull: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Build frontend Docker image
         uses: docker/build-push-action@v6
@@ -75,8 +73,9 @@ jobs:
           file: Dockerfile.frontend
           load: true
           tags: cgd-frontend:ci-${{ github.sha }}
-          no-cache: true
           pull: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       # ── Trivy scans (direct via Docker) ────────────────────────────
       # Using `docker run` instead of the action wrapper gives full control
