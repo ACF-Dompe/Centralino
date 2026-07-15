@@ -1,0 +1,57 @@
+# =============================================================================
+# CI — TypeCheck + Unit Tests
+# =============================================================================
+# Fast feedback workflow that runs on every push to main/develop and on all
+# pull requests. Performs TypeScript typechecking and Vitest unit tests for
+# both backend and frontend.
+#
+# This workflow intentionally excludes:
+#   - E2E tests (handled by e2e-postgres.yml and e2e-sso.yml)
+#   - Build/scan/deploy steps (handled by deploy-azure.yml)
+#   - Infrastructure provisioning (handled by provision-infra.yml)
+# =============================================================================
+
+name: CI — TypeCheck & Unit Tests
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typecheck-and-test:
+    name: 'tsc + tests'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: TypeCheck backend
+        working-directory: backend
+        run: npx tsc --noEmit
+
+      - name: TypeCheck frontend
+        working-directory: frontend
+        run: npx tsc --noEmit
+
+      - name: Unit tests (backend)
+        run: npm run test -w backend
+
+      - name: Unit tests (frontend)
+        run: npm run test -w frontend
