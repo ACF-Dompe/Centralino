@@ -79,9 +79,7 @@ jobs:
 
       # ── Trivy scans (direct via Docker) ────────────────────────────
       # Using `docker run` instead of the action wrapper gives full control
-      # over Trivy flags, visible logs, and explicit --ignorefile support.
-      # The aquasecurity/trivy-action wrapper was abandoned due to opaque
-      # outcome reporting and untestable log behavior.
+      # over Trivy flags, visible logs, and reliable gating via env vars.
 
       - name: Trivy vulnerability scan (backend image)
         id: trivy-backend
@@ -91,12 +89,10 @@ jobs:
           # &&/|| pattern sets GITHUB_ENV based on exit code.
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
-            -v "${PWD}/.trivyignore":/.trivyignore:ro \
             -v "${PWD}/trivy-output":/output \
             aquasec/trivy:0.70.0 \
             image \
             --severity CRITICAL \
-            --ignorefile /.trivyignore \
             --exit-code 1 \
             --format sarif \
             --output /output/trivy-backend-results.sarif \
@@ -110,12 +106,10 @@ jobs:
           mkdir -p trivy-output
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
-            -v "${PWD}/.trivyignore":/.trivyignore:ro \
             -v "${PWD}/trivy-output":/output \
             aquasec/trivy:0.70.0 \
             image \
             --severity CRITICAL \
-            --ignorefile /.trivyignore \
             --exit-code 1 \
             --format sarif \
             --output /output/trivy-frontend-results.sarif \

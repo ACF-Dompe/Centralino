@@ -51,7 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Build stage: `node:20-alpine` → `node:22-alpine` 
   - Runtime stage: `nginx:1.27-alpine` → `nginx:1.28-alpine` (nginx 1.28.3) 
   - Added explicit `RUN apk add --upgrade libcrypto3 libssl3` merged with `apk upgrade --no-cache` — fixes CVE-2026-31789 (OpenSSL heap buffer overflow, 32-bit only) at source.
-- **`.trivyignore`** — New file: suppresses CVE-2026-31789 as safety net (false positive on 64-bit).
+- **`.trivyignore`** — Added (then removed: CVE-2026-31789 now fixed at source via `apk add --upgrade`). Safety net before the nginx base image shipped the fix.
 - **All CI workflow files**: `actions/setup-node` `node-version` from 20 → 22 (consistent with Docker images).
 
 #### Security — Docker Security Workflow
