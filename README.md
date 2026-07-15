@@ -4,6 +4,7 @@
 [![E2E Postgres](https://github.com/ACF-Dompe/Centralino/actions/workflows/e2e-postgres.yml/badge.svg)](https://github.com/ACF-Dompe/Centralino/actions/workflows/e2e-postgres.yml)
 [![E2E SSO](https://github.com/ACF-Dompe/Centralino/actions/workflows/e2e-sso.yml/badge.svg)](https://github.com/ACF-Dompe/Centralino/actions/workflows/e2e-sso.yml)
 [![Deploy to ACA](https://github.com/ACF-Dompe/Centralino/actions/workflows/deploy-azure.yml/badge.svg)](https://github.com/ACF-Dompe/Centralino/actions/workflows/deploy-azure.yml)
+[![Docker Security — Trivy Scan](https://github.com/ACF-Dompe/Centralino/actions/workflows/docker-security.yml/badge.svg)](https://github.com/ACF-Dompe/Centralino/actions/workflows/docker-security.yml)
 [![Security — 0 critical · 0 high · 0 moderate · 1 low](https://img.shields.io/badge/Security-0%20critical%20%7C%200%20high%20%7C%200%20moderate%20%7C%201%20low-brightgreen?logo=npm)](https://github.com/ACF-Dompe/Centralino/security/dependabot)
 
 A full-stack operator console for administering a **Cisco Catalyst 9800 WLC**:
