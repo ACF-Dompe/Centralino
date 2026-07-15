@@ -71,6 +71,7 @@ jobs:
           # Start backend
           DATABASE_URL=postgres://postgres:password@localhost:5432/guest_desk \
           NODE_ENV=development PORT=3001 LOG_LEVEL=silent \
+          DB_SSL_ENABLED=false \
           node backend/dist/index.js &
           echo "Backend PID: $!"
 

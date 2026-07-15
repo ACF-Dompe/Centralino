@@ -134,6 +134,10 @@ export const config = {
     skipMigrations: readString('SKIP_MIGRATIONS', 'false').toLowerCase() === 'true',
     /** Enable seed data at startup. Default: only in non-production. */
     seedEnabled: readString('SEED_ENABLED', process.env['NODE_ENV'] !== 'production' ? 'true' : 'false').toLowerCase() === 'true',
+    /** Enable TLS/SSL for database connections. Required by ACA (Azure) but
+     *  not supported by bare PostgreSQL Docker containers (e2e CI).
+     *  Default: true in production, false in development. */
+    sslEnabled: readString('DB_SSL_ENABLED', process.env['NODE_ENV'] === 'production' ? 'true' : 'false').toLowerCase() === 'true',
   },
 
   // Azure-specific settings
