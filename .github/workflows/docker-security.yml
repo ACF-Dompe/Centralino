@@ -38,7 +38,7 @@ jobs:
       - name: Debug - verify .trivyignore
         run: ls -la .trivyignore && echo '---' && head -5 .trivyignore
 
-      - name: Set up Node.js 20
+      - name: Set up Node.js 22
         uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -125,5 +125,14 @@ jobs:
       # ── Gate: fail the workflow if any CRITICAL vulnerability found ──
 
       - name: Fail if CRITICAL vulnerabilities found
-        if: steps.trivy-backend.outcome == 'failure' || steps.trivy-frontend.outcome == 'failure'
-        run: exit 1
+        if: always()
+        run: |
+          BACKEND_OUTCOME="${{ steps.trivy-backend.outcome }}"
+          FRONTEND_OUTCOME="${{ steps.trivy-frontend.outcome }}"
+          echo "Backend scan outcome: ${BACKEND_OUTCOME}"
+          echo "Frontend scan outcome: ${FRONTEND_OUTCOME}"
+          if [[ "${BACKEND_OUTCOME}" == "failure" || "${FRONTEND_OUTCOME}" == "failure" ]]; then
+            echo "ERROR: CRITICAL vulnerabilities found!"
+            exit 1
+          fi
+          echo "OK: No CRITICAL vulnerabilities found."
