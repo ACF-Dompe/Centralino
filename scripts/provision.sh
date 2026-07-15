@@ -14,7 +14,7 @@
 # Usage:
 #   ./scripts/provision.sh <environment> [--dry-run]
 #
-#   <environment>: dev | stg | prd
+#   <environment>: dev | stg | prod
 #   --dry-run / -n: Print all az commands without executing them
 #
 # Prerequisites:
@@ -41,7 +41,7 @@
 #
 # Examples:
 #   ./scripts/provision.sh dev             # Provision dev environment
-#   ./scripts/provision.sh prd              # Provision production environment
+#   ./scripts/provision.sh prod             # Provision production environment
 #   ./scripts/provision.sh stg --dry-run    # Preview commands for staging
 #
 # =============================================================================
@@ -85,7 +85,7 @@ done
 
 ENV="${POSITIONAL[0]:-}"
 if [[ -z "$ENV" ]]; then
-  err "Missing environment argument. Usage: $0 <dev|stg|prd> [--dry-run]"
+  err "Missing environment argument. Usage: $0 <dev|stg|prod> [--dry-run]"
   exit 1
 fi
 

@@ -187,7 +187,7 @@ setup_federated_credentials() {
   #   ref:refs/heads/staging   → push to staging (stg deployments)
   #   environment:dev          → workflow_dispatch targeting dev
   #   environment:stg          → workflow_dispatch targeting stg
-  #   environment:prd          → workflow_dispatch targeting prd
+  #   environment:prod         → workflow_dispatch targeting prod
   local subjects=(
     "repo:${repo}:ref:refs/heads/main"
     "repo:${repo}:ref:refs/heads/staging"
