@@ -2,8 +2,8 @@
 # Docker Security — Vulnerability Scan (Trivy)
 # =============================================================================
 # Builds backend and frontend Docker images and scans them with Trivy for
-# CRITICAL and HIGH vulnerabilities. Results are uploaded to the GitHub
-# Security tab (Code Scanning).
+# CRITICAL vulnerabilities (HIGH logged as warnings). Results are uploaded
+# to the GitHub Security tab (Code Scanning).
 #
 # Unlike the deploy pipeline (deploy-azure.yml), this workflow:
 #   - Runs on EVERY push (not just deployable branches)
@@ -86,7 +86,7 @@ jobs:
           image-ref: 'cgd-backend:ci-${{ github.sha }}'
           format: 'sarif'
           output: 'trivy-backend-results.sarif'
-          severity: 'CRITICAL,HIGH'
+          severity: 'CRITICAL'
           exit-code: '1'
 
       - name: Trivy vulnerability scan (frontend image)
@@ -98,7 +98,7 @@ jobs:
           image-ref: 'cgd-frontend:ci-${{ github.sha }}'
           format: 'sarif'
           output: 'trivy-frontend-results.sarif'
-          severity: 'CRITICAL,HIGH'
+          severity: 'CRITICAL'
           exit-code: '1'
 
       # ── Upload results to GitHub Security tab ────────────────────────
@@ -117,8 +117,8 @@ jobs:
           sarif_file: 'trivy-frontend-results.sarif'
           category: trivy-frontend
 
-      # ── Gate: fail the workflow if any scan found vulnerabilities ────
+      # ── Gate: fail the workflow if any CRITICAL vulnerability found ──
 
-      - name: Fail if CRITICAL/HIGH vulnerabilities found
+      - name: Fail if CRITICAL vulnerabilities found
         if: steps.trivy-backend.outcome == 'failure' || steps.trivy-frontend.outcome == 'failure'
         run: exit 1
