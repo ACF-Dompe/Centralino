@@ -9,7 +9,7 @@
 #   2. Database Bootstrap + Migration Job (idempotent via ACA job)
 #   3. Database Migration (idempotent)
 #   4. Deploy to ACA (container app update)
-#   5. Post-deploy Verify (health check + App Gateway pool update)
+#   5. Post-deploy Verify (health checks only)
 #
 # Architecture:
 #   - ACR with immutable tags (<git-sha>) + mutable aliases (:dev, :stg, :prod)
@@ -169,7 +169,7 @@ jobs:
           scan-ref: '.'
           format: 'sarif'
           output: 'trivy-results.sarif'
-          severity: 'CRITICAL,HIGH'
+          severity: 'CRITICAL'
           exit-code: '1'
 
       - name: Upload Trivy results to GitHub Security
@@ -220,7 +220,8 @@ jobs:
           image-ref: '${{ env.BACKEND_ACR_IMAGE }}'
           format: 'sarif'
           output: 'trivy-backend-results.sarif'
-          severity: 'CRITICAL,HIGH'
+          severity: 'CRITICAL'
+          exit-code: '1'
 
       - name: Trivy vulnerability scan (frontend image)
         uses: aquasecurity/trivy-action@master
@@ -229,7 +230,8 @@ jobs:
           image-ref: '${{ env.FRONTEND_ACR_IMAGE }}'
           format: 'sarif'
           output: 'trivy-frontend-results.sarif'
-          severity: 'CRITICAL,HIGH'
+          severity: 'CRITICAL'
+          exit-code: '1'
 
       - name: Upload Trivy image results
         uses: github/codeql-action/upload-sarif@v3
@@ -290,8 +292,8 @@ jobs:
             --query "fullyQualifiedDomainName" --output tsv 2>/dev/null || echo "")
 
           if [ -z "$POSTGRES_HOST" ]; then
-            echo "PostgreSQL server not found — skipping bootstrap."
-            exit 0
+            echo "PostgreSQL server not found — bootstrap failed."
+            exit 1
           fi
 
           PGUSER="${{ secrets.POSTGRES_ADMIN_USER }}"
@@ -452,8 +454,10 @@ jobs:
           done
 
   # ---------------------------------------------------------------------------
-  # Stage 5: Post-deploy Verification + App Gateway pool update
+  # Stage 5: Post-deploy Verification (health checks only)
   # ---------------------------------------------------------------------------
+  # Note: App Gateway backend pool updates are managed by the platform
+  # infrastructure team — the application pipeline must not modify them.
   post-deploy-verify:
     name: '5/5 Post-deploy Verify'
     needs: [deploy]
@@ -497,61 +501,3 @@ jobs:
             echo "Frontend ready: https://${FRONTEND_FQDN}/readyz"
             curl -fsS -m 10 -k "https://${FRONTEND_FQDN}/readyz" && echo " ✅ FRONTEND READY" || echo " ❌ FRONTEND READINESS FAILED"
           fi
-
-      - name: Update shared App Gateway backend pools
-        run: |
-          SHARED_RG="rg-cgd-shared"
-          GW_NAME="agw-cgd-shared"
-          SUFFIX="${{ env.ENV_SUFFIX }}"
-
-          FRONTEND_FQDN=$(az containerapp show \
-            --name "ca-cgd-frontend-${SUFFIX}" \
-            --resource-group "rg-cgd-${{ env.ENV_SUFFIX }}" \
-            --query "properties.configuration.ingress.fqdn" \
-            --output tsv 2>/dev/null || echo "")
-
-          BACKEND_FQDN=$(az containerapp show \
-            --name "ca-cgd-backend-${SUFFIX}" \
-            --resource-group "rg-cgd-${{ env.ENV_SUFFIX }}" \
-            --query "properties.configuration.ingress.fqdn" \
-            --output tsv 2>/dev/null || echo "")
-
-          if [ -z "$FRONTEND_FQDN" ] || [ -z "$BACKEND_FQDN" ]; then
-            echo "ACA FQDNs not found — skipping backend pool update."
-            exit 0
-          fi
-
-          echo "Updating App Gateway backend pools for ${SUFFIX}..."
-          echo "  Frontend pool → ${FRONTEND_FQDN}"
-          echo "  Backend pool  → ${BACKEND_FQDN}"
-
-          az network application-gateway address-pool update \
-            --resource-group "${SHARED_RG}" \
-            --gateway-name "${GW_NAME}" \
-            --name "frontend-pool-${SUFFIX}" \
-            --servers "${FRONTEND_FQDN}" \
-            --output none 2>/dev/null || echo "  Frontend pool update skipped"
-
-          az network application-gateway address-pool update \
-            --resource-group "${SHARED_RG}" \
-            --gateway-name "${GW_NAME}" \
-            --name "backend-pool-${SUFFIX}" \
-            --servers "${BACKEND_FQDN}" \
-            --output none 2>/dev/null || echo "  Backend pool update skipped"
-
-          # Update health probes
-          az network application-gateway probe update \
-            --resource-group "${SHARED_RG}" \
-            --gateway-name "${GW_NAME}" \
-            --name "frontend-probe-${SUFFIX}" \
-            --host "${FRONTEND_FQDN}" \
-            --output none 2>/dev/null || echo "  Frontend probe update skipped"
-
-          az network application-gateway probe update \
-            --resource-group "${SHARED_RG}" \
-            --gateway-name "${GW_NAME}" \
-            --name "backend-probe-${SUFFIX}" \
-            --host "${BACKEND_FQDN}" \
-            --output none 2>/dev/null || echo "  Backend probe update skipped"
-
-          echo "App Gateway backend pools updated for ${SUFFIX}."

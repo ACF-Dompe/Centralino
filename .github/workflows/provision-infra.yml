@@ -29,7 +29,7 @@ on:
         options:
           - dev
           - stg
-          - prd
+          - prod
       acr_name:
         description: 'Azure Container Registry name (e.g. crcgddev)'
         required: true
