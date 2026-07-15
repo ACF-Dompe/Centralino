@@ -43,15 +43,13 @@ jobs:
         run: npm ci --no-audit --no-fund
 
       - name: TypeCheck backend
-        working-directory: backend
-        run: npx tsc --noEmit
+        run: make typecheck-backend
 
       - name: TypeCheck frontend
-        working-directory: frontend
-        run: npx tsc --noEmit
+        run: make typecheck-frontend
 
       - name: Unit tests (backend)
-        run: npm run test -w backend
+        run: make test-backend
 
       - name: Unit tests (frontend)
-        run: npm run test -w frontend
+        run: make test-frontend
