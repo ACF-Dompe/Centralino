@@ -1,0 +1,102 @@
+# =============================================================================
+# Docker Compose — Local Development & Testing
+# =============================================================================
+# Spins up the full stack (PostgreSQL + backend + frontend) using the same
+# Docker images built for production, including the `apk upgrade --no-cache`
+# step added to both Dockerfiles.
+#
+# Quick start:
+#   cp .env.example .env        # edit DATABASE_URL for docker-compose
+#   docker compose up --build   # builds images and starts all services
+#   open http://localhost:8080
+#
+# To run migrations on startup, ensure SKIP_MIGRATIONS is NOT set to true
+# (the backend runs migrations automatically unless SKIP_MIGRATIONS=true).
+# =============================================================================
+
+services:
+
+  # ── PostgreSQL ──────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    container_name: centralino-postgres
+    restart: unless-stopped
+    ports:
+      - '5432:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-localdevpass}
+      POSTGRES_DB: guest_desk
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d guest_desk']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ── Backend (Express API) ──────────────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: centralino-backend
+    restart: unless-stopped
+    ports:
+      - '3000:3000'
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: '3000'
+      LOG_LEVEL: debug
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:-localdevpass}@postgres:5432/guest_desk
+      WLC_DEFAULT_HOST: ${WLC_DEFAULT_HOST:-172.18.106.100}
+      WLC_DEFAULT_PORT: ${WLC_DEFAULT_PORT:-443}
+      WLC_DEFAULT_SSH_PORT: ${WLC_DEFAULT_SSH_PORT:-22}
+      WLC_DEFAULT_USERNAME: ${WLC_DEFAULT_USERNAME:-admin_guest}
+      WLC_DEFAULT_SSID: ${WLC_DEFAULT_SSID:-Dompe Guest}
+      WLC_HTTP_TIMEOUT_MS: '10000'
+      WLC_SSH_TIMEOUT_MS: '10000'
+      # SSO is disabled by default in local dev
+      # SAML_ENTRY_POINT: ''
+      # Session secret — use a fixed value for local dev
+      SESSION_SECRET: local-dev-session-secret-change-in-production
+      # Run migrations on startup (default behaviour when SKIP_MIGRATIONS is unset)
+      # SKIP_MIGRATIONS: 'false'
+      # SEED_ENABLED: 'true'
+    healthcheck:
+      test: ['CMD', 'node', '-e', "require('http').get('http://127.0.0.1:3000/api/healthz', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # ── Frontend (nginx SPA) ─────────────────────────────────────────────────
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: centralino-frontend
+    restart: unless-stopped
+    ports:
+      - '8080:3000'
+    depends_on:
+      backend:
+        condition: service_healthy
+    # Override the default nginx config with one that proxies /api/ to the backend.
+    # The production nginx config returns 404 for /api/ (handled by AGW).
+    # For local docker-compose, we need the proxy to reach the backend container.
+    volumes:
+      - ./docker/nginx.local.conf:/etc/nginx/conf.d/default.conf:ro
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3000/']
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  pgdata:
