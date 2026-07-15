@@ -26,7 +26,7 @@ vi.mock('@azure/identity', () => ({
   ClientSecretCredential: vi.fn(),
 }));
 
-vi.mock('@microsoft/microsoft-graph-client/authProviders/azureTokenCredentials', () => ({
+vi.mock('@microsoft/microsoft-graph-client/authProviders/azureTokenCredentials/index.js', () => ({
   TokenCredentialAuthenticationProvider: vi.fn(),
 }));
 

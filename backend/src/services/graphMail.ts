@@ -20,7 +20,7 @@
  */
 import { ClientSecretCredential } from '@azure/identity';
 import { Client } from '@microsoft/microsoft-graph-client';
-import { TokenCredentialAuthenticationProvider } from '@microsoft/microsoft-graph-client/authProviders/azureTokenCredentials';
+import { TokenCredentialAuthenticationProvider } from '@microsoft/microsoft-graph-client/authProviders/azureTokenCredentials/index.js';
 import type { Message } from '@microsoft/microsoft-graph-types';
 import { log } from '../logger.js';
 import { config } from '../config.js';
