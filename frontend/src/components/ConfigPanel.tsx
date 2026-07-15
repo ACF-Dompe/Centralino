@@ -34,11 +34,15 @@ export default function ConfigPanel({ wlcConfig, onClose, onWlcConfigUpdate }: P
   }, []);
 
   async function saveAll() {
-    if (email) await api.updateEmailConfig(email);
-    const updated = await api.updateWlcConfig(wlc);
-    onWlcConfigUpdate(updated.data);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2200);
+    try {
+      if (email) await api.updateEmailConfig(email);
+      const updated = await api.updateWlcConfig(wlc);
+      onWlcConfigUpdate(updated.data);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2200);
+    } catch {
+      // API error — silently ignored; user sees no saved confirmation
+    }
   }
 
   function toggleAdmin() {

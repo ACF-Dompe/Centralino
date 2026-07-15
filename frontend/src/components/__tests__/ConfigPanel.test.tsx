@@ -240,4 +240,87 @@ describe('ConfigPanel', () => {
       expect(screen.getByText('Abilita Modalità Admin')).toBeInTheDocument();
     });
   });
+
+  // ── Save / API error flows ────────────────────────────────────────────
+
+  it('calls updateEmailConfig before updateWlcConfig when saving', async () => {
+    const user = userEvent.setup();
+    render(<ConfigPanel wlcConfig={wlcConfig} onClose={onClose} onWlcConfigUpdate={onWlcConfigUpdate} />);
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue('smtp.dompe.com')).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByText('Salva'));
+
+    await waitFor(() => {
+      // With email loaded, updateEmailConfig is called first, then updateWlcConfig
+      expect(mockUpdateEmailConfig).toHaveBeenCalledOnce();
+      expect(mockUpdateWlcConfig).toHaveBeenCalledOnce();
+      // updateEmailConfig should have been called before updateWlcConfig
+      const emailCallOrder = mockUpdateEmailConfig.mock.invocationCallOrder[0];
+      const wlcCallOrder = mockUpdateWlcConfig.mock.invocationCallOrder[0];
+      expect(emailCallOrder).toBeLessThan(wlcCallOrder);
+    });
+  });
+
+  it('shows saved confirmation only when both saves succeed', async () => {
+    const user = userEvent.setup();
+    render(<ConfigPanel wlcConfig={wlcConfig} onClose={onClose} onWlcConfigUpdate={onWlcConfigUpdate} />);
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue('smtp.dompe.com')).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByText('Salva'));
+
+    await waitFor(() => {
+      expect(screen.getByText('Configurazione salvata.')).toBeInTheDocument();
+    });
+    expect(onWlcConfigUpdate).toHaveBeenCalledOnce();
+  });
+
+  it('does NOT call updateWlcConfig or show saved when updateEmailConfig fails', async () => {
+    mockUpdateEmailConfig.mockRejectedValue(new Error('SMTP server unreachable'));
+    const user = userEvent.setup();
+    render(<ConfigPanel wlcConfig={wlcConfig} onClose={onClose} onWlcConfigUpdate={onWlcConfigUpdate} />);
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue('smtp.dompe.com')).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByText('Salva'));
+
+    await waitFor(() => {
+      expect(mockUpdateEmailConfig).toHaveBeenCalledOnce();
+    });
+    // updateWlcConfig should NOT be called because updateEmailConfig threw
+    expect(mockUpdateWlcConfig).not.toHaveBeenCalled();
+    expect(onWlcConfigUpdate).not.toHaveBeenCalled();
+    // saved confirmation should not appear
+    expect(screen.queryByText('Configurazione salvata.')).not.toBeInTheDocument();
+  });
+
+  it('does NOT call onWlcConfigUpdate or show saved when updateWlcConfig fails', async () => {
+    mockUpdateWlcConfig.mockRejectedValue(new Error('WLC unreachable'));
+    const user = userEvent.setup();
+    render(<ConfigPanel wlcConfig={wlcConfig} onClose={onClose} onWlcConfigUpdate={onWlcConfigUpdate} />);
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue('smtp.dompe.com')).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByText('Salva'));
+
+    await waitFor(() => {
+      expect(mockUpdateEmailConfig).toHaveBeenCalledOnce();
+    });
+
+    await waitFor(() => {
+      expect(mockUpdateWlcConfig).toHaveBeenCalledOnce();
+    });
+    // onWlcConfigUpdate and saved are NOT reached because the catch silently ignores
+    expect(onWlcConfigUpdate).not.toHaveBeenCalled();
+    expect(screen.queryByText('Configurazione salvata.')).not.toBeInTheDocument();
+  });
 });
