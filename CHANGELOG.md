@@ -11,6 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+#### Compliance — Review v3 fixes (ANALISI-CONFORMITA-centralino-v3.md)
+- **DB identity (Entra) — §3.1 (P0):** `DATABASE_URL` user is now the backend UAMI name (`uami-guestportal-backend-<env>`). The Stage 2 bootstrap no longer creates a password user (`POSTGRES_APP_PASSWORD` / `POSTGRES_ADMIN_PASSWORD` removed); it connects with an Entra access token as the admin, creates the DB, and provisions the Entra principal via `pgaadauth_create_principal` mapped to the UAMI, then grants it. Fixes the authentication mismatch that blocked migration/runtime.
+- **Resource naming — §3.3 (P1):** Renamed all Azure resources `cgd-*` → `guestportal-*` (RG, Key Vault, UAMI, ACA env, ACA apps, migration job, images, DB name) across `provision.sh`, `provision-infra.yml`, `deploy-azure.yml`, `docker-security.yml`, `setup-oidc.sh`, and docs. App hostname moved from `cgd-<env>.internal.dompe.com` to `guestportal-<env>.dompe.com` (corporate zone).
+- **ACA environment — §3.2 (P1):** `provision.sh` now creates the ACA environment **internal-only + VNet-integrated** (requires `ACA_INFRA_SUBNET_ID`); fails fast if the subnet is not provided.
+- **`docker-compose` regression — §3.4 (P1):** Removed `docker-compose.yml`, `docker/nginx.local.conf`, `docker/nginx.main.conf`, the `make compose-*` targets, and all related doc references (guidelines §11 forbid a local runtime stack in the repo).
+- **Post-deploy verify — §3.5 (P2):** Stage 5 no longer runs `curl -k` health checks against the private ACA FQDN from a public runner (which produced false greens); it now emits an informational note and documents moving the check to a self-hosted VNet runner.
+- **SSH host-key — §3.6 (P2):** `wlcSsh.execSsh` is now truly fail-closed in production — it refuses to connect when `WLC_SSH_HOST_KEY` is unset (`NODE_ENV=production`), matching the `config.ts` comment.
+- **DB TLS validation — §3.8 (P3):** The DB pool now validates the server certificate (`rejectUnauthorized: true`) unless `DB_SSL_REJECT_UNAUTHORIZED=false`; previously the certificate was never validated.
+- **CI alignment — §3.8 (P3):** CI/security/e2e workflows trigger on `main`/`staging` (was `main`/`develop`); all Node steps standardized on Node 22 (labels and `node-version`); `.clinerules` updated to Node 22 and `node:22-alpine`/`nginx:1.28-alpine`.
+
 #### Compliance — Pipeline & Workflows
 - **`.github/workflows/provision-infra.yml`** — Environment options `prd` -> `prod` (allineato con `provision.sh`)
 - **`.github/workflows/deploy-azure.yml`** (Stage 2) — DB bootstrap fail-fast: `exit 0` -> `exit 1` se PostgreSQL server non trovato

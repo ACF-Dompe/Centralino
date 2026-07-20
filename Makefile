@@ -8,12 +8,14 @@
 #   make install        # npm install (all workspaces)
 #   make dev            # Start local dev (backend + frontend) without Docker
 #   make test           # Run all unit tests (backend + frontend)
-#   make compose-up     # Start full stack with Docker Compose
-#   make compose-build  # Rebuild and start Docker images
+#   make docker-scan    # Build images locally and run a Trivy scan
+#
+# NOTE: Per platform guidelines (§11) this repo ships NO docker-compose stack
+# or local runtime emulators. Development happens on the Development
+# environment via the deploy pipeline; local dev uses `make dev`.
 # =============================================================================
 
 .PHONY: help install dev build typecheck test test-backend test-frontend
-.PHONY: compose-up compose-build compose-down compose-logs compose-ps compose-clean compose-restart
 .PHONY: docker-scan lint
 
 # ── Help ─────────────────────────────────────────────────────────────────────
@@ -53,43 +55,16 @@ lint: ## Run ESLint (if configured)
 	@echo 'No linter configured — run typecheck instead'
 	$(MAKE) typecheck
 
-# ── Docker Compose (full-stack containers) ─────────────────────────────────
-
-compose-up: ## Start full stack with Docker Compose (detached)
-	docker compose up -d
-	@echo 'Frontend: http://localhost:8080'
-	@echo 'Backend:  http://localhost:3000'
-
-compose-build: ## Rebuild images and start Docker Compose
-	docker compose up --build -d
-	@echo 'Frontend: http://localhost:8080'
-	@echo 'Backend:  http://localhost:3000'
-
-compose-down: ## Stop and remove containers (preserves data volume)
-	docker compose down
-
-compose-clean: ## Stop and remove everything (including PostgreSQL data)
-	docker compose down -v
-
-compose-logs: ## Tail logs from all services
-	docker compose logs -f
-
-compose-ps: ## Show container status
-	docker compose ps
-
-compose-restart: ## Rebuild and restart a specific service (usage: make compose-restart SVC=frontend)
-	docker compose up -d --build $(SVC)
-
 # ── Docker image scanning ──────────────────────────────────────────────────
 
 docker-scan: ## Build images locally and run Trivy vulnerability scan (requires Trivy CLI)
 	@echo '==> Building backend image...'
-	docker build -t cgd-backend:ci-scan -f Dockerfile .
+	docker build -t guestportal-backend:ci-scan -f Dockerfile .
 	@echo '==> Building frontend image...'
-	docker build -t cgd-frontend:ci-scan -f Dockerfile.frontend .
+	docker build -t guestportal-frontend:ci-scan -f Dockerfile.frontend .
 	@echo ''
 	@echo '==> Scanning backend image...'
-	trivy image --severity CRITICAL,HIGH cgd-backend:ci-scan
+	trivy image --severity CRITICAL,HIGH guestportal-backend:ci-scan
 	@echo ''
 	@echo '==> Scanning frontend image...'
-	trivy image --severity CRITICAL,HIGH cgd-frontend:ci-scan
+	trivy image --severity CRITICAL,HIGH guestportal-frontend:ci-scan

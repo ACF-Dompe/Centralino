@@ -15,9 +15,9 @@ name: Docker Security — Trivy Scan
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, staging]
   pull_request:
-    branches: [main, develop]
+    branches: [main, staging]
 
 concurrency:
   group: docker-security-${{ github.ref }}
@@ -61,7 +61,7 @@ jobs:
           context: .
           file: Dockerfile
           load: true
-          tags: cgd-backend:ci-${{ github.sha }}
+          tags: guestportal-backend:ci-${{ github.sha }}
           pull: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -72,7 +72,7 @@ jobs:
           context: .
           file: Dockerfile.frontend
           load: true
-          tags: cgd-frontend:ci-${{ github.sha }}
+          tags: guestportal-frontend:ci-${{ github.sha }}
           pull: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -96,7 +96,7 @@ jobs:
             --exit-code 1 \
             --format sarif \
             --output /output/trivy-backend-results.sarif \
-            'cgd-backend:ci-${{ github.sha }}' \
+            'guestportal-backend:ci-${{ github.sha }}' \
           && { echo "BACKEND_HAS_VULNS=no" >> "$GITHUB_ENV"; echo "No CRITICAL vulnerabilities in backend image."; } \
           || { echo "BACKEND_HAS_VULNS=yes" >> "$GITHUB_ENV"; echo "CRITICAL vulnerabilities found in backend image!"; }
 
@@ -113,7 +113,7 @@ jobs:
             --exit-code 1 \
             --format sarif \
             --output /output/trivy-frontend-results.sarif \
-            'cgd-frontend:ci-${{ github.sha }}' \
+            'guestportal-frontend:ci-${{ github.sha }}' \
           && { echo "FRONTEND_HAS_VULNS=no" >> "$GITHUB_ENV"; echo "No CRITICAL vulnerabilities in frontend image."; } \
           || { echo "FRONTEND_HAS_VULNS=yes" >> "$GITHUB_ENV"; echo "CRITICAL vulnerabilities found in frontend image!"; }
 

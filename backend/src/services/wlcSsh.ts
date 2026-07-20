@@ -38,6 +38,19 @@ const ERROR_PATTERNS = [
 
 export function execSsh(input: SshExecInput): Promise<SshExecResult> {
   return new Promise((resolve) => {
+    // Fail-closed in production: refuse to open an unverified SSH connection
+    // when no expected host key is configured. Without WLC_SSH_HOST_KEY the
+    // connection would be exposed to MITM, so we reject rather than connect.
+    if (config.nodeEnv === 'production' && !config.wlc.sshHostKey) {
+      log.error({ host: input.host }, 'Refusing unverified SSH connection: WLC_SSH_HOST_KEY not set in production');
+      resolve({
+        success: false,
+        output: '',
+        error: 'SSH host key verification is required in production (set WLC_SSH_HOST_KEY).',
+      });
+      return;
+    }
+
     const conn = new Client();
     const timeoutMs = input.timeoutMs ?? config.wlc.sshTimeoutMs;
     const connectCfg: ConnectConfig = {

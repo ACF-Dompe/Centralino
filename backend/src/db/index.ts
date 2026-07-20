@@ -96,7 +96,9 @@ async function createPool(): Promise<pg.Pool> {
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 10_000,
     // ACA requires SSL; bare Docker containers (e2e CI) do not.
-    ssl: config.db.sslEnabled ? { rejectUnauthorized: false } : false,
+    // When SSL is on, the server certificate is validated against the system
+    // trust store unless DB_SSL_REJECT_UNAUTHORIZED=false (local self-signed).
+    ssl: config.db.sslEnabled ? { rejectUnauthorized: config.db.sslRejectUnauthorized } : false,
   });
 
   // Log pool errors (e.g., idle connection dropped by PG)

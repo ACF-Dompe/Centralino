@@ -42,7 +42,7 @@ export const config = {
    * Internal ACA FQDN for the backend container app.
    * Used for server-side frontend-to-backend calls within the ACA environment.
    * Format: http://ca-<appname>-backend-<env>.<aca-environment-default-domain>
-   * Example: http://ca-cgd-backend-dev.icydune-01234567.westeurope.azurecontainerapps.io
+   * Example: http://ca-guestportal-backend-dev.icydune-01234567.westeurope.azurecontainerapps.io
    */
   backendBaseUrl: readString('BACKEND_BASE_URL', ''),
 
@@ -102,7 +102,7 @@ export const config = {
    * Session secret for signing cookies.
    * WARNING: The fallback value is INSECURE and must never be used in
    * production. In ACA, set SESSION_SECRET as a Key Vault reference:
-   *   @Microsoft.KeyVault(SecretUri=https://kv-cgd-{env}.vault.azure.net/secrets/SESSION_SECRET/)
+   *   @Microsoft.KeyVault(SecretUri=https://kv-guestportal-{env}.vault.azure.net/secrets/SESSION_SECRET/)
    * The fallback exists only to let the app boot in local dev without
    * requiring every developer to generate a random secret.
    */
@@ -138,6 +138,12 @@ export const config = {
      *  not supported by bare PostgreSQL Docker containers (e2e CI).
      *  Default: true in production, false in development. */
     sslEnabled: readString('DB_SSL_ENABLED', process.env['NODE_ENV'] === 'production' ? 'true' : 'false').toLowerCase() === 'true',
+    /** Validate the server's TLS certificate chain when SSL is enabled.
+     *  Azure PostgreSQL presents a certificate chained to a public CA that is
+     *  in Node's trust store, so this should stay true in production to prevent
+     *  MITM. Set DB_SSL_REJECT_UNAUTHORIZED=false only for a local server with
+     *  a self-signed certificate. Fail-closed: defaults to true. */
+    sslRejectUnauthorized: readString('DB_SSL_REJECT_UNAUTHORIZED', 'true').toLowerCase() === 'true',
   },
 
   // Azure-specific settings

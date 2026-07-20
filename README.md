@@ -51,7 +51,7 @@ with **SSO SAML 2.0** authentication via **Microsoft Entra ID**.
 ## Quick start (local dev)
 
 ```bash
-# Prerequisites: Node.js 20+, PostgreSQL running locally
+# Prerequisites: Node.js 22+, PostgreSQL running locally
 cp .env.example .env       # adjust DATABASE_URL for your local Postgres
 make install               # npm install across all workspaces
 npm run dev                # runs backend (3000) and frontend (5173) in parallel
@@ -64,40 +64,23 @@ The backend boots, runs migrations and seeds demo data automatically.
 > `SAML_CALLBACK_URL` and `SAML_CERT` to enable it. Without SAML, the app shows
 > the WLC login screen directly.
 
-## Docker Compose (local testing)
+## Containers
 
-Runs the full stack in containers using the **same Docker images built for production**
-(including `apk upgrade --no-cache` applied to both Dockerfiles).
+The backend and frontend ship as two independent images
+(`Dockerfile` → `guestportal-backend`, `Dockerfile.frontend` → `guestportal-frontend`),
+built with `apk upgrade --no-cache` in the runtime stages.
 
-```bash
-# Prerequisites: Docker Engine 24+
-docker compose up --build   # builds images and starts all services
-# open http://localhost:8080
-```
+| Service   | Port | Base image | Runs as |
+|-----------|------|------------|---------|
+| Backend   | `3000` | `node:22-alpine`     | `app` (non-root) |
+| Frontend  | `3000` | `nginx:1.28-alpine`  | `nginx` (non-root) |
 
-Three containers are started:
-
-| Service   | Port (host) | Base image | Runs as |
-|-----------|-------------|------------|---------|
-| PostgreSQL | `5432`      | `postgres:15-alpine` | `postgres` |
-| Backend   | `3000`      | `node:20-alpine`     | `app` (non-root) |
-| Frontend  | `8080`      | `nginx:1.27-alpine`  | `nginx` (non-root) |
-
-The frontend nginx proxies `/api/*` requests to the backend container
-(in production, this routing is handled by the Azure Application Gateway).
-WebSocket connections for real-time guest timer updates are also proxied.
-
-To stop and clean up (including the PostgreSQL data volume):
-
-```bash
-docker compose down -v
-```
-
-> 🧪 **SSO is disabled by default.** The `SAML_*` env vars are commented out in
-> `docker-compose.yml`. Uncomment them to test SSO against a real Entra ID tenant.
->
-> **Database migrations run automatically on startup.** Set `SKIP_MIGRATIONS: 'true'`
-> in the backend environment to skip them.
+> Per the Azure Container Platform guidelines (§11), this repository does **not**
+> ship a `docker compose` stack or local runtime emulators. Local development
+> uses `make dev` (backend :3000 + frontend :5173); container validation happens
+> on the **Development** environment via the deploy pipeline
+> (`.github/workflows/deploy-azure.yml`). In production, `/api/*` routing is
+> handled by the Azure Application Gateway, not by the frontend nginx.
 
 ## SSO SAML 2.0 via Microsoft Entra ID
 
@@ -127,7 +110,7 @@ authentication so development does not require an Azure AD tenant.
 2. Under **Platform configurations**, click **Add a platform** → **Web**
 3. Set **Redirect URI** to your public callback URL:
    ```
-   https://cgd-dev.internal.dompe.com/api/auth/callback
+   https://guestportal-dev.dompe.com/api/auth/callback
    ```
 4. Go to **Manage → Certificates & secrets** → **Federation metadata XML**
    — download the XML file. You will extract the values from it.
@@ -141,7 +124,7 @@ From the Federation Metadata XML, find:
 
 Alternatively, use a custom URI specific to this app instance, e.g.:
 ```
-https://cgd-dev.internal.dompe.com/saml
+https://guestportal-dev.dompe.com/saml
 ```
 This must match the `SAML_ISSUER` env var.
 
@@ -149,7 +132,7 @@ This must match the `SAML_ISSUER` env var.
 
 The Assertion Consumer Service URL where Entra ID POSTs the SAML response:
 ```
-https://cgd-dev.internal.dompe.com/api/auth/callback
+https://guestportal-dev.dompe.com/api/auth/callback
 ```
 This must match the `SAML_CALLBACK_URL` env var and the Redirect URI set in
 Azure AD app registration.
@@ -188,7 +171,7 @@ To configure:
 1. In the app registration, go to **Manage → Authentication**
 2. Under **Front-channel logout URL**, set:
    ```
-   https://cgd-dev.internal.dompe.com/api/auth/slo/callback
+   https://guestportal-dev.dompe.com/api/auth/slo/callback
    ```
 3. In ACA backend env vars, set:
    - `SAML_LOGOUT_URL` — the IdP's SingleLogoutService endpoint (found in the Federation Metadata XML)
@@ -223,7 +206,7 @@ is logged out of the app even if the IdP session persists.
 In ACA production, all secrets (`SAML_CERT`, `SAML_DECRYPTION_KEY`, `SESSION_SECRET`)
 should be stored as **Key Vault secrets** and referenced via:
 ```
-@Microsoft.KeyVault(SecretUri=https://kv-cgd-{env}.vault.azure.net/secrets/{name}/)
+@Microsoft.KeyVault(SecretUri=https://kv-guestportal-{env}.vault.azure.net/secrets/{name}/)
 ```
 
 ### 6. Verify the setup
@@ -351,7 +334,7 @@ or image — all sensitive values are injected as environment variables at runti
 │                    Azure Container Apps                  │
 │  ┌────────────────────┐      ┌──────────────────────┐   │
 │  │  Backend ACA       │      │  Frontend ACA        │   │
-│  │  ca-cgd-backend-*  │      │  ca-cgd-frontend-*   │   │
+│  │  ca-guestportal-backend-*  │      │  ca-guestportal-frontend-*   │   │
 │  │                    │      │                      │   │
 │  │  env SESSION_SECRET│      │  (no secrets —       │   │
 │  │    = @Microsoft.   │      │   static SPA/nginx)  │   │
@@ -364,7 +347,7 @@ or image — all sensitive values are injected as environment variables at runti
 │          ▼                                              │
 │  ┌────────────────────────────────┐                     │
 │  │  Azure Key Vault               │                     │
-│  │  kv-cgd-{env}                  │                     │
+│  │  kv-guestportal-{env}                  │                     │
 │  │                                │                     │
 │  │  Secrets:                      │                     │
 │  │    SESSION-SECRET              │                     │
@@ -382,11 +365,11 @@ or image — all sensitive values are injected as environment variables at runti
 
 ### Key Vault Secret Reference Format
 
-Each environment has its own Key Vault: `kv-cgd-{env}` (e.g. `kv-cgd-dev`).
+Each environment has its own Key Vault: `kv-guestportal-{env}` (e.g. `kv-guestportal-dev`).
 Secrets are referenced in ACA environment variables using the native format:
 
 ```
-@Microsoft.KeyVault(SecretUri=https://kv-cgd-{env}.vault.azure.net/secrets/{SECRET_NAME}/)
+@Microsoft.KeyVault(SecretUri=https://kv-guestportal-{env}.vault.azure.net/secrets/{SECRET_NAME}/)
 ```
 
 ### Required Secrets per Environment
@@ -416,13 +399,13 @@ az login
 
 # Set a plain-text secret
 az keyvault secret set \
-  --vault-name kv-cgd-dev \
+  --vault-name kv-guestportal-dev \
   --name SESSION-SECRET \
   --value "your-64-char-random-string"
 
 # Set a certificate/key file
 az keyvault secret set \
-  --vault-name kv-cgd-dev \
+  --vault-name kv-guestportal-dev \
   --name SAML-CERT \
   --file ./saml-cert.pem
 ```
@@ -434,14 +417,14 @@ role on the Key Vault:
 
 ```bash
 UAMI_PRINCIPAL_ID=$(az identity show \
-  --name uami-cgd-backend-dev \
-  --resource-group rg-cgd-dev \
+  --name uami-guestportal-backend-dev \
+  --resource-group rg-guestportal-dev \
   --query principalId --output tsv)
 
 az role assignment create \
   --assignee "$UAMI_PRINCIPAL_ID" \
   --role "Key Vault Secrets User" \
-  --scope /subscriptions/$(az keyvault show --name kv-cgd-dev --query id -o tsv)
+  --scope /subscriptions/$(az keyvault show --name kv-guestportal-dev --query id -o tsv)
 ```
 
 ### Internal Backend FQDN
@@ -450,7 +433,7 @@ The `BACKEND_BASE_URL` env var provides the internal ACA FQDN for server-side
 frontend-to-backend calls (e.g. SSR). It follows the convention:
 
 ```
-http://ca-cgd-backend-{env}.{aca-environment-default-domain}
+http://ca-guestportal-backend-{env}.{aca-environment-default-domain}
 ```
 
 This is set automatically by the CI/CD pipeline using the
@@ -468,11 +451,9 @@ repository (Settings → Secrets and variables → Actions):
 | `AZURE_CLIENT_ID`               | Da `./scripts/setup-oidc.sh <org>/centralino` (crea App Registration + federated credential) |
 | `AZURE_TENANT_ID`               | Azure AD tenant ID                                      |
 | `AZURE_SUBSCRIPTION_ID`         | Azure subscription ID                                   |
-| `DATABASE_URL`                  | PostgreSQL connection string (Entra ID auth, no password)|
+| `DATABASE_URL`                  | PostgreSQL connection string; Entra ID auth, no password. User MUST be the backend UAMI name (`uami-guestportal-backend-{env}`) |
 | `POSTGRES_SERVER_NAME`          | PostgreSQL Flexible Server name                         |
-| `POSTGRES_ADMIN_USER`           | PostgreSQL admin username                                |
-| `POSTGRES_ADMIN_PASSWORD`       | PostgreSQL admin password                                |
-| `POSTGRES_APP_PASSWORD`         | PostgreSQL application user password                    |
+| `POSTGRES_ADMIN_USER`           | Entra admin (group/user) used only to bootstrap the DB + Entra principal |
 | `SAML_ENTRY_POINT`              | Entra ID SAML SSO endpoint URL                          |
 | `SAML_ISSUER`                   | Application Entity ID                                   |
 | `SAML_CALLBACK_URL`             | ACS callback URL                                        |
@@ -484,8 +465,8 @@ repository (Settings → Secrets and variables → Actions):
 > Alternatively, via Azure CLI:
 > ```bash
 > az containerapp env show \
->   --name cae-cgd-dev \
->   --resource-group rg-cgd-dev \
+>   --name cae-guestportal-dev \
+>   --resource-group rg-guestportal-dev \
 >   --query "properties.defaultDomain" \
 >   --output tsv
 > ```

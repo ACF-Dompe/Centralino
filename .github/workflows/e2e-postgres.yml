@@ -4,9 +4,9 @@ name: E2E (Playwright)
 # Runs the Playwright suite against the PostgreSQL backend.
 on:
   push:
-    branches: [main, develop]
+    branches: [main, staging]
   pull_request:
-    branches: [main, develop]
+    branches: [main, staging]
   workflow_dispatch:
 
 concurrency:

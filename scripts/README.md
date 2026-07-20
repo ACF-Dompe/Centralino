@@ -79,14 +79,14 @@ Ogni ambiente (`dev`, `stg`, `prd`) crea le seguenti risorse Azure:
 
 | Categoria | Nome | Descrizione |
 |-----------|------|-------------|
-| **Resource Group** | `rg-cgd-{env}` | Contenitore di tutte le risorse dell'ambiente |
-| **Key Vault** | `kv-cgd-{env}` | Secret management con RBAC authorization |
-| **UAMI Backend** | `uami-cgd-backend-{env}` | Managed Identity per backend ACA |
-| **UAMI Frontend** | `uami-cgd-frontend-{env}` | Managed Identity per frontend ACA |
-| **ACA Environment** | `cae-cgd-{env}` | Container Apps Environment (workload profiles disabilitati) |
-| **ACA Backend** | `ca-cgd-backend-{env}` | Express API (1 CPU, 2Gi RAM, 1 replica, internal ingress) |
-| **ACA Frontend** | `ca-cgd-frontend-{env}` | nginx SPA (0.5 CPU, 1Gi RAM, 1 replica, internal ingress) |
-| **Migration Job** | `job-cgd-migrate-{env}` | ACA job manuale per DB migration |
+| **Resource Group** | `rg-guestportal-{env}` | Contenitore di tutte le risorse dell'ambiente |
+| **Key Vault** | `kv-guestportal-{env}` | Secret management con RBAC authorization |
+| **UAMI Backend** | `uami-guestportal-backend-{env}` | Managed Identity per backend ACA |
+| **UAMI Frontend** | `uami-guestportal-frontend-{env}` | Managed Identity per frontend ACA |
+| **ACA Environment** | `cae-guestportal-{env}` | Container Apps Environment (workload profiles disabilitati) |
+| **ACA Backend** | `ca-guestportal-backend-{env}` | Express API (1 CPU, 2Gi RAM, 1 replica, internal ingress) |
+| **ACA Frontend** | `ca-guestportal-frontend-{env}` | nginx SPA (0.5 CPU, 1Gi RAM, 1 replica, internal ingress) |
+| **Migration Job** | `job-guestportal-migrate-{env}` | ACA job manuale per DB migration |
 
 ### Backend ACA — Env Vars
 
@@ -108,7 +108,7 @@ Lo script configura automaticamente le seguenti variabili d'ambiente sul backend
 | `SAML_LOGOUT_URL` | KV reference | Opzionale (SLO) |
 | `SAML_LOGOUT_CALLBACK_URL` | KV reference | Opzionale (SLO) |
 | `APPLICATIONINSIGHTS_CONNECTION_STRING` | KV reference | Opzionale |
-| `BACKEND_BASE_URL` | auto | `http://ca-cgd-backend-{env}.{aca-domain}` |
+| `BACKEND_BASE_URL` | auto | `http://ca-guestportal-backend-{env}.{aca-domain}` |
 
 ## Key Vault Secrets
 
@@ -128,10 +128,10 @@ Lo script popola automaticamente i seguenti secret in Key Vault (solo se non esi
 
 ```bash
 # Certificato SAML
-az keyvault secret set --vault-name kv-cgd-dev --name SAML-CERT --file ./saml-cert.pem
+az keyvault secret set --vault-name kv-guestportal-dev --name SAML-CERT --file ./saml-cert.pem
 
 # WLC password
-az keyvault secret set --vault-name kv-cgd-dev --name WLC-DEFAULT-PASSWORD --value "<real-password>"
+az keyvault secret set --vault-name kv-guestportal-dev --name WLC-DEFAULT-PASSWORD --value "<real-password>"
 ```
 
 ## OIDC Setup per GitHub Actions
@@ -192,14 +192,12 @@ Dopo il provisioning, configurare i seguenti **GitHub Actions secrets** in:
 | `AZURE_CLIENT_ID` | Output di `setup-oidc.sh` (vedi [OIDC Setup](#oidc-setup-per-github-actions) sopra) |
 | `AZURE_TENANT_ID` | Tenant ID (dallo script) |
 | `AZURE_SUBSCRIPTION_ID` | Subscription ID (dallo script) |
-| `DATABASE_URL` | `postgres://cgd_app_{env}@{host}:5432/cgd_{env}` |
+| `DATABASE_URL` | `postgres://uami-guestportal-backend-{env}@{host}:5432/guestportal_{env}` (user = nome UAMI, no password) |
 | `POSTGRES_SERVER_NAME` | Nome PostgreSQL Flexible Server |
-| `POSTGRES_ADMIN_USER` | Admin username PostgreSQL |
-| `POSTGRES_ADMIN_PASSWORD` | Admin password PostgreSQL |
-| `POSTGRES_APP_PASSWORD` | App user password PostgreSQL |
+| `POSTGRES_ADMIN_USER` | Entra admin (usato solo per bootstrap DB + principal) |
 | `SAML_ENTRY_POINT` | `https://login.microsoftonline.com/{tid}/saml2` |
-| `SAML_ISSUER` | `https://cgd-{env}.internal.dompe.com/saml` |
-| `SAML_CALLBACK_URL` | `https://cgd-{env}.internal.dompe.com/api/auth/callback` |
+| `SAML_ISSUER` | `https://guestportal-{env}.dompe.com/saml` |
+| `SAML_CALLBACK_URL` | `https://guestportal-{env}.dompe.com/api/auth/callback` |
 | `MAIL_GRAPH_CLIENT_ID` | Client ID della App Registration Graph API (email) |
 | `MAIL_GRAPH_USER_ID` | User ID/UPN della mailbox che invia le email |
 

@@ -31,7 +31,7 @@ on:
           - stg
           - prod
       acr_name:
-        description: 'Azure Container Registry name (e.g. crcgddev)'
+        description: 'Azure Container Registry name (e.g. crguestportaldev)'
         required: true
         type: string
       dry_run:
@@ -41,7 +41,7 @@ on:
         type: boolean
 
 env:
-  AZURE_RESOURCE_GROUP: rg-cgd-${{ github.event.inputs.environment }}
+  AZURE_RESOURCE_GROUP: rg-guestportal-${{ github.event.inputs.environment }}
 
 jobs:
   provision:
@@ -92,10 +92,10 @@ jobs:
           ACA_DOMAIN=$(grep -oP 'domain: \K\S+' /tmp/provision-output.txt | head -1 || echo "<pending>")
 
           echo "aca_domain=${ACA_DOMAIN}" >> $GITHUB_OUTPUT
-          echo "resource_group=rg-cgd-${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
-          echo "key_vault=kv-cgd-${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
-          echo "aca_backend=ca-cgd-backend-${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
-          echo "aca_frontend=ca-cgd-frontend-${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
+          echo "resource_group=rg-guestportal-${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
+          echo "key_vault=kv-guestportal-${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
+          echo "aca_backend=ca-guestportal-backend-${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
+          echo "aca_frontend=ca-guestportal-frontend-${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
 
       - name: Summary
         run: |
@@ -105,10 +105,10 @@ jobs:
           echo "|----------|------|" >> $GITHUB_STEP_SUMMARY
           echo "| Resource Group | ${{ steps.provision.outputs.resource_group }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Key Vault | ${{ steps.provision.outputs.key_vault }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| UAMI Backend | uami-cgd-backend-${{ github.event.inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| UAMI Frontend | uami-cgd-frontend-${{ github.event.inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| ACA Environment | cae-cgd-${{ github.event.inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| UAMI Backend | uami-guestportal-backend-${{ github.event.inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| UAMI Frontend | uami-guestportal-frontend-${{ github.event.inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| ACA Environment | cae-guestportal-${{ github.event.inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
           echo "| ACA Backend | ${{ steps.provision.outputs.aca_backend }} |" >> $GITHUB_STEP_SUMMARY
           echo "| ACA Frontend | ${{ steps.provision.outputs.aca_frontend }} |" >> $GITHUB_STEP_SUMMARY
           echo "| ACA Default Domain | ${{ steps.provision.outputs.aca_domain }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Migration Job | job-cgd-migrate-${{ github.event.inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Migration Job | job-guestportal-migrate-${{ github.event.inputs.environment }} |" >> $GITHUB_STEP_SUMMARY

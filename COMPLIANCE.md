@@ -30,7 +30,7 @@ Tutti i **P0** (4/4) e **P1‑P2** (11/11) sono stati risolti nel codice. In que
 
 | # | Difetto | Stato | Dettaglio |
 |---|---|---|---|
-| **4** | Provisioning app‑owned (RG/KV/ACA env) | ❌ **APERTO** | `provision.sh` crea ancora `rg-cgd-*`, `kv-cgd-*`, `cae-cgd-*`. Serve coordinamento team infrastruttura per adottare risorse di piattaforma condivise. |
+| **4** | Provisioning app‑owned (RG/KV/ACA env) | 🟡 **PARZIALE** | Naming allineato a `guestportal` (`rg-guestportal-*`, `kv-guestportal-*`, `cae-guestportal-*`) e ambiente ACA ora **internal-only + VNet‑integrato** (richiede `ACA_INFRA_SUBNET_ID`). Resta il coordinamento infra per adottare RG/KV di piattaforma condivisi anziché crearli. |
 | **5.1** | Segreti WLC/SMTP esposti via GET API | ✅ **FIXED** | `GET /config/wlc` → `password: undefined` | `GET /config/email` → `password: undefined` | `GET /config/sms` → `apiKey: undefined` |
 | **5.2** | `targetPassword` in audit log `sync_logs` | ✅ **FIXED** | `const safePayload = { ...cfg, targetPassword: '***' }` prima del log. |
 | **5.3** | Default TLS insicuri (`rejectUnauthorized: false`) | ✅ **FIXED** | `WLC_TLS_REJECT_UNAUTHORIZED` default `true` in produzione, `false` in dev. `hostVerifier` SSH attivo solo se `WLC_SSH_HOST_KEY` è impostata. |

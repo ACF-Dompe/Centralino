@@ -21,7 +21,7 @@
 #
 # Examples:
 #   ./scripts/setup-oidc.sh my-org/centralino
-#   ./scripts/setup-oidc.sh my-org/centralino --app-name "CGD GitHub Actions"
+#   ./scripts/setup-oidc.sh my-org/centralino --app-name "Guest Portal GitHub Actions"
 #   ./scripts/setup-oidc.sh my-org/centralino --dry-run
 #
 # =============================================================================
@@ -42,7 +42,7 @@ err()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
 # ── Parse arguments ──────────────────────────────────────────────────────────
 DRY_RUN=false
-APP_NAME="CGD GitHub Actions OIDC"
+APP_NAME="Guest Portal GitHub Actions OIDC"
 GITHUB_REPO=""
 
 while [[ $# -gt 0 ]]; do
@@ -254,7 +254,7 @@ assign_key_vault_role() {
   local app_id="$1"
   local env_suffix="${2:-dev}"
 
-  local kv_name="kv-cgd-${env_suffix}"
+  local kv_name="kv-guestportal-${env_suffix}"
 
   # Check if Key Vault exists
   if az keyvault show --name "$kv_name" &>/dev/null 2>&1; then
@@ -354,7 +354,7 @@ print_output() {
 main() {
   echo ""
   echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
-  echo -e "${CYAN}  CGD — Azure OIDC Federated Credential Setup                 ${NC}"
+  echo -e "${CYAN}  Guest Portal — Azure OIDC Federated Credential Setup        ${NC}"
   echo -e "${CYAN}  GitHub repo: ${GITHUB_REPO}${NC}"
   echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
   echo ""

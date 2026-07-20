@@ -10,8 +10,8 @@
 - **Language:** TypeScript (strict mode) for backend and frontend.
 - **Package manager:** npm workspaces (`backend/`, `frontend/`).
 - **Module system:** ESM (`"type": "module"` in package.json).
-- **Node.js version:** 20 LTS.
-- **Makefile:** Use `make` targets for common tasks (`make test`, `make typecheck-backend`, `make compose-up`, etc.). Never use raw npx/npm commands when a Makefile target exists.
+- **Node.js version:** 22 LTS (matches the Dockerfiles and CI).
+- **Makefile:** Use `make` targets for common tasks (`make test`, `make typecheck-backend`, `make docker-scan`, etc.). Never use raw npx/npm commands when a Makefile target exists.
 - **Commands:** `make test` runs all 391 unit tests, `make typecheck` checks both workspaces, `make install` installs deps.
 
 ## Code Style
@@ -39,10 +39,10 @@
 ## Docker
 
 - **Dockerfiles:** Multi-stage builds, non-root users (`app` for backend, `nginx` for frontend).
-- **Base images:** `node:20-alpine` (backend), `nginx:1.27-alpine` (frontend).
+- **Base images:** `node:22-alpine` (backend), `nginx:1.28-alpine` (frontend).
 - **apk upgrade:** Always include `RUN apk upgrade --no-cache` in runtime stages.
 - **.dockerignore:** Keep exclusions up to date. Exclude `.git/`, `node_modules/`, `.github/`, `scripts/`, `.env*`, build artifacts.
-- **docker-compose:** Available at root for full-stack local testing. Uses custom nginx configs in `docker/` directory.
+- **No docker-compose / local runtime stack:** Per platform guidelines (§11) the repo ships no `docker compose` stack or emulators. Local dev uses `make dev`; container validation happens on the Development environment via the pipeline.
 - **Healthchecks:** Backend: `/api/healthz` (liveness) + `/api/readyz` (readiness). Frontend: nginx health endpoints.
 
 ## CI/CD
@@ -60,9 +60,9 @@
 
 ## Database
 
-- **PostgreSQL 15+** — via Azure Database for PostgreSQL Flexible Server (production), local instance (dev), or Docker (docker-compose).
+- **PostgreSQL 15+** — via Azure Database for PostgreSQL Flexible Server (production) or a local instance (dev). Production auth is Entra ID token-based (the DB login role equals the backend UAMI name); no password user is provisioned.
 - **Migrations:** Auto-run on startup unless `SKIP_MIGRATIONS=true`.
-- **SSL:** `DB_SSL_ENABLED` env var controls SSL (required in production with Azure, disabled for local Docker).
+- **SSL:** `DB_SSL_ENABLED` env var controls SSL (required in production with Azure; certificates are validated unless `DB_SSL_REJECT_UNAUTHORIZED=false`).
 - **Graph API email:** `MAIL_GRAPH_ENABLED` controls Microsoft Graph integration. Falls back to SMTP if disabled.
 
 ## Security

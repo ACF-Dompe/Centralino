@@ -100,20 +100,35 @@ fi
 
 # ── Configuration ───────────────────────────────────────────────────────────
 # Resource naming (matches conventions in .github/workflows/deploy-azure.yml)
-RG_NAME="rg-cgd-${ENV}"
+RG_NAME="rg-guestportal-${ENV}"
 LOCATION="westeurope"                          # Change as needed
-ACA_ENV_NAME="cae-cgd-${ENV}"
+ACA_ENV_NAME="cae-guestportal-${ENV}"
 ACR_NAME="${ACR_NAME:-}"                        # Set via prompt if empty, or from env var (e.g. GitHub Actions)
-KV_NAME="kv-cgd-${ENV}"
-UAMI_BACKEND="uami-cgd-backend-${ENV}"
-UAMI_FRONTEND="uami-cgd-frontend-${ENV}"
-ACA_BACKEND="ca-cgd-backend-${ENV}"
-ACA_FRONTEND="ca-cgd-frontend-${ENV}"
-ACA_MIGRATION_JOB="job-cgd-migrate-${ENV}"
+KV_NAME="kv-guestportal-${ENV}"
+UAMI_BACKEND="uami-guestportal-backend-${ENV}"
+UAMI_FRONTEND="uami-guestportal-frontend-${ENV}"
+ACA_BACKEND="ca-guestportal-backend-${ENV}"
+ACA_FRONTEND="ca-guestportal-frontend-${ENV}"
+ACA_MIGRATION_JOB="job-guestportal-migrate-${ENV}"
+
+# Application hostname (corporate DNS zone dompe.com — no ".internal." subdomain)
+APP_HOSTNAME="guestportal-${ENV}.dompe.com"
+
+# VNet integration for the ACA environment (Non-GxP spoke). When set, the
+# environment is created internal-only and joined to the platform subnet.
+# Provide the resource ID of the delegated infrastructure subnet, e.g.:
+#   /subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.Network/virtualNetworks/<vnet>/subnets/<subnet>
+ACA_INFRA_SUBNET_ID="${ACA_INFRA_SUBNET_ID:-}"
+
+# Database name and Entra login role.
+# Entra ID auth on Azure PostgreSQL requires the DB login to be the Entra
+# principal — here mapped to the backend UAMI name (no password user).
+DB_NAME="guestportal_${ENV}"
+DB_ENTRA_LOGIN="${UAMI_BACKEND}"
 
 # Docker images (update with your ACR name)
-BACKEND_IMAGE="${ACR_NAME}.azurecr.io/cgd-backend:latest"
-FRONTEND_IMAGE="${ACR_NAME}.azurecr.io/cgd-frontend:latest"
+BACKEND_IMAGE="${ACR_NAME}.azurecr.io/guestportal-backend:latest"
+FRONTEND_IMAGE="${ACR_NAME}.azurecr.io/guestportal-frontend:latest"
 
 # ACA resource constraints
 BACKEND_CPU="1.0"
@@ -157,9 +172,9 @@ check_prerequisites() {
 # ── Prompt for ACR name if not set ──────────────────────────────────────────
 prompt_acr() {
   if [[ -z "$ACR_NAME" ]]; then
-    read -rp "Enter ACR name (e.g. crcgddev): " ACR_NAME
-    BACKEND_IMAGE="${ACR_NAME}.azurecr.io/cgd-backend:latest"
-    FRONTEND_IMAGE="${ACR_NAME}.azurecr.io/cgd-frontend:latest"
+    read -rp "Enter ACR name (e.g. crguestportaldev): " ACR_NAME
+    BACKEND_IMAGE="${ACR_NAME}.azurecr.io/guestportal-backend:latest"
+    FRONTEND_IMAGE="${ACR_NAME}.azurecr.io/guestportal-frontend:latest"
   fi
 }
 
@@ -170,7 +185,7 @@ provision_resource_group() {
     ok "Resource group '$RG_NAME' already exists."
   else
     run group create --name "$RG_NAME" --location "$LOCATION" --tags \
-      application="cgd" \
+      application="guestportal" \
       environment="$ENV" \
       managed-by="provision-script" \
       --output none
@@ -269,13 +284,23 @@ provision_aca_environment() {
   if run containerapp env show --name "$ACA_ENV_NAME" --resource-group "$RG_NAME" &>/dev/null; then
     ok "ACA environment '$ACA_ENV_NAME' already exists."
   else
+    # Per platform guidelines (§1/§14) the environment must be internal-only
+    # (no public ingress) and joined to the Non-GxP spoke via VNet integration.
+    if [[ -z "$ACA_INFRA_SUBNET_ID" ]]; then
+      err "ACA_INFRA_SUBNET_ID is not set. The ACA environment must be VNet-integrated"
+      err "and internal-only. Provide the platform infrastructure subnet resource ID:"
+      err "  export ACA_INFRA_SUBNET_ID=/subscriptions/.../subnets/<subnet>"
+      exit 1
+    fi
     run containerapp env create \
       --name "$ACA_ENV_NAME" \
       --resource-group "$RG_NAME" \
       --location "$LOCATION" \
       --enable-workload-profiles false \
+      --infrastructure-subnet-resource-id "$ACA_INFRA_SUBNET_ID" \
+      --internal-only true \
       --output none
-    ok "ACA environment '$ACA_ENV_NAME' created."
+    ok "ACA environment '$ACA_ENV_NAME' created (internal-only, VNet-integrated)."
   fi
 
   # Capture the default domain for later use
@@ -307,11 +332,11 @@ provision_backend_aca() {
     PORT=3000
     LOG_LEVEL=info
     BACKEND_BASE_URL="http://${ACA_BACKEND}.${ACA_DEFAULT_DOMAIN}"
-    DATABASE_URL="postgres://cgd_app_${ENV}@<postgres-host>.postgres.database.azure.com:5432/cgd_${ENV}"
+    DATABASE_URL="postgres://${DB_ENTRA_LOGIN}@<postgres-host>.postgres.database.azure.com:5432/${DB_NAME}"
     SESSION_SECRET="@Microsoft.KeyVault(SecretUri=${kv_base}secrets/SESSION-SECRET/)"
     SAML_ENTRY_POINT="https://login.microsoftonline.com/<tenant-id>/saml2"
-    SAML_ISSUER="https://cgd-${ENV}.internal.dompe.com/saml"
-    SAML_CALLBACK_URL="https://cgd-${ENV}.internal.dompe.com/api/auth/callback"
+    SAML_ISSUER="https://${APP_HOSTNAME}/saml"
+    SAML_CALLBACK_URL="https://${APP_HOSTNAME}/api/auth/callback"
     SAML_CERT="@Microsoft.KeyVault(SecretUri=${kv_base}secrets/SAML-CERT/)"
     WLC_DEFAULT_PASSWORD="@Microsoft.KeyVault(SecretUri=${kv_base}secrets/WLC-DEFAULT-PASSWORD/)"
     SAML_DECRYPTION_KEY="@Microsoft.KeyVault(SecretUri=${kv_base}secrets/SAML-DECRYPTION-KEY/)"
@@ -461,14 +486,12 @@ print_github_secrets() {
   echo "  AZURE_CLIENT_ID                 = <set-your-OIDC-federated-credential-client-id>"
   echo "  AZURE_TENANT_ID                 = ${TENANT_ID}"
   echo "  AZURE_SUBSCRIPTION_ID           = ${SUBSCRIPTION_ID}"
-  echo "  DATABASE_URL                    = postgres://cgd_app_${ENV}@<postgres-host>.postgres.database.azure.com:5432/cgd_${ENV}"
+  echo "  DATABASE_URL                    = postgres://${DB_ENTRA_LOGIN}@<postgres-host>.postgres.database.azure.com:5432/${DB_NAME}"
   echo "  POSTGRES_SERVER_NAME            = <postgres-flexible-server-name>"
-  echo "  POSTGRES_ADMIN_USER             = <postgres-admin-user>"
-  echo "  POSTGRES_ADMIN_PASSWORD         = <postgres-admin-password>"
-  echo "  POSTGRES_APP_PASSWORD           = <postgres-app-password>"
+  echo "  POSTGRES_ADMIN_USER             = <entra-admin-user (for bootstrap)>"
   echo "  SAML_ENTRY_POINT                = https://login.microsoftonline.com/<tenant-id>/saml2"
-  echo "  SAML_ISSUER                     = https://cgd-${ENV}.internal.dompe.com/saml"
-  echo "  SAML_CALLBACK_URL               = https://cgd-${ENV}.internal.dompe.com/api/auth/callback"
+  echo "  SAML_ISSUER                     = https://${APP_HOSTNAME}/saml"
+  echo "  SAML_CALLBACK_URL               = https://${APP_HOSTNAME}/api/auth/callback"
   echo ""
   echo -e "${YELLOW}UAMI resource IDs (needed for containerapp create/update):${NC}"
   echo "  Backend:  ${UAMI_BACKEND_ID}"
@@ -480,8 +503,11 @@ print_github_secrets() {
   echo "  RBAC:      Assign 'Key Vault Secrets User' role to each UAMI"
   echo ""
   echo -e "${YELLOW}PostgreSQL connection (Entra ID auth):${NC}"
-  echo "  DATABASE_URL = postgres://cgd_app_${ENV}@<host>.postgres.database.azure.com:5432/cgd_${ENV}"
+  echo "  DATABASE_URL = postgres://${DB_ENTRA_LOGIN}@<host>.postgres.database.azure.com:5432/${DB_NAME}"
   echo "  (No password — Entra ID token is obtained at runtime via DefaultAzureCredential)"
+  echo "  NOTE: the DB login role MUST equal the backend UAMI name ('${DB_ENTRA_LOGIN}')."
+  echo "        Create the Entra principal on the server once (infra step), e.g.:"
+  echo "        SELECT * FROM pgaadauth_create_principal('${DB_ENTRA_LOGIN}', false, false);"
   echo ""
   echo -e "${YELLOW}Next steps:${NC}"
   echo "  1. Upload SAML certificate: az keyvault secret set --vault-name ${KV_NAME} --name SAML-CERT --file ./saml-cert.pem"

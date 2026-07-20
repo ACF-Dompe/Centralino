@@ -9,8 +9,10 @@ import { defineConfig, devices } from '@playwright/test';
  *   npm run test:e2e         # headless
  *   npm run test:e2e:ui      # interactive UI mode
  *
- * The container must be up before running the tests:
- *   cd .. && docker compose up -d
+ * The app must be running before the tests (the CI e2e workflow builds and
+ * starts the backend + frontend directly — see .github/workflows/e2e-*.yml).
+ * For local runs, start it with `make dev` or serve the built frontend, then
+ * point E2E_BASE_URL at it if it is not on http://localhost:3000.
  */
 export default defineConfig({
   testDir: './e2e',

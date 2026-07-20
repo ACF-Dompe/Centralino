@@ -17,13 +17,13 @@ name: E2E — SSO Login Screen
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, staging]
     paths:
       - 'frontend/src/**'
       - 'frontend/e2e/**'
       - '.github/workflows/e2e-sso.yml'
   pull_request:
-    branches: [main, develop]
+    branches: [main, staging]
     paths:
       - 'frontend/src/**'
       - 'frontend/e2e/**'
@@ -44,10 +44,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Node.js 20
+      - name: Set up Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
 
       - name: Install dependencies
