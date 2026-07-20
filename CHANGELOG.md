@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+#### Compliance — Review v4 fixes (consume-only model)
+- **Consume-only pipeline — §1 (P1):** The pipeline no longer creates ANY Azure resource. `deploy-azure.yml` dropped the DB-bootstrap stage (no `CREATE DATABASE`/user/grants), the `az containerapp job create`, and the `az acr repository update` immutability step. It now: build → push → **start the pre-provisioned migration job** → `az containerapp update --image` on existing apps. Pipeline is now 4 stages.
+- **Read-only preflight — §1 (P1):** `scripts/provision.sh` rewritten as a read-only preflight (verifies platform resources via `az ... show`, prints the env-var → Key Vault map; no `create`/`set`). `provision-infra.yml` converted to an "Azure Platform Preflight" workflow. `scripts/README.md` rewritten for the consume-only model.
+- **Parametrized platform names — §0 (P1):** All platform resource names are now GitHub secrets (`RG_NAME`, `KV_NAME`, `ACA_ENV_NAME`, `ACA_BACKEND_NAME`, `ACA_FRONTEND_NAME`, `MIGRATION_JOB_NAME`, `UAMI_BACKEND_NAME`, `UAMI_FRONTEND_NAME`); no real names hard-coded.
+- **DB identity — §2 (P1):** `DATABASE_URL` user is the backend UAMI name; the Entra role on the DB is documented as an infra prerequisite (not created by the app).
+- **Hostname — §3 (P2):** prod is `guestportal.dompe.com` (no suffix); `guestportal-stg.dompe.com` / `guestportal-dev.dompe.com` for non-prod.
+- **Internal naming — §5 (P3):** session cookie `cgd.sid` → `guestportal.sid` (backend + WS); localStorage `cgd:adminMode`/`cgd:locale` → `guestportal:*` (frontend + test).
+- **SMS kept hidden — §6.b:** neutralized the public `textbelt` default in `db/seed.ts` (`webhook_url` now empty); no server-side SMS send added.
+
 #### Compliance — Review v3 fixes (ANALISI-CONFORMITA-centralino-v3.md)
 - **DB identity (Entra) — §3.1 (P0):** `DATABASE_URL` user is now the backend UAMI name (`uami-guestportal-backend-<env>`). The Stage 2 bootstrap no longer creates a password user (`POSTGRES_APP_PASSWORD` / `POSTGRES_ADMIN_PASSWORD` removed); it connects with an Entra access token as the admin, creates the DB, and provisions the Entra principal via `pgaadauth_create_principal` mapped to the UAMI, then grants it. Fixes the authentication mismatch that blocked migration/runtime.
 - **Resource naming — §3.3 (P1):** Renamed all Azure resources `cgd-*` → `guestportal-*` (RG, Key Vault, UAMI, ACA env, ACA apps, migration job, images, DB name) across `provision.sh`, `provision-infra.yml`, `deploy-azure.yml`, `docker-security.yml`, `setup-oidc.sh`, and docs. App hostname moved from `cgd-<env>.internal.dompe.com` to `guestportal-<env>.dompe.com` (corporate zone).

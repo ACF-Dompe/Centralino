@@ -13,7 +13,7 @@ interface Props {
 
 type Section = 'email' | 'wlc';
 
-const ADMIN_MODE_KEY = 'cgd:adminMode';
+const ADMIN_MODE_KEY = 'guestportal:adminMode';
 
 export default function ConfigPanel({ wlcConfig, onClose, onWlcConfigUpdate }: Props) {
   // Evaluate each render so tests can stub VITE_ADMIN_PIN at runtime

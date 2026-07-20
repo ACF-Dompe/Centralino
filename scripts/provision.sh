@@ -1,49 +1,31 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Cisco Guest Desk — Azure Infrastructure Provisioning Script
+# Cisco Guest Desk (guestportal) — Platform Preflight / Verify (READ-ONLY)
 # =============================================================================
-# Idempotent provisioning of:
-#   - Azure Key Vault (per-environment secrets)
-#   - User-Assigned Managed Identities (backend + frontend)
-#   - Azure Container Apps Environment
-#   - Backend ACA container app (with Key Vault references)
-#   - Frontend ACA container app (nginx, static SPA)
-#   - ACA migration job
-#   - Key Vault secrets (initial population)
+# Operating model: CONSUME-ONLY.
+#
+# The platform (infrastructure team) pre-provisions every Azure resource:
+#   Resource Group, Key Vault, ACA environment, the two Container Apps, the
+#   UAMIs (backend/frontend), the PostgreSQL server + database + the Entra role
+#   mapped to the backend UAMI, the migration ACA job, the ACR and the
+#   Application Gateway.
+#
+# This script does NOT create anything. It only *verifies* that the expected
+# platform resources exist (via `az ... show`) and prints the configuration map
+# (env var → Key Vault reference) that the infrastructure team must apply.
+#
+# Resource names are PARAMETRIZED — pass the real names (provided by the infra
+# team) via environment variables; nothing is hard-coded.
 #
 # Usage:
-#   ./scripts/provision.sh <environment> [--dry-run]
-#
-#   <environment>: dev | stg | prod
-#   --dry-run / -n: Print all az commands without executing them
+#   RG_NAME=... KV_NAME=... ACA_ENV_NAME=... ACA_BACKEND_NAME=... \
+#   ACA_FRONTEND_NAME=... MIGRATION_JOB_NAME=... UAMI_BACKEND_NAME=... \
+#   UAMI_FRONTEND_NAME=... ACR_NAME=... PG_SERVER_NAME=... \
+#   ./scripts/provision.sh <dev|stg|prod>
 #
 # Prerequisites:
 #   - Azure CLI (az) installed and logged in (az login)
-#   - jq installed (for JSON parsing)
-#   - Appropriate Azure RBAC permissions (Contributor + User Access Administrator)
-#
-# ── Dry-run limitation ────────────────────────────────────────────────────────
-# In --dry-run mode, commands wrapped with the `run()` function are printed
-# instead of executed. However, commands captured via `$(run ...)` command
-# substitution (used to fetch resource IDs, domains, etc.) will echo the
-# printed command text rather than the real Azure output. This means:
-#
-#   - Variables populated from `$(run ...)` captures will contain placeholder
-#     text (e.g. the echoed command line) instead of real resource IDs.
-#   - Consequently, the summary output (UAMI IDs, ACA default domain, etc.)
-#     will show garbled/placeholder values — these are not real Azure values.
-#   - Only the `az account show` calls in the prerequisite check run for real
-#     (they are NOT wrapped) so the subscription/tenant info is accurate.
-#
-# This is an accepted trade-off inherent to shell-based dry-runs. To see real
-# resource values, run without --dry-run or look up resources directly via az.
-# ──────────────────────────────────────────────────────────────────────────────
-#
-# Examples:
-#   ./scripts/provision.sh dev             # Provision dev environment
-#   ./scripts/provision.sh prod             # Provision production environment
-#   ./scripts/provision.sh stg --dry-run    # Preview commands for staging
-#
+#   - Read access (Reader) on the resource group is sufficient
 # =============================================================================
 set -euo pipefail
 IFS=$'\n\t'
@@ -60,107 +42,55 @@ ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 err()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
-# ── Dry-run aware command execution ──────────────────────────────────────────
-# If DRY_RUN is true, print the command instead of executing it.
-# Otherwise, execute it normally.
-run() {
-  if [[ "$DRY_RUN" == true ]]; then
-    echo -e "  ${YELLOW}az $*${NC}"
-  else
-    az "$@"
-  fi
-}
-
 # ── Parse arguments ──────────────────────────────────────────────────────────
-DRY_RUN=false
-POSITIONAL=()
-
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --dry-run) DRY_RUN=true; shift ;;
-    -n) DRY_RUN=true; shift ;;
-    *) POSITIONAL+=("$1"); shift ;;
-  esac
-done
-
-ENV="${POSITIONAL[0]:-}"
+ENV="${1:-}"
 if [[ -z "$ENV" ]]; then
-  err "Missing environment argument. Usage: $0 <dev|stg|prod> [--dry-run]"
+  err "Missing environment argument. Usage: $0 <dev|stg|prod>"
   exit 1
 fi
-
 case "$ENV" in
   dev|stg|prod) ;;
   *) err "Invalid environment '$ENV'. Use: dev, stg, or prod."; exit 1 ;;
 esac
 
-if [[ "$DRY_RUN" == true ]]; then
-  warn "DRY RUN MODE — commands will be printed but NOT executed."
-fi
+# ── Parametrized platform resource names (supplied by infra team) ────────────
+RG_NAME="${RG_NAME:-}"
+KV_NAME="${KV_NAME:-}"
+ACA_ENV_NAME="${ACA_ENV_NAME:-}"
+ACA_BACKEND_NAME="${ACA_BACKEND_NAME:-}"
+ACA_FRONTEND_NAME="${ACA_FRONTEND_NAME:-}"
+MIGRATION_JOB_NAME="${MIGRATION_JOB_NAME:-}"
+UAMI_BACKEND_NAME="${UAMI_BACKEND_NAME:-}"
+UAMI_FRONTEND_NAME="${UAMI_FRONTEND_NAME:-}"
+ACR_NAME="${ACR_NAME:-}"
+PG_SERVER_NAME="${PG_SERVER_NAME:-}"
 
-# ── Configuration ───────────────────────────────────────────────────────────
-# Resource naming (matches conventions in .github/workflows/deploy-azure.yml)
-RG_NAME="rg-guestportal-${ENV}"
-LOCATION="westeurope"                          # Change as needed
-ACA_ENV_NAME="cae-guestportal-${ENV}"
-ACR_NAME="${ACR_NAME:-}"                        # Set via prompt if empty, or from env var (e.g. GitHub Actions)
-KV_NAME="kv-guestportal-${ENV}"
-UAMI_BACKEND="uami-guestportal-backend-${ENV}"
-UAMI_FRONTEND="uami-guestportal-frontend-${ENV}"
-ACA_BACKEND="ca-guestportal-backend-${ENV}"
-ACA_FRONTEND="ca-guestportal-frontend-${ENV}"
-ACA_MIGRATION_JOB="job-guestportal-migrate-${ENV}"
+# The DB login role MUST be the backend UAMI name (Entra auth).
+DB_ENTRA_LOGIN="${UAMI_BACKEND_NAME}"
+DB_NAME="${DB_NAME:-guestportal_${ENV}}"
 
-# Application hostname (corporate DNS zone dompe.com — no ".internal." subdomain)
-APP_HOSTNAME="guestportal-${ENV}.dompe.com"
-
-# VNet integration for the ACA environment (Non-GxP spoke). When set, the
-# environment is created internal-only and joined to the platform subnet.
-# Provide the resource ID of the delegated infrastructure subnet, e.g.:
-#   /subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.Network/virtualNetworks/<vnet>/subnets/<subnet>
-ACA_INFRA_SUBNET_ID="${ACA_INFRA_SUBNET_ID:-}"
-
-# Database name and Entra login role.
-# Entra ID auth on Azure PostgreSQL requires the DB login to be the Entra
-# principal — here mapped to the backend UAMI name (no password user).
-DB_NAME="guestportal_${ENV}"
-DB_ENTRA_LOGIN="${UAMI_BACKEND}"
-
-# Docker images (update with your ACR name)
-BACKEND_IMAGE="${ACR_NAME}.azurecr.io/guestportal-backend:latest"
-FRONTEND_IMAGE="${ACR_NAME}.azurecr.io/guestportal-frontend:latest"
-
-# ACA resource constraints
-BACKEND_CPU="1.0"
-BACKEND_MEMORY="2.0Gi"
-FRONTEND_CPU="0.5"
-FRONTEND_MEMORY="1.0Gi"
-MIN_REPLICAS=1
-MAX_REPLICAS=1  # Autoscaling disabled per platform guidelines
-
-# Entra ID scope for PostgreSQL
-AZURE_SCOPE="https://ossrdbms-aad.database.windows.net/.default"
+# ── Application hostname (corporate DNS zone dompe.com) ──────────────────────
+# prod has NO suffix; dev/stg are suffixed.
+app_hostname() {
+  case "$1" in
+    prod) echo "guestportal.dompe.com" ;;
+    stg)  echo "guestportal-stg.dompe.com" ;;
+    dev)  echo "guestportal-dev.dompe.com" ;;
+  esac
+}
+APP_HOSTNAME="$(app_hostname "$ENV")"
 
 # ── Pre-flight checks ───────────────────────────────────────────────────────
 check_prerequisites() {
   info "Checking prerequisites..."
-
   if ! command -v az &>/dev/null; then
     err "Azure CLI not found. Install from https://aka.ms/install-azure-cli"
     exit 1
   fi
-
-  if ! command -v jq &>/dev/null; then
-    err "jq not found. Install: apt install jq / brew install jq"
-    exit 1
-  fi
-
-  # Verify Azure login
   if ! az account show &>/dev/null; then
     err "Not logged into Azure. Run: az login"
     exit 1
   fi
-
   SUBSCRIPTION_ID=$(az account show --query id -o tsv)
   TENANT_ID=$(az account show --query tenantId -o tsv)
   info "Subscription: $SUBSCRIPTION_ID"
@@ -169,371 +99,116 @@ check_prerequisites() {
   ok "Prerequisites satisfied."
 }
 
-# ── Prompt for ACR name if not set ──────────────────────────────────────────
-prompt_acr() {
-  if [[ -z "$ACR_NAME" ]]; then
-    read -rp "Enter ACR name (e.g. crguestportaldev): " ACR_NAME
-    BACKEND_IMAGE="${ACR_NAME}.azurecr.io/guestportal-backend:latest"
-    FRONTEND_IMAGE="${ACR_NAME}.azurecr.io/guestportal-frontend:latest"
+# ── Verify a required name is provided ───────────────────────────────────────
+MISSING_NAMES=0
+require_name() {
+  local var_name="$1" value="$2"
+  if [[ -z "$value" ]]; then
+    err "Missing required input: ${var_name} (provided by the infrastructure team)."
+    MISSING_NAMES=1
   fi
 }
 
-# ── Resource Group ──────────────────────────────────────────────────────────
-provision_resource_group() {
-  info "Ensuring resource group '$RG_NAME' in '$LOCATION'..."
-  if run group show --name "$RG_NAME" &>/dev/null; then
-    ok "Resource group '$RG_NAME' already exists."
+check_inputs() {
+  info "Validating parametrized resource names..."
+  require_name RG_NAME "$RG_NAME"
+  require_name KV_NAME "$KV_NAME"
+  require_name ACA_ENV_NAME "$ACA_ENV_NAME"
+  require_name ACA_BACKEND_NAME "$ACA_BACKEND_NAME"
+  require_name ACA_FRONTEND_NAME "$ACA_FRONTEND_NAME"
+  require_name MIGRATION_JOB_NAME "$MIGRATION_JOB_NAME"
+  require_name UAMI_BACKEND_NAME "$UAMI_BACKEND_NAME"
+  require_name UAMI_FRONTEND_NAME "$UAMI_FRONTEND_NAME"
+  if [[ "$MISSING_NAMES" -ne 0 ]]; then
+    err "One or more required names are missing. Provide them as env vars (see usage)."
+    exit 1
+  fi
+  ok "All required names provided."
+}
+
+# ── Read-only existence checks (no creation) ─────────────────────────────────
+VERIFY_FAILED=0
+verify() {
+  local label="$1"; shift
+  if "$@" &>/dev/null; then
+    ok "${label} exists."
   else
-    run group create --name "$RG_NAME" --location "$LOCATION" --tags \
-      application="guestportal" \
-      environment="$ENV" \
-      managed-by="provision-script" \
-      --output none
-    ok "Resource group '$RG_NAME' created."
+    err "${label} NOT found (must be pre-provisioned by the platform)."
+    VERIFY_FAILED=1
   fi
 }
 
-# ── Key Vault ───────────────────────────────────────────────────────────────
-provision_key_vault() {
-  info "Ensuring Key Vault '$KV_NAME'..."
-
-  if run keyvault show --name "$KV_NAME" --resource-group "$RG_NAME" &>/dev/null; then
-    ok "Key Vault '$KV_NAME' already exists."
+verify_resources() {
+  info "Verifying platform resources exist (read-only)..."
+  verify "Resource Group '${RG_NAME}'" \
+    az group show --name "$RG_NAME"
+  verify "Key Vault '${KV_NAME}'" \
+    az keyvault show --name "$KV_NAME" --resource-group "$RG_NAME"
+  verify "ACA environment '${ACA_ENV_NAME}'" \
+    az containerapp env show --name "$ACA_ENV_NAME" --resource-group "$RG_NAME"
+  verify "Backend Container App '${ACA_BACKEND_NAME}'" \
+    az containerapp show --name "$ACA_BACKEND_NAME" --resource-group "$RG_NAME"
+  verify "Frontend Container App '${ACA_FRONTEND_NAME}'" \
+    az containerapp show --name "$ACA_FRONTEND_NAME" --resource-group "$RG_NAME"
+  verify "Migration job '${MIGRATION_JOB_NAME}'" \
+    az containerapp job show --name "$MIGRATION_JOB_NAME" --resource-group "$RG_NAME"
+  verify "UAMI backend '${UAMI_BACKEND_NAME}'" \
+    az identity show --name "$UAMI_BACKEND_NAME" --resource-group "$RG_NAME"
+  verify "UAMI frontend '${UAMI_FRONTEND_NAME}'" \
+    az identity show --name "$UAMI_FRONTEND_NAME" --resource-group "$RG_NAME"
+  if [[ -n "$ACR_NAME" ]]; then
+    verify "ACR '${ACR_NAME}'" az acr show --name "$ACR_NAME"
   else
-    run keyvault create \
-      --name "$KV_NAME" \
-      --resource-group "$RG_NAME" \
-      --location "$LOCATION" \
-      --sku standard \
-      --enable-rbac-authorization true \
-      --output none
-    ok "Key Vault '$KV_NAME' created."
-
-    # Grant current user full access to manage secrets
-    USER_OBJECT_ID=$(az ad signed-in-user show --query id -o tsv 2>/dev/null || echo "")
-    if [[ -n "$USER_OBJECT_ID" ]]; then
-      run role assignment create \
-        --assignee "$USER_OBJECT_ID" \
-        --role "Key Vault Secrets Officer" \
-        --scope "$(run keyvault show --name "$KV_NAME" --query id -o tsv)" \
-        --output none
-      ok "Granted current user 'Key Vault Secrets Officer' role."
-    fi
+    warn "ACR_NAME not provided — skipping ACR check."
+  fi
+  if [[ -n "$PG_SERVER_NAME" ]]; then
+    verify "PostgreSQL server '${PG_SERVER_NAME}'" \
+      az postgres flexible-server show --name "$PG_SERVER_NAME" --resource-group "$RG_NAME"
+  else
+    warn "PG_SERVER_NAME not provided — skipping PostgreSQL check."
   fi
 }
 
-# ── User-Assigned Managed Identities ────────────────────────────────────────
-provision_uami() {
-  info "Ensuring UAMI '$UAMI_BACKEND'..."
-  local backend_id backend_principal
-
-  if run identity show --name "$UAMI_BACKEND" --resource-group "$RG_NAME" &>/dev/null; then
-    ok "UAMI '$UAMI_BACKEND' already exists."
-  else
-    run identity create \
-      --name "$UAMI_BACKEND" \
-      --resource-group "$RG_NAME" \
-      --location "$LOCATION" \
-      --output none
-    ok "UAMI '$UAMI_BACKEND' created."
-  fi
-
-  backend_id=$(run identity show --name "$UAMI_BACKEND" --resource-group "$RG_NAME" --query id -o tsv)
-  backend_principal=$(run identity show --name "$UAMI_BACKEND" --resource-group "$RG_NAME" --query principalId -o tsv)
-
-  info "Ensuring UAMI '$UAMI_FRONTEND'..."
-  if run identity show --name "$UAMI_FRONTEND" --resource-group "$RG_NAME" &>/dev/null; then
-    ok "UAMI '$UAMI_FRONTEND' already exists."
-  else
-    run identity create \
-      --name "$UAMI_FRONTEND" \
-      --resource-group "$RG_NAME" \
-      --location "$LOCATION" \
-      --output none
-    ok "UAMI '$UAMI_FRONTEND' created."
-  fi
-
-  local frontend_id
-  frontend_id=$(run identity show --name "$UAMI_FRONTEND" --resource-group "$RG_NAME" --query id -o tsv)
-
-  # Assign Key Vault Secrets User role for backend UAMI
-  info "Assigning KV Secrets User role to backend UAMI..."
-  local kv_scope
-  kv_scope=$(run keyvault show --name "$KV_NAME" --query id -o tsv)
-
-  if ! run role assignment list --assignee "$backend_principal" --scope "$kv_scope" --role "Key Vault Secrets User" --query "[].id" -o tsv | grep -q .; then
-    run role assignment create \
-      --assignee "$backend_principal" \
-      --role "Key Vault Secrets User" \
-      --scope "$kv_scope" \
-      --output none
-    ok "Backend UAMI assigned 'Key Vault Secrets User' on '$KV_NAME'."
-  else
-    ok "Backend UAMI already has 'Key Vault Secrets User' role."
-  fi
-
-  # Export for later use
-  UAMI_BACKEND_ID="$backend_id"
-  UAMI_FRONTEND_ID="$frontend_id"
-}
-
-# ── ACA Environment ─────────────────────────────────────────────────────────
-provision_aca_environment() {
-  info "Ensuring ACA environment '$ACA_ENV_NAME'..."
-
-  if run containerapp env show --name "$ACA_ENV_NAME" --resource-group "$RG_NAME" &>/dev/null; then
-    ok "ACA environment '$ACA_ENV_NAME' already exists."
-  else
-    # Per platform guidelines (§1/§14) the environment must be internal-only
-    # (no public ingress) and joined to the Non-GxP spoke via VNet integration.
-    if [[ -z "$ACA_INFRA_SUBNET_ID" ]]; then
-      err "ACA_INFRA_SUBNET_ID is not set. The ACA environment must be VNet-integrated"
-      err "and internal-only. Provide the platform infrastructure subnet resource ID:"
-      err "  export ACA_INFRA_SUBNET_ID=/subscriptions/.../subnets/<subnet>"
-      exit 1
-    fi
-    run containerapp env create \
-      --name "$ACA_ENV_NAME" \
-      --resource-group "$RG_NAME" \
-      --location "$LOCATION" \
-      --enable-workload-profiles false \
-      --infrastructure-subnet-resource-id "$ACA_INFRA_SUBNET_ID" \
-      --internal-only true \
-      --output none
-    ok "ACA environment '$ACA_ENV_NAME' created (internal-only, VNet-integrated)."
-  fi
-
-  # Capture the default domain for later use
-  ACA_DEFAULT_DOMAIN=$(run containerapp env show \
-    --name "$ACA_ENV_NAME" \
-    --resource-group "$RG_NAME" \
-    --query "properties.defaultDomain" \
-    --output tsv)
-
-  if [[ -z "$ACA_DEFAULT_DOMAIN" ]]; then
-    warn "Could not determine ACA default domain. ACA environment may still be provisioning."
-    ACA_DEFAULT_DOMAIN="<pending>"
-  else
-    info "ACA default domain: ${ACA_DEFAULT_DOMAIN}"
-  fi
-}
-
-# ── Backend ACA Container App ────────────────────────────────────────────────
-provision_backend_aca() {
-  info "Ensuring backend ACA '$ACA_BACKEND'..."
-
+# ── Configuration map to hand to the infra team ──────────────────────────────
+print_config_map() {
   local kv_base="https://${KV_NAME}.vault.azure.net/"
-  local uami_resource_id="$UAMI_BACKEND_ID"
-
-  # Build the full env-var list with inline Key Vault references
-  # (matches the format used by the deploy pipeline)
-  local ENV_VARS=(
-    NODE_ENV=production
-    PORT=3000
-    LOG_LEVEL=info
-    BACKEND_BASE_URL="http://${ACA_BACKEND}.${ACA_DEFAULT_DOMAIN}"
-    DATABASE_URL="postgres://${DB_ENTRA_LOGIN}@<postgres-host>.postgres.database.azure.com:5432/${DB_NAME}"
-    SESSION_SECRET="@Microsoft.KeyVault(SecretUri=${kv_base}secrets/SESSION-SECRET/)"
-    SAML_ENTRY_POINT="https://login.microsoftonline.com/<tenant-id>/saml2"
-    SAML_ISSUER="https://${APP_HOSTNAME}/saml"
-    SAML_CALLBACK_URL="https://${APP_HOSTNAME}/api/auth/callback"
-    SAML_CERT="@Microsoft.KeyVault(SecretUri=${kv_base}secrets/SAML-CERT/)"
-    WLC_DEFAULT_PASSWORD="@Microsoft.KeyVault(SecretUri=${kv_base}secrets/WLC-DEFAULT-PASSWORD/)"
-    SAML_DECRYPTION_KEY="@Microsoft.KeyVault(SecretUri=${kv_base}secrets/SAML-DECRYPTION-KEY/)"
-    SAML_LOGOUT_URL="@Microsoft.KeyVault(SecretUri=${kv_base}secrets/SAML-LOGOUT-URL/)"
-    SAML_LOGOUT_CALLBACK_URL="@Microsoft.KeyVault(SecretUri=${kv_base}secrets/SAML-LOGOUT-CALLBACK-URL/)"
-    APPLICATIONINSIGHTS_CONNECTION_STRING="@Microsoft.KeyVault(SecretUri=${kv_base}secrets/APPINSIGHTS-CONNECTION-STRING/)"
-    # Microsoft Graph API Email (platform-provided App Registration)
-    MAIL_GRAPH_ENABLED=false
-    MAIL_GRAPH_TENANT_ID="<tenant-id>"
-    MAIL_GRAPH_CLIENT_ID="<client-id>"
-    MAIL_GRAPH_CLIENT_SECRET="@Microsoft.KeyVault(SecretUri=${kv_base}secrets/MAIL-GRAPH-CLIENT-SECRET/)"
-    MAIL_GRAPH_USER_ID="<user-id>"
-    MAIL_GRAPH_FROM_ADDRESS="noreply@dompe.com"
-  )
-
-  if run containerapp show --name "$ACA_BACKEND" --resource-group "$RG_NAME" &>/dev/null; then
-    ok "Backend ACA '$ACA_BACKEND' already exists."
-    # Don't update env vars here — the deploy pipeline handles that
-    # via az containerapp update --set-env-vars during Stage 4.
-  else
-    info "Creating backend ACA '$ACA_BACKEND'..."
-    run containerapp create \
-      --name "$ACA_BACKEND" \
-      --resource-group "$RG_NAME" \
-      --environment "$ACA_ENV_NAME" \
-      --image "$BACKEND_IMAGE" \
-      --cpu "$BACKEND_CPU" \
-      --memory "$BACKEND_MEMORY" \
-      --min-replicas "$MIN_REPLICAS" \
-      --max-replicas "$MAX_REPLICAS" \
-      --target-port 3000 \
-      --ingress internal \
-      --transport http \
-      --user-assigned "$uami_resource_id" \
-      --env-vars "${ENV_VARS[@]}" \
-      --output none
-    ok "Backend ACA '$ACA_BACKEND' created."
-  fi
-}
-
-# ── Frontend ACA Container App ───────────────────────────────────────────────
-provision_frontend_aca() {
-  info "Ensuring frontend ACA '$ACA_FRONTEND'..."
-
-  local uami_resource_id="$UAMI_FRONTEND_ID"
-
-  if run containerapp show --name "$ACA_FRONTEND" --resource-group "$RG_NAME" &>/dev/null; then
-    ok "Frontend ACA '$ACA_FRONTEND' already exists."
-  else
-    info "Creating frontend ACA '$ACA_FRONTEND'..."
-    run containerapp create \
-      --name "$ACA_FRONTEND" \
-      --resource-group "$RG_NAME" \
-      --environment "$ACA_ENV_NAME" \
-      --image "$FRONTEND_IMAGE" \
-      --cpu "$FRONTEND_CPU" \
-      --memory "$FRONTEND_MEMORY" \
-      --min-replicas "$MIN_REPLICAS" \
-      --max-replicas "$MAX_REPLICAS" \
-      --target-port 3000 \
-      --ingress internal \
-      --transport http \
-      --user-assigned "$uami_resource_id" \
-      --output none
-    ok "Frontend ACA '$ACA_FRONTEND' created."
-  fi
-}
-
-# ── ACA Migration Job ───────────────────────────────────────────────────────
-provision_migration_job() {
-  info "Ensuring ACA migration job '$ACA_MIGRATION_JOB'..."
-
-  if run containerapp job show --name "$ACA_MIGRATION_JOB" --resource-group "$RG_NAME" &>/dev/null; then
-    ok "Migration job '$ACA_MIGRATION_JOB' already exists."
-  else
-    run containerapp job create \
-      --name "$ACA_MIGRATION_JOB" \
-      --resource-group "$RG_NAME" \
-      --environment "$ACA_ENV_NAME" \
-      --trigger-type Manual \
-      --replica-timeout 300 \
-      --image "$BACKEND_IMAGE" \
-      --command "node backend/dist/db/migrate.js" \
-      --registry-server "${ACR_NAME}.azurecr.io" \
-      --cpu "0.5" \
-      --memory "1.0Gi" \
-      --mi-user-assigned "$UAMI_BACKEND_ID" \
-      --output none
-    ok "Migration job '$ACA_MIGRATION_JOB' created."
-  fi
-}
-
-# ── Initial Key Vault Secrets ────────────────────────────────────────────────
-seed_key_vault_secrets() {
-  info "Seeding initial Key Vault secrets (if not already set)..."
-
-  # Helper: set a secret only if it doesn't exist
-  set_secret_if_missing() {
-    local name="$1"
-    local value="$2"
-    if run keyvault secret show --vault-name "$KV_NAME" --name "$name" &>/dev/null; then
-      ok "Secret '$name' already exists in KV — skipping."
-    else
-      run keyvault secret set \
-        --vault-name "$KV_NAME" \
-        --name "$name" \
-        --value "$value" \
-        --output none
-      ok "Secret '$name' created."
-    fi
-  }
-
-  # Generate a secure random session secret
-  local SESSION_SECRET
-  SESSION_SECRET=$(openssl rand -base64 48 2>/dev/null || echo "change-me-to-a-random-64-char-string")
-  set_secret_if_missing "SESSION-SECRET" "$SESSION_SECRET"
-
-  # SAML certificate (placeholder — operator must upload the real one)
-  set_secret_if_missing "SAML-CERT" "PLACEHOLDER-upload-real-certificate-via-az-keyvault-secret-set"
-
-  # WLC default password (placeholder)
-  set_secret_if_missing "WLC-DEFAULT-PASSWORD" "PLACEHOLDER-set-real-wlc-password"
-
-  # Optional secrets (set as empty placeholders)
-  set_secret_if_missing "SAML-DECRYPTION-KEY" ""
-  set_secret_if_missing "SAML-LOGOUT-URL" ""
-  set_secret_if_missing "SAML-LOGOUT-CALLBACK-URL" ""
-  set_secret_if_missing "APPINSIGHTS-CONNECTION-STRING" ""
-
-  # Microsoft Graph API email client secret (placeholder — set real value after App Registration is created)
-  set_secret_if_missing "MAIL-GRAPH-CLIENT-SECRET" ""
-
-  ok "Key Vault secrets initialized."
-}
-
-# ── Output GitHub Secrets ───────────────────────────────────────────────────
-print_github_secrets() {
   echo ""
   echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
-  echo -e "${CYAN}  GitHub Actions secrets to configure                       ${NC}"
-  echo -e "${CYAN}  GitHub → Settings → Secrets and variables → Actions       ${NC}"
+  echo -e "${CYAN}  Configuration map — apply on the backend Container App        ${NC}"
+  echo -e "${CYAN}  (env var → value / Key Vault reference)                       ${NC}"
   echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
   echo ""
-  echo -e "${YELLOW}Repository secrets:${NC}"
-  echo "  ACA_ENVIRONMENT_DEFAULT_DOMAIN  = ${ACA_DEFAULT_DOMAIN:-<pending>}"
-  echo "  ACR_NAME                        = ${ACR_NAME}"
-  echo "  AZURE_CLIENT_ID                 = <set-your-OIDC-federated-credential-client-id>"
-  echo "  AZURE_TENANT_ID                 = ${TENANT_ID}"
-  echo "  AZURE_SUBSCRIPTION_ID           = ${SUBSCRIPTION_ID}"
-  echo "  DATABASE_URL                    = postgres://${DB_ENTRA_LOGIN}@<postgres-host>.postgres.database.azure.com:5432/${DB_NAME}"
-  echo "  POSTGRES_SERVER_NAME            = <postgres-flexible-server-name>"
-  echo "  POSTGRES_ADMIN_USER             = <entra-admin-user (for bootstrap)>"
-  echo "  SAML_ENTRY_POINT                = https://login.microsoftonline.com/<tenant-id>/saml2"
-  echo "  SAML_ISSUER                     = https://${APP_HOSTNAME}/saml"
-  echo "  SAML_CALLBACK_URL               = https://${APP_HOSTNAME}/api/auth/callback"
+  echo "  # Plain (non-secret) values"
+  echo "  NODE_ENV=production"
+  echo "  PORT=3000"
+  echo "  LOG_LEVEL=info"
+  echo "  SKIP_MIGRATIONS=true"
+  echo "  SEED_ENABLED=false"
+  echo "  BACKEND_BASE_URL=http://${ACA_BACKEND_NAME}.<aca-environment-default-domain>"
+  echo "  SAML_ENTRY_POINT=https://login.microsoftonline.com/<tenant-id>/saml2"
+  echo "  SAML_ISSUER=https://${APP_HOSTNAME}/saml"
+  echo "  SAML_CALLBACK_URL=https://${APP_HOSTNAME}/api/auth/callback"
   echo ""
-  echo -e "${YELLOW}UAMI resource IDs (needed for containerapp create/update):${NC}"
-  echo "  Backend:  ${UAMI_BACKEND_ID}"
-  echo "  Frontend: ${UAMI_FRONTEND_ID}"
+  echo "  # DATABASE_URL — Entra ID auth, NO password. User = backend UAMI name."
+  echo "  DATABASE_URL=postgres://${DB_ENTRA_LOGIN}@<pg-host>.postgres.database.azure.com:5432/${DB_NAME}"
   echo ""
-  echo -e "${YELLOW}Key Vault:${NC}"
-  echo "  Name:      ${KV_NAME}"
-  echo "  URI:       https://${KV_NAME}.vault.azure.net/"
-  echo "  RBAC:      Assign 'Key Vault Secrets User' role to each UAMI"
+  echo "  # Key Vault references (secret values managed by the platform/owner)"
+  echo "  SESSION_SECRET=@Microsoft.KeyVault(SecretUri=${kv_base}secrets/SESSION-SECRET/)"
+  echo "  SAML_CERT=@Microsoft.KeyVault(SecretUri=${kv_base}secrets/SAML-CERT/)"
+  echo "  SAML_DECRYPTION_KEY=@Microsoft.KeyVault(SecretUri=${kv_base}secrets/SAML-DECRYPTION-KEY/)"
+  echo "  SAML_LOGOUT_URL=@Microsoft.KeyVault(SecretUri=${kv_base}secrets/SAML-LOGOUT-URL/)"
+  echo "  SAML_LOGOUT_CALLBACK_URL=@Microsoft.KeyVault(SecretUri=${kv_base}secrets/SAML-LOGOUT-CALLBACK-URL/)"
+  echo "  WLC_DEFAULT_PASSWORD=@Microsoft.KeyVault(SecretUri=${kv_base}secrets/WLC-DEFAULT-PASSWORD/)"
+  echo "  APPLICATIONINSIGHTS_CONNECTION_STRING=@Microsoft.KeyVault(SecretUri=${kv_base}secrets/APPINSIGHTS-CONNECTION-STRING/)"
+  echo "  MAIL_GRAPH_CLIENT_SECRET=@Microsoft.KeyVault(SecretUri=${kv_base}secrets/MAIL-GRAPH-CLIENT-SECRET/)"
   echo ""
-  echo -e "${YELLOW}PostgreSQL connection (Entra ID auth):${NC}"
-  echo "  DATABASE_URL = postgres://${DB_ENTRA_LOGIN}@<host>.postgres.database.azure.com:5432/${DB_NAME}"
-  echo "  (No password — Entra ID token is obtained at runtime via DefaultAzureCredential)"
-  echo "  NOTE: the DB login role MUST equal the backend UAMI name ('${DB_ENTRA_LOGIN}')."
-  echo "        Create the Entra principal on the server once (infra step), e.g.:"
-  echo "        SELECT * FROM pgaadauth_create_principal('${DB_ENTRA_LOGIN}', false, false);"
-  echo ""
-  echo -e "${YELLOW}Next steps:${NC}"
-  echo "  1. Upload SAML certificate: az keyvault secret set --vault-name ${KV_NAME} --name SAML-CERT --file ./saml-cert.pem"
-  echo "  2. Set WLC password: az keyvault secret set --vault-name ${KV_NAME} --name WLC-DEFAULT-PASSWORD --value <password>"
-  echo "  3. Configure GitHub secrets (see above)"
-  echo "  4. Run the pipeline: .github/workflows/deploy-azure.yml"
-  echo ""
-  echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
-}
-
-# ── Summary ──────────────────────────────────────────────────────────────────
-print_summary() {
-  echo ""
-  echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
-  echo -e "${GREEN}  Provisioning complete for environment: ${ENV}${NC}"
-  echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
-  echo ""
-  echo "  Resource Group:               ${RG_NAME}"
-  echo "  Key Vault:                    ${KV_NAME}"
-  echo "  ACA Environment:              ${ACA_ENV_NAME}"
-  echo "  ACA Default Domain:           ${ACA_DEFAULT_DOMAIN}"
-  echo "  Backend ACA:                  ${ACA_BACKEND}"
-  echo "  Frontend ACA:                 ${ACA_FRONTEND}"
-  echo "  Migration Job:                ${ACA_MIGRATION_JOB}"
-  echo "  UAMI Backend:                 ${UAMI_BACKEND}"
-  echo "  UAMI Frontend:                ${UAMI_FRONTEND}"
+  echo -e "${YELLOW}Platform prerequisites (infra team) — NOT created by this repo:${NC}"
+  echo "  - The backend UAMI '${DB_ENTRA_LOGIN}' must have 'Key Vault Secrets User' on '${KV_NAME}'."
+  echo "  - The PostgreSQL Entra role mapped to the backend UAMI must exist, e.g.:"
+  echo "      SELECT * FROM pgaadauth_create_principal('${DB_ENTRA_LOGIN}', false, false);"
+  echo "    plus GRANTs on database '${DB_NAME}'."
+  echo "  - The migration ACA job '${MIGRATION_JOB_NAME}' must reference the backend"
+  echo "    UAMI and DATABASE_URL, and run 'node backend/dist/db/migrate.js'."
   echo ""
 }
 
@@ -541,27 +216,21 @@ print_summary() {
 main() {
   echo ""
   echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
-  echo -e "${CYAN}  Cisco Guest Desk — Azure Infrastructure Provisioner         ${NC}"
-  echo -e "${CYAN}  Environment: ${ENV}${NC}"
+  echo -e "${CYAN}  guestportal — Platform Preflight (READ-ONLY, consume-only)   ${NC}"
+  echo -e "${CYAN}  Environment: ${ENV}   Hostname: ${APP_HOSTNAME}${NC}"
   echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
   echo ""
 
   check_prerequisites
-  prompt_acr
+  check_inputs
+  verify_resources
+  print_config_map
 
-  provision_resource_group
-  provision_key_vault
-  provision_uami
-  provision_aca_environment
-  provision_backend_aca
-  provision_frontend_aca
-  provision_migration_job
-  seed_key_vault_secrets
-
-  print_summary
-  print_github_secrets
-
-  echo -e "${GREEN}Done.${NC}"
+  if [[ "$VERIFY_FAILED" -ne 0 ]]; then
+    err "One or more platform resources are missing. Ask the infrastructure team to provision them."
+    exit 1
+  fi
+  ok "Preflight complete — all expected platform resources are present."
 }
 
 main "$@"

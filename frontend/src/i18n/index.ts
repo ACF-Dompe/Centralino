@@ -8,7 +8,7 @@ import { useEffect, useState, useCallback } from 'react';
 export type Locale = 'it' | 'en';
 
 export const SUPPORTED_LOCALES: Locale[] = ['it', 'en'];
-const STORAGE_KEY = 'cgd:locale';
+const STORAGE_KEY = 'guestportal:locale';
 
 type Dict = Record<string, string>;
 const dictionaries: Record<Locale, Dict> = {

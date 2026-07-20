@@ -40,7 +40,7 @@ export function createSessionMiddleware(databaseUrl: string, secret: string) {
   return session({
     store: createSessionStore(databaseUrl),
     secret,
-    name: 'cgd.sid',
+    name: 'guestportal.sid',
     resave: false,
     saveUninitialized: false,
     cookie: {

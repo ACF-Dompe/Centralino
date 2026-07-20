@@ -1,22 +1,23 @@
 # =============================================================================
-# Azure Infrastructure Provisioning (manual via workflow_dispatch)
+# Azure Platform Preflight (READ-ONLY, manual via workflow_dispatch)
 # =============================================================================
-# Manual workflow to provision or update Azure infrastructure for the
-# Cisco Guest Desk application: Key Vault, UAMI, ACA Environment, ACA
-# Container Apps, and initial Key Vault secrets.
+# Operating model: CONSUME-ONLY. This workflow does NOT provision anything.
+# It runs `scripts/provision.sh` (a read-only preflight) to VERIFY that the
+# platform-provided Azure resources exist and to print the configuration map
+# (env var → Key Vault reference) for the infrastructure team.
+#
+# All resource names are PARAMETRIZED via GitHub secrets (supplied by the
+# infrastructure team): RG_NAME, KV_NAME, ACA_ENV_NAME, ACA_BACKEND_NAME,
+# ACA_FRONTEND_NAME, MIGRATION_JOB_NAME, UAMI_BACKEND_NAME, UAMI_FRONTEND_NAME,
+# ACR_NAME, POSTGRES_SERVER_NAME.
 #
 # Usage:
-#   1. Go to GitHub → Actions → "Provision Azure Infrastructure"
-#   2. Click "Run workflow"
-#   3. Select environment, enter ACR name, optionally enable dry-run
-#   4. Review the output for any errors
-#
-# Prerequisites:
-#   - Azure OIDC federated credential configured (AZURE_CLIENT_ID, etc.)
-#   - User running this must have Contributor + User Access Admin RBAC
+#   1. GitHub → Actions → "Azure Platform Preflight"
+#   2. Run workflow → select environment
+#   3. Review the verification output and configuration map
 # =============================================================================
 
-name: Provision Azure Infrastructure
+name: Azure Platform Preflight
 
 on:
   workflow_dispatch:
@@ -30,24 +31,12 @@ on:
           - dev
           - stg
           - prod
-      acr_name:
-        description: 'Azure Container Registry name (e.g. crguestportaldev)'
-        required: true
-        type: string
-      dry_run:
-        description: 'Dry-run mode: print commands without executing'
-        required: false
-        default: false
-        type: boolean
-
-env:
-  AZURE_RESOURCE_GROUP: rg-guestportal-${{ github.event.inputs.environment }}
 
 jobs:
-  provision:
-    name: 'Provision ${{ github.event.inputs.environment }}'
+  preflight:
+    name: 'Preflight ${{ github.event.inputs.environment }}'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     permissions:
       contents: read
       id-token: write
@@ -63,52 +52,16 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      # Install jq (needed by the provisioning script)
-      - name: Install jq
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
-
-      - name: Provision infrastructure
-        id: provision
+      - name: Verify platform resources (read-only)
         env:
-          ACR_NAME: ${{ github.event.inputs.acr_name }}
-        run: |
-          DRY_FLAG=""
-          if [[ "${{ github.event.inputs.dry_run }}" == "true" ]]; then
-            DRY_FLAG="--dry-run"
-            echo "⚠️  DRY-RUN MODE — commands will be printed but NOT executed."
-          fi
-
-          echo "🔧 Provisioning infrastructure for environment: ${{ github.event.inputs.environment }}"
-          echo "📦 ACR: ${{ github.event.inputs.acr_name }}"
-          echo ""
-
-          # Run provisioning and capture output for summary parsing
-          export ACR_NAME="${{ github.event.inputs.acr_name }}"
-          bash scripts/provision.sh "${{ github.event.inputs.environment }}" $DRY_FLAG 2>&1 | tee /tmp/provision-output.txt
-
-          # Extract key values from script output for the step summary
-          # Uses 'domain:' which avoids ANSI escape codes from info() and matches
-          # both the info() line and print_summary() line — head -1 takes the first.
-          ACA_DOMAIN=$(grep -oP 'domain: \K\S+' /tmp/provision-output.txt | head -1 || echo "<pending>")
-
-          echo "aca_domain=${ACA_DOMAIN}" >> $GITHUB_OUTPUT
-          echo "resource_group=rg-guestportal-${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
-          echo "key_vault=kv-guestportal-${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
-          echo "aca_backend=ca-guestportal-backend-${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
-          echo "aca_frontend=ca-guestportal-frontend-${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
-
-      - name: Summary
-        run: |
-          echo "## ✅ Provisioning ${{ github.event.inputs.environment }} — ${{ github.event.inputs.dry_run == 'true' && 'Dry-Run' || 'Complete' }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Resource | Name |" >> $GITHUB_STEP_SUMMARY
-          echo "|----------|------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Resource Group | ${{ steps.provision.outputs.resource_group }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Key Vault | ${{ steps.provision.outputs.key_vault }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| UAMI Backend | uami-guestportal-backend-${{ github.event.inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| UAMI Frontend | uami-guestportal-frontend-${{ github.event.inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| ACA Environment | cae-guestportal-${{ github.event.inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| ACA Backend | ${{ steps.provision.outputs.aca_backend }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| ACA Frontend | ${{ steps.provision.outputs.aca_frontend }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| ACA Default Domain | ${{ steps.provision.outputs.aca_domain }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Migration Job | job-guestportal-migrate-${{ github.event.inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
+          RG_NAME: ${{ secrets.RG_NAME }}
+          KV_NAME: ${{ secrets.KV_NAME }}
+          ACA_ENV_NAME: ${{ secrets.ACA_ENV_NAME }}
+          ACA_BACKEND_NAME: ${{ secrets.ACA_BACKEND_NAME }}
+          ACA_FRONTEND_NAME: ${{ secrets.ACA_FRONTEND_NAME }}
+          MIGRATION_JOB_NAME: ${{ secrets.MIGRATION_JOB_NAME }}
+          UAMI_BACKEND_NAME: ${{ secrets.UAMI_BACKEND_NAME }}
+          UAMI_FRONTEND_NAME: ${{ secrets.UAMI_FRONTEND_NAME }}
+          ACR_NAME: ${{ secrets.ACR_NAME }}
+          PG_SERVER_NAME: ${{ secrets.POSTGRES_SERVER_NAME }}
+        run: bash scripts/provision.sh "${{ github.event.inputs.environment }}"

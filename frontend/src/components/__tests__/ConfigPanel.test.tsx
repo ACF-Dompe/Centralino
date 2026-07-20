@@ -101,7 +101,7 @@ describe('ConfigPanel', () => {
     mockUpdateEmailConfig.mockResolvedValue({ data: {} });
     mockWlcLogin.mockResolvedValue({ success: true });
     // Clear localStorage
-    localStorage.removeItem('cgd:adminMode');
+    localStorage.removeItem('guestportal:adminMode');
   });
 
   afterEach(() => {

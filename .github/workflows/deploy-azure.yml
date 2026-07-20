@@ -1,39 +1,45 @@
 # =============================================================================
-# Azure Container Platform — Standard CI/CD Pipeline (5-Stage)
+# Azure Container Platform — Standard CI/CD Pipeline (consume-only)
 # =============================================================================
 # Standard pipeline per le applicazioni sulla piattaforma Azure Container.
 # Triggered on push to main/staging branches or via workflow_dispatch.
 #
-# Stages:
-#   1. Build & Vulnerability Scan (typecheck + compile + Trivy)
-#   2. Database Bootstrap + Migration Job (idempotent via ACA job)
-#   3. Database Migration (idempotent)
-#   4. Deploy to ACA (container app update)
-#   5. Post-deploy Verify (informational — internal-only apps, no public probe)
+# Operating model: CONSUME-ONLY.
+#   The platform (infrastructure team) pre-provisions ALL Azure resources:
+#   Resource Group, Key Vault, ACA environment, the two Container Apps, the
+#   UAMIs, the PostgreSQL server + database + Entra role mapped to the backend
+#   UAMI, the migration ACA job, the ACR and the Application Gateway.
+#   This pipeline does NOT create any resource. It only:
+#     build image → push to ACR → run schema migration → update the existing
+#     Container Apps (`az containerapp update --image` + Key Vault references).
 #
-# Architecture:
-#   - ACR with immutable tags (<git-sha>) + mutable aliases (:dev, :stg, :prod)
-#   - ACA internal-only environment (no public ingress)
-#   - Application Gateway (WAF v2) routes /api/* → backend, /* → frontend
-#   - Managed Identity (UAMI) per container app
-#   - Key Vault references for secrets
+# Stages:
+#   1. Build & Vulnerability Scan (typecheck + tests + compile + Trivy + push)
+#   2. Database Migration (start the pre-provisioned ACA migration job)
+#   3. Deploy to ACA (update existing container apps)
+#   4. Post-deploy Verify (informational — internal-only apps, no public probe)
 #
 # ── Required GitHub Secrets ──────────────────────────────────────────────────
-# These secrets MUST be configured in your GitHub repository:
-#   Settings → Secrets and variables → Actions → Repository secrets
+# These secrets MUST be configured in your GitHub repository
+# (Settings → Secrets and variables → Actions). Platform resource names are
+# PARAMETRIZED — the real names are supplied by the infrastructure team; no
+# real name is hard-coded here.
 #
-#   ACA_ENVIRONMENT_DEFAULT_DOMAIN  ACA env default domain (resolve from Azure Portal:
-#                                   Container Apps Environment → Default Domain)
-#                                   Example: icydune-01234567.westeurope.azurecontainerapps.io
-#   ACR_NAME                        Azure Container Registry name (e.g. crguestportaldev)
-#   AZURE_CLIENT_ID                 Service principal / OIDC client ID (federated credential)
+#   AZURE_CLIENT_ID                 OIDC client ID (federated credential)
 #   AZURE_TENANT_ID                 Azure AD tenant ID
 #   AZURE_SUBSCRIPTION_ID           Azure subscription ID
-#   DATABASE_URL                    PostgreSQL connection string (Entra ID, no password).
+#   ACR_NAME                        Azure Container Registry name
+#   RG_NAME                         Resource group (platform-provided)
+#   KV_NAME                         Key Vault (platform-provided)
+#   ACA_ENVIRONMENT_DEFAULT_DOMAIN  ACA environment default domain
+#   ACA_BACKEND_NAME                Backend Container App name (platform-provided)
+#   ACA_FRONTEND_NAME               Frontend Container App name (platform-provided)
+#   MIGRATION_JOB_NAME              Pre-provisioned migration ACA job name
+#   DATABASE_URL                    PostgreSQL connection string (Entra ID, NO password).
 #                                   The user MUST be the backend UAMI name, e.g.
 #                                   postgres://uami-guestportal-backend-prod@<host>...:5432/guestportal_prod
-#   POSTGRES_SERVER_NAME            PostgreSQL Flexible Server name
-#   POSTGRES_ADMIN_USER             PostgreSQL Entra admin (used only to bootstrap DB + principal)
+#                                   The DB, the Entra role mapped to that UAMI and
+#                                   its grants are provisioned by the platform.
 #   SAML_ENTRY_POINT                Entra ID SAML SSO endpoint URL
 #   SAML_ISSUER                     Application Entity ID
 #   SAML_CALLBACK_URL               ACS callback URL
@@ -105,10 +111,10 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Stage 1: Build & Vulnerability Scan (typecheck + compile + Trivy)
+  # Stage 1: Build & Vulnerability Scan (typecheck + tests + compile + Trivy)
   # ---------------------------------------------------------------------------
   build-and-scan:
-    name: '1/5 Build & Scan'
+    name: '1/4 Build & Scan'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -245,129 +251,26 @@ jobs:
         with:
           sarif_file: 'trivy-frontend-results.sarif'
 
-      # Lock immutable tag in ACR
-      - name: Lock immutable image tags in ACR
-        run: |
-          for IMG in "${{ env.BACKEND_IMAGE_NAME }}" "${{ env.FRONTEND_IMAGE_NAME }}"; do
-            az acr repository update \
-              --name "${{ env.ACR_NAME }}" \
-              --image "${IMG}:${{ env.IMAGE_TAG }}" \
-              --delete-enabled false \
-              --write-enabled false \
-              --output none
-            echo "Immutable tag ${{ env.IMAGE_TAG }} locked for ${IMG}"
-          done
+      # NOTE: Image-tag immutability / retention on the SHARED ACR is managed by
+      # the platform (infrastructure team). The application pipeline does NOT
+      # change registry policies (`az acr repository update`).
 
   # ---------------------------------------------------------------------------
-  # Stage 2: Database Bootstrap (creates DB + user if not exists)
+  # Stage 2: Database Migration
   # ---------------------------------------------------------------------------
-  db-bootstrap:
-    name: '2/5 DB Bootstrap'
+  # The migration ACA job is PRE-PROVISIONED by the platform and references the
+  # environment image alias (e.g. guestportal-backend:${ENV_SUFFIX}) with the
+  # backend UAMI and DATABASE_URL already configured. Stage 1 has just pushed
+  # the new alias, so starting the job runs the new migration (DDL in the app's
+  # own database — allowed; not infrastructure provisioning). The DB, the Entra
+  # role mapped to the UAMI and its grants are provided by the platform.
+  db-migrate:
+    name: '2/4 DB Migration'
     needs: build-and-scan
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
-    env:
-      BACKEND_ACR_IMAGE: ${{ secrets.ACR_NAME }}.azurecr.io/guestportal-backend:${{ github.sha }}
-    # Reuses the top-level ENV_SUFFIX logic (env context is available at job field level)
-    environment: ${{ env.ENV_SUFFIX }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Log in to Azure (OIDC)
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Bootstrap PostgreSQL database and Entra principal
-        run: |
-          set -euo pipefail
-          POSTGRES_HOST=$(az postgres flexible-server show \
-            --name "${{ secrets.POSTGRES_SERVER_NAME }}" \
-            --resource-group "rg-guestportal-${{ env.ENV_SUFFIX }}" \
-            --query "fullyQualifiedDomainName" --output tsv 2>/dev/null || echo "")
-
-          if [ -z "$POSTGRES_HOST" ]; then
-            echo "PostgreSQL server not found — bootstrap failed."
-            exit 1
-          fi
-
-          # Connect as the Entra admin (group or user) using an Entra access
-          # token as the password — no password user is created anywhere.
-          PGUSER="${{ secrets.POSTGRES_ADMIN_USER }}"
-          PGPASSWORD=$(az account get-access-token \
-            --resource-type oss-rdbms \
-            --query accessToken --output tsv)
-          export PGPASSWORD
-          export PGSSLMODE=require
-
-          DB_NAME="guestportal_${{ env.ENV_SUFFIX }}"
-          # The DB login role MUST equal the backend UAMI name for Entra auth.
-          APP_LOGIN="uami-guestportal-backend-${{ env.ENV_SUFFIX }}"
-          PSQL_BASE=(psql -h "$POSTGRES_HOST" -p 5432 -U "$PGUSER" -v ON_ERROR_STOP=1)
-
-          echo "Bootstrapping DB '${DB_NAME}' and Entra principal '${APP_LOGIN}' on ${POSTGRES_HOST}..."
-
-          # 1. Create the database if it does not exist.
-          "${PSQL_BASE[@]}" -d postgres \
-            -c "SELECT 'CREATE DATABASE ${DB_NAME}' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '${DB_NAME}')\gexec"
-
-          # 2. Create the Entra principal mapped to the backend UAMI (idempotent).
-          #    pgaadauth_create_principal errors if the role already exists, so guard it.
-          ROLE_EXISTS=$("${PSQL_BASE[@]}" -d postgres -tAc \
-            "SELECT 1 FROM pg_roles WHERE rolname = '${APP_LOGIN}'")
-          if [ "$ROLE_EXISTS" != "1" ]; then
-            echo "Creating Entra principal '${APP_LOGIN}'..."
-            "${PSQL_BASE[@]}" -d postgres \
-              -c "SELECT * FROM pgaadauth_create_principal('${APP_LOGIN}', false, false)"
-          else
-            echo "Entra principal '${APP_LOGIN}' already exists — skipping."
-          fi
-
-          # 3. Grant the principal the privileges it needs on the app database.
-          "${PSQL_BASE[@]}" -d postgres \
-            -c "GRANT CONNECT ON DATABASE \"${DB_NAME}\" TO \"${APP_LOGIN}\";"
-          "${PSQL_BASE[@]}" -d "$DB_NAME" \
-            -c "GRANT ALL ON SCHEMA public TO \"${APP_LOGIN}\"; GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO \"${APP_LOGIN}\"; GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO \"${APP_LOGIN}\"; ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO \"${APP_LOGIN}\"; ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO \"${APP_LOGIN}\";"
-
-          unset PGPASSWORD
-          echo "Database bootstrap complete."
-
-      - name: Create or update ACA job for DB migration
-        run: |
-          az containerapp job create \
-            --name "job-guestportal-migrate-${{ env.ENV_SUFFIX }}" \
-            --resource-group "rg-guestportal-${{ env.ENV_SUFFIX }}" \
-            --environment "cae-guestportal-${{ env.ENV_SUFFIX }}" \
-            --trigger-type "Manual" \
-            --replica-timeout 300 \
-            --image "${{ env.BACKEND_ACR_IMAGE }}" \
-            --command "node backend/dist/db/migrate.js" \
-            --registry-server "${{ secrets.ACR_NAME }}.azurecr.io" \
-            --env-vars "DATABASE_URL=${{ secrets.DATABASE_URL }}" \
-            --mi-user-assigned "/subscriptions/${{ secrets.AZURE_SUBSCRIPTION_ID }}/resourceGroups/rg-guestportal-${{ env.ENV_SUFFIX }}/providers/Microsoft.ManagedIdentity/userAssignedIdentities/uami-guestportal-backend-${{ env.ENV_SUFFIX }}" \
-            --output none 2>/dev/null || \
-          az containerapp job update \
-            --name "job-guestportal-migrate-${{ env.ENV_SUFFIX }}" \
-            --resource-group "rg-guestportal-${{ env.ENV_SUFFIX }}" \
-            --image "${{ env.BACKEND_ACR_IMAGE }}" \
-            --output none
-
-  # ---------------------------------------------------------------------------
-  # Stage 3: Database Migration (idempotent)
-  # ---------------------------------------------------------------------------
-  db-migrate:
-    name: '3/5 DB Migration'
-    needs: [build-and-scan, db-bootstrap]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
     # Reuses the top-level ENV_SUFFIX logic (env context is available at job field level)
     environment: ${{ env.ENV_SUFFIX }}
 
@@ -379,18 +282,18 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Run database migration (ACA job)
+      - name: Run database migration (start pre-provisioned ACA job)
         run: |
           az containerapp job start \
-            --name "job-guestportal-migrate-${{ env.ENV_SUFFIX }}" \
-            --resource-group "rg-guestportal-${{ env.ENV_SUFFIX }}" \
+            --name "${{ secrets.MIGRATION_JOB_NAME }}" \
+            --resource-group "${{ secrets.RG_NAME }}" \
             --output none
 
   # ---------------------------------------------------------------------------
-  # Stage 4: Deploy to Azure Container Apps
+  # Stage 3: Deploy to Azure Container Apps (update existing apps)
   # ---------------------------------------------------------------------------
   deploy:
-    name: '4/5 Deploy to ACA'
+    name: '3/4 Deploy to ACA'
     needs: [build-and-scan, db-migrate]
     runs-on: ubuntu-latest
     env:
@@ -412,13 +315,14 @@ jobs:
 
       # ── Configure backend env vars AND deploy in a single command ─────
       # We combine --set-env-vars with --image so that a single ACA revision
-      # gets both the new env vars and the new image atomically.
+      # gets both the new env vars and the new image atomically. The container
+      # app itself is pre-provisioned by the platform — we only update it.
       - name: Deploy backend to ACA (with env vars)
         run: |
-          KV="kv-guestportal-${{ env.ENV_SUFFIX }}"
+          KV="${{ secrets.KV_NAME }}"
           az containerapp update \
-            --name "ca-guestportal-backend-${{ env.ENV_SUFFIX }}" \
-            --resource-group "rg-guestportal-${{ env.ENV_SUFFIX }}" \
+            --name "${{ secrets.ACA_BACKEND_NAME }}" \
+            --resource-group "${{ secrets.RG_NAME }}" \
             --image "${{ env.BACKEND_ACR_IMAGE }}" \
             --set-env-vars \
               NODE_ENV=production \
@@ -441,7 +345,7 @@ jobs:
               MAIL_GRAPH_CLIENT_SECRET="@Microsoft.KeyVault(SecretUri=https://${KV}.vault.azure.net/secrets/MAIL-GRAPH-CLIENT-SECRET/)" \
               MAIL_GRAPH_USER_ID="${{ secrets.MAIL_GRAPH_USER_ID }}" \
               MAIL_GRAPH_FROM_ADDRESS="noreply@dompe.com" \
-              BACKEND_BASE_URL="http://ca-guestportal-backend-${{ env.ENV_SUFFIX }}.${{ secrets.ACA_ENVIRONMENT_DEFAULT_DOMAIN }}" \
+              BACKEND_BASE_URL="http://${{ secrets.ACA_BACKEND_NAME }}.${{ secrets.ACA_ENVIRONMENT_DEFAULT_DOMAIN }}" \
               SKIP_MIGRATIONS=true \
               SEED_ENABLED=false \
               --output none
@@ -450,20 +354,20 @@ jobs:
       - name: Deploy frontend to ACA
         run: |
           az containerapp update \
-            --name "ca-guestportal-frontend-${{ env.ENV_SUFFIX }}" \
-            --resource-group "rg-guestportal-${{ env.ENV_SUFFIX }}" \
+            --name "${{ secrets.ACA_FRONTEND_NAME }}" \
+            --resource-group "${{ secrets.RG_NAME }}" \
             --image "${{ env.FRONTEND_ACR_IMAGE }}" \
             --output none
 
       - name: Wait for deployments to be active
         run: |
-          for APP in "ca-guestportal-backend-${{ env.ENV_SUFFIX }}" "ca-guestportal-frontend-${{ env.ENV_SUFFIX }}"; do
+          for APP in "${{ secrets.ACA_BACKEND_NAME }}" "${{ secrets.ACA_FRONTEND_NAME }}"; do
             echo "Waiting for $APP..."
             sleep 15
             for i in $(seq 1 12); do
               STATUS=$(az containerapp show \
                 --name "$APP" \
-                --resource-group "rg-guestportal-${{ env.ENV_SUFFIX }}" \
+                --resource-group "${{ secrets.RG_NAME }}" \
                 --query "properties.latestRevisionFqdn" \
                 --output tsv 2>/dev/null || echo "waiting")
               echo "[$i] $APP FQDN: $STATUS"
@@ -476,14 +380,14 @@ jobs:
           done
 
   # ---------------------------------------------------------------------------
-  # Stage 5: Post-deploy Verification (informational)
+  # Stage 4: Post-deploy Verification (informational)
   # ---------------------------------------------------------------------------
   # Note: App Gateway backend pool updates are managed by the platform
   # infrastructure team — the application pipeline must not modify them.
   # The ACA apps are internal-only, so this job does NOT run health checks
   # from the public runner (that produced false greens). See the step below.
   post-deploy-verify:
-    name: '5/5 Post-deploy Verify'
+    name: '4/4 Post-deploy Verify'
     needs: [deploy]
     runs-on: ubuntu-latest
     permissions:

@@ -106,6 +106,10 @@ authentication so development does not require an Azure AD tenant.
 
 ### 2. Configure SAML SSO
 
+> **Hostname convention** (corporate zone `dompe.com`): prod is
+> `guestportal.dompe.com` (**no suffix**); non-prod is `guestportal-stg.dompe.com`
+> and `guestportal-dev.dompe.com`. The examples below use dev.
+
 1. In the app registration, go to **Manage → Authentication**
 2. Under **Platform configurations**, click **Add a platform** → **Web**
 3. Set **Redirect URI** to your public callback URL:
@@ -444,43 +448,45 @@ This is set automatically by the CI/CD pipeline using the
 The CI/CD pipeline requires the following secrets configured in your GitHub
 repository (Settings → Secrets and variables → Actions):
 
+Platform resource **names are parametrized** (consume-only model — supplied by
+the infrastructure team; nothing hard-coded):
+
 | Secret                          | Description                                              |
 |---------------------------------|----------------------------------------------------------|
-| `ACA_ENVIRONMENT_DEFAULT_DOMAIN` | ACA env default domain (from Azure Portal → Container Apps Environment) |
+| `AZURE_CLIENT_ID` / `AZURE_TENANT_ID` / `AZURE_SUBSCRIPTION_ID` | OIDC federated identity for the pipeline |
 | `ACR_NAME`                      | Azure Container Registry name                           |
-| `AZURE_CLIENT_ID`               | Da `./scripts/setup-oidc.sh <org>/centralino` (crea App Registration + federated credential) |
-| `AZURE_TENANT_ID`               | Azure AD tenant ID                                      |
-| `AZURE_SUBSCRIPTION_ID`         | Azure subscription ID                                   |
-| `DATABASE_URL`                  | PostgreSQL connection string; Entra ID auth, no password. User MUST be the backend UAMI name (`uami-guestportal-backend-{env}`) |
-| `POSTGRES_SERVER_NAME`          | PostgreSQL Flexible Server name                         |
-| `POSTGRES_ADMIN_USER`           | Entra admin (group/user) used only to bootstrap the DB + Entra principal |
+| `RG_NAME`                       | Resource group (platform-provided)                     |
+| `KV_NAME`                       | Key Vault (platform-provided)                          |
+| `ACA_ENV_NAME`                  | ACA environment (preflight check)                      |
+| `ACA_BACKEND_NAME` / `ACA_FRONTEND_NAME` | Container App names (platform-provided)        |
+| `MIGRATION_JOB_NAME`            | Pre-provisioned migration ACA job                      |
+| `UAMI_BACKEND_NAME` / `UAMI_FRONTEND_NAME` | Managed identities (preflight check)        |
+| `ACA_ENVIRONMENT_DEFAULT_DOMAIN` | ACA env default domain                                |
+| `DATABASE_URL`                  | Entra ID auth, no password. User MUST be the backend UAMI name (`UAMI_BACKEND_NAME`) |
+| `POSTGRES_SERVER_NAME`          | PostgreSQL Flexible Server name (preflight check)      |
 | `SAML_ENTRY_POINT`              | Entra ID SAML SSO endpoint URL                          |
-| `SAML_ISSUER`                   | Application Entity ID                                   |
+| `SAML_ISSUER`                   | Application Entity ID (`https://guestportal[-<env>].dompe.com/saml`) |
 | `SAML_CALLBACK_URL`             | ACS callback URL                                        |
 | `MAIL_GRAPH_CLIENT_ID`          | Graph API App Registration client ID (per email)       |
 | `MAIL_GRAPH_USER_ID`            | Graph API mailbox user ID/UPN (per email)              |
 
 > 🔑 `ACA_ENVIRONMENT_DEFAULT_DOMAIN` can be found in the Azure Portal under
 > the Container Apps Environment resource → "Default Domain" property.
-> Alternatively, via Azure CLI:
-> ```bash
-> az containerapp env show \
->   --name cae-guestportal-dev \
->   --resource-group rg-guestportal-dev \
->   --query "properties.defaultDomain" \
->   --output tsv
-> ```
-> It looks like `icydune-01234567.westeurope.azurecontainerapps.io`.
 
-### Pipeline Flow
+### Pipeline Flow (consume-only)
 
-1. **Initial provisioning** (platform team): Create ACA container apps, Key Vault,
-   UAMI, set secrets in Key Vault, configure GitHub secrets
-2. **Every deployment** (CI/CD pipeline):
-   - Stage 4 (Deploy) → `Deploy backend to ACA (with env vars)` step
-     sets/updates all env vars with KV references AND deploys the new image
-     in a single atomic command
-   - This is idempotent: existing values are updated, new ones added
+1. **Provisioning** (platform / infrastructure team, out of this repo): creates
+   the Resource Group, Key Vault, ACA environment, the two Container Apps, the
+   UAMIs, the PostgreSQL server + database + the Entra role mapped to the backend
+   UAMI, the migration ACA job, the ACR and the Application Gateway. Use
+   `./scripts/provision.sh <env>` (read-only preflight) to verify they exist.
+2. **Every deployment** (CI/CD pipeline — updates only, never creates):
+   - Stage 1 build/scan → push image to ACR
+   - Stage 2 → start the pre-provisioned migration ACA job
+   - Stage 3 (Deploy) → `az containerapp update --image ... --set-env-vars ...`
+     sets env vars with Key Vault references and deploys the new image in a
+     single atomic command (idempotent)
+   - Stage 4 → informational post-deploy note (internal-only apps)
 3. **Secret rotation**: Update the secret in Key Vault, then restart the ACA
    revision for changes to take effect
 

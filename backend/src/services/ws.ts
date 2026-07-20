@@ -13,7 +13,7 @@
  *
  * Authentication:
  *   WebSocket upgrades are authenticated via the same Express session that
- *   protects the REST API. On upgrade, the session cookie (cgd.sid) is
+ *   protects the REST API. On upgrade, the session cookie (guestportal.sid) is
  *   parsed and validated against the PostgreSQL session store. Only clients
  *   with a valid passport-authenticated session are allowed to upgrade.
  *   Unauthenticated upgrade requests receive a 401 response.

@@ -44,7 +44,7 @@ export function createAuthRouter(opts: AuthRouterOptions): Router {
       req.logout((err) => {
         if (err) return next(err);
         req.session.destroy(() => {
-          res.clearCookie('cgd.sid');
+          res.clearCookie('guestportal.sid');
           res.json({ success: true });
         });
       });
@@ -117,7 +117,7 @@ export function createAuthRouter(opts: AuthRouterOptions): Router {
       // No user or no SAML strategy — local logout only
       req.logout(() => {
         req.session.destroy(() => {
-          res.clearCookie('cgd.sid');
+          res.clearCookie('guestportal.sid');
           res.json({ success: true });
         });
       });
@@ -130,7 +130,7 @@ export function createAuthRouter(opts: AuthRouterOptions): Router {
         // Destroy the local session before redirecting
         req.logout(() => {
           req.session.destroy(() => {
-            res.clearCookie('cgd.sid');
+            res.clearCookie('guestportal.sid');
             log.info(
               { nameID: user.nameID, email: user.email },
               'Local session destroyed, redirecting to IdP SLO endpoint',
@@ -147,7 +147,7 @@ export function createAuthRouter(opts: AuthRouterOptions): Router {
         );
         req.logout(() => {
           req.session.destroy(() => {
-            res.clearCookie('cgd.sid');
+            res.clearCookie('guestportal.sid');
             res.json({ success: true, slo: false });
           });
         });

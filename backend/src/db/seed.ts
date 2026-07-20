@@ -135,7 +135,7 @@ export async function runSeed(client: DbClient): Promise<void> {
   if (Number((smsCount.rows[0] as { c: number }).c) === 0) {
     await client.query(
       `INSERT INTO sms_config (id, gateway_type, api_key, sender_id, webhook_url)
-       VALUES (1, 'textbelt', '', 'DompeGuest', 'https://api.textbelt.com/text')`,
+       VALUES (1, 'textbelt', '', 'DompeGuest', '')`,
     );
   }
 }

@@ -169,7 +169,7 @@ async function main(): Promise<void> {
     verifySession(req, callback) {
       // Parse the session cookie from the Cookie header
       const rawCookie = req.headers.cookie ?? '';
-      const match = rawCookie.match(/(?:^|;\s*)cgd\.sid=([^;]+)/);
+      const match = rawCookie.match(/(?:^|;\s*)guestportal\.sid=([^;]+)/);
       if (!match) {
         callback(false);
         return;
