@@ -158,7 +158,6 @@ function SedeWlcForm({
   const [port, setPort] = useState(sede.wlcPort ?? 443);
   const [sshPort, setSshPort] = useState(sede.wlcSshPort ?? 22);
   const [username, setUsername] = useState('admin_guest');
-  const [password, setPassword] = useState('');
   const [ssid, setSsid] = useState(sede.wlcSsid ?? 'Dompe Guest');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -171,9 +170,9 @@ function SedeWlcForm({
     setError(null);
     setUnreachable(false);
     try {
-      const r = await api.wlcLogin({ host, port, username, password, sedeId: sede.id });
+      const r = await api.wlcLogin({ host, port, username, sedeId: sede.id });
       if (r.success) {
-        onAuthenticated({ id: 0, host, port, sshPort, username, password, wlanSsid: ssid, authenticated: true, sedeId: sede.id }, sede);
+        onAuthenticated({ id: 0, host, port, sshPort, username, wlanSsid: ssid, authenticated: true, sedeId: sede.id }, sede);
         return;
       }
       if (r.isUnreachable) {
@@ -193,7 +192,7 @@ function SedeWlcForm({
   }
 
   function enableDemo() {
-    onAuthenticated({ id: 0, host, port, sshPort, username, password, wlanSsid: ssid, authenticated: false, sedeId: sede.id }, sede);
+    onAuthenticated({ id: 0, host, port, sshPort, username, wlanSsid: ssid, authenticated: false, sedeId: sede.id }, sede);
   }
 
   return (
@@ -249,10 +248,6 @@ function SedeWlcForm({
               <input id="wlc-username" className="input pl-9" value={username} onChange={(e) => setUsername(e.target.value)} required />
               <Key className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
             </div>
-          </div>
-          <div className="col-span-2">
-            <label className="label" htmlFor="wlc-password">{t('login.password')}</label>
-            <input id="wlc-password" className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
           </div>
           <div className="col-span-2">
             <label className="label" htmlFor="wlc-ssid">{t('login.ssid')}</label>

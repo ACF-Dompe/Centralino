@@ -24,8 +24,6 @@ const mockRepo = vi.hoisted(() => ({
   updateWlcConfigBySede: vi.fn(),
   getWlcConfig: vi.fn(),
   updateWlcConfig: vi.fn(),
-  getEmailConfig: vi.fn(),
-  updateEmailConfig: vi.fn(),
   getSmsConfig: vi.fn(),
   updateSmsConfig: vi.fn(),
   listSyncLogs: vi.fn(),
@@ -81,13 +79,16 @@ const DEFAULT_WLC_CONFIG = {
   wlanSsid: 'Dompe Guest',
 };
 
-const DEFAULT_SEDE = { id: 1, name: 'Sede Centrale' };
+const DEFAULT_SEDE = { id: 1, code: 'MIL', name: 'Sede Centrale' };
 
 describe('Routes Integration', () => {
   let app: express.Express;
 
   beforeEach(() => {
     vi.clearAllMocks();
+
+    // WLC password now comes from Key Vault (env) per sede (§2).
+    process.env.WLC_PASSWORD_MIL = 'test-wlc-pass';
 
     // Seed default mocks so most tests don't need to repeat them
     mockRepo.listSedi.mockResolvedValue([DEFAULT_SEDE]);
@@ -152,11 +153,12 @@ describe('Routes Integration', () => {
   //  WLC Login — command injection surface
   // ═════════════════════════════════════════════════════════════════════
   describe('POST /api/wlc/login (injection surface)', () => {
+    // The WLC password is NOT sent by the client anymore (§2) — it is resolved
+    // from Key Vault (env) by sede. The body carries only connection params.
     const validBody = {
       host: '192.168.1.1',
       port: 443,
       username: 'admin',
-      password: 'Admin@123',
       sedeId: 1,
     };
 
@@ -199,20 +201,6 @@ describe('Routes Integration', () => {
       const res = await request(app)
         .post('/api/wlc/login')
         .send({ ...validBody, username: '$(id)' });
-      expect(res.status).toBe(400);
-    });
-
-    it('rejects password with newline injection', async () => {
-      const res = await request(app)
-        .post('/api/wlc/login')
-        .send({ ...validBody, password: 'pass\nword' });
-      expect(res.status).toBe(400);
-    });
-
-    it('rejects password with null byte', async () => {
-      const res = await request(app)
-        .post('/api/wlc/login')
-        .send({ ...validBody, password: 'valid\0evil' });
       expect(res.status).toBe(400);
     });
 
@@ -551,7 +539,7 @@ describe('Routes Integration', () => {
         username: 'g.mario_abc123',
       });
       mockWlcSsh.execSsh.mockResolvedValue({ success: true, output: '' });
-      mockEmail.sendCredentialEmail.mockResolvedValue({ ok: true, mode: 'smtp' });
+      mockEmail.sendCredentialEmail.mockResolvedValue({ ok: true, mode: 'graph' });
 
       const res = await request(app).post('/api/guests').send(validBody);
       expect(res.status).toBe(200);
@@ -594,7 +582,7 @@ describe('Routes Integration', () => {
         sedeId: 1,
       });
       mockWlcSsh.execSsh.mockResolvedValue({ success: true, output: '' });
-      mockEmail.sendCredentialEmail.mockResolvedValue({ ok: true, mode: 'smtp' });
+      mockEmail.sendCredentialEmail.mockResolvedValue({ ok: true, mode: 'graph' });
 
       const res = await request(app)
         .post('/api/guests/g-1/resend-credentials');
@@ -662,19 +650,7 @@ describe('Routes Integration', () => {
       expect(res.body.data.host).toBe('new-host');
     });
 
-    it('GET /api/config/email returns email config', async () => {
-      mockRepo.getEmailConfig.mockResolvedValue({ smtpHost: 'smtp.dompe.com' });
-      const res = await request(app).get('/api/config/email');
-      expect(res.status).toBe(200);
-    });
-
-    it('PUT /api/config/email updates and returns email config', async () => {
-      mockRepo.updateEmailConfig.mockResolvedValue({ smtpHost: 'new.smtp.com' });
-      const res = await request(app).put('/api/config/email').send({ smtpHost: 'new.smtp.com' });
-      expect(res.status).toBe(200);
-      expect(res.body.data.smtpHost).toBe('new.smtp.com');
-      expect(mockRepo.updateEmailConfig).toHaveBeenCalledOnce();
-    });
+    // Email/SMTP config endpoints removed (§3): mail is Graph-only.
 
     it('GET /api/config/sms returns SMS config', async () => {
       mockRepo.getSmsConfig.mockResolvedValue({ provider: 'twilio' });

@@ -49,17 +49,6 @@ export interface WlcConfig {
   sedeId: number | null;
 }
 
-export interface EmailConfig {
-  id: number;
-  smtpHost: string | null;
-  smtpPort: number;
-  sender: string | null;
-  encryption: string | null;
-  requireAuth: boolean;
-  username: string | null;
-  password: string | null;
-}
-
 export interface SmsConfig {
   id: number;
   gatewayType: string | null;

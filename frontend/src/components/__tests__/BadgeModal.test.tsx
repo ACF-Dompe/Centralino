@@ -49,13 +49,11 @@ vi.mock('../../i18n', () => ({
   ],
 }));
 
-// Mock API
-const mockGetEmailConfig = vi.fn();
+// Mock API — BadgeModal no longer reads email config (§3); mail is Graph-only.
 const mockResendCredentials = vi.fn();
 
 vi.mock('../../api/client', () => ({
   api: {
-    getEmailConfig: (...args: unknown[]) => mockGetEmailConfig(...args),
     resendCredentials: (...args: unknown[]) => mockResendCredentials(...args),
   },
 }));
@@ -81,9 +79,6 @@ const guest = {
 describe('BadgeModal', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockGetEmailConfig.mockResolvedValue({
-      data: { smtpHost: 'smtp.dompe.com', smtpPort: 587, sender: 'noreply@dompe.com', encryption: 'starttls', requireAuth: true, username: 'admin', password: '', id: 1 },
-    });
     mockResendCredentials.mockResolvedValue({ emailSent: true });
   });
 
@@ -207,11 +202,4 @@ describe('BadgeModal', () => {
     });
   });
 
-  it('calls getEmailConfig on mount', async () => {
-    render(<BadgeModal guest={guest} ssid="Dompe Guest" onClose={vi.fn()} />);
-
-    await waitFor(() => {
-      expect(mockGetEmailConfig).toHaveBeenCalledOnce();
-    });
-  });
 });

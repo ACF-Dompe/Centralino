@@ -2,7 +2,7 @@
  * Thin API client for the backend.
  * Base path is `/api` in dev (Vite proxy) and prod (same origin).
  */
-import type { Guest, WlcConfig, EmailConfig, SmsConfig, SyncLog, GuestStatus, Sede } from '../types';
+import type { Guest, WlcConfig, SmsConfig, SyncLog, GuestStatus, Sede } from '../types';
 
 const BASE = '/api';
 
@@ -54,7 +54,7 @@ export const api = {
   getSede: (id: number) => request<{ data: Sede }>(`/sedi/${id}`),
 
   // WLC
-  wlcLogin: (body: { host: string; port: number; username: string; password: string; sedeId?: number }) =>
+  wlcLogin: (body: { host: string; port: number; username: string; sedeId?: number }) =>
     request<{ success: boolean; status?: number; message?: string; error?: string; isUnreachable?: boolean; authMethod?: string }>(
       '/wlc/login',
       { method: 'POST', body: JSON.stringify(body) },
@@ -92,7 +92,7 @@ export const api = {
     request<{ data: Guest }>(`/guests/${id}`, { method: 'PUT', body: JSON.stringify(patch) }),
   deleteGuest: (id: string) => request<{ success: boolean }>(`/guests/${id}`, { method: 'DELETE' }),
   resendCredentials: (id: string) =>
-    request<{ success: boolean; oneTimePassword: string; wlcUpdated: boolean; emailSent: boolean; emailMode: 'smtp' | 'demo-log' }>(
+    request<{ success: boolean; oneTimePassword: string; wlcUpdated: boolean; emailSent: boolean; emailMode: 'graph' | 'demo-log' }>(
       `/guests/${id}/resend-credentials`,
       { method: 'POST' },
     ),
@@ -101,9 +101,7 @@ export const api = {
   getWlcConfig: () => request<{ data: WlcConfig }>('/config/wlc'),
   updateWlcConfig: (patch: Partial<WlcConfig>) =>
     request<{ data: WlcConfig }>('/config/wlc', { method: 'PUT', body: JSON.stringify(patch) }),
-  getEmailConfig: () => request<{ data: EmailConfig }>('/config/email'),
-  updateEmailConfig: (patch: Partial<EmailConfig>) =>
-    request<{ data: EmailConfig }>('/config/email', { method: 'PUT', body: JSON.stringify(patch) }),
+  // Email/SMTP config removed (§3): mail is Graph-only, no client config.
   getSmsConfig: () => request<{ data: SmsConfig }>('/config/sms'),
   updateSmsConfig: (patch: Partial<SmsConfig>) =>
     request<{ data: SmsConfig }>('/config/sms', { method: 'PUT', body: JSON.stringify(patch) }),

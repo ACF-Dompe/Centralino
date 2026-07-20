@@ -41,21 +41,11 @@ export interface WlcConfig {
   port: number;
   sshPort: number;
   username: string;
-  password: string;
+  // WLC password is NOT part of the client contract (§2): it lives in Key Vault
+  // (env var per sede) and is resolved server-side.
   wlanSsid: string;
   authenticated: boolean;
   sedeId: number | null;
-}
-
-export interface EmailConfig {
-  id: number;
-  smtpHost: string | null;
-  smtpPort: number;
-  sender: string | null;
-  encryption: string | null;
-  requireAuth: boolean;
-  username: string | null;
-  password: string | null;
 }
 
 export interface SmsConfig {

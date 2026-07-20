@@ -59,7 +59,8 @@
 #   SAML_DECRYPTION_KEY              Key Vault reference (optional)
 #   SAML_LOGOUT_URL                  Key Vault reference (optional)
 #   SAML_LOGOUT_CALLBACK_URL         Key Vault reference (optional)
-#   WLC_DEFAULT_PASSWORD             Key Vault reference
+#   WLC_PASSWORD_<CODE>              Key Vault reference, one per sede
+#                                    (MIL/AQ/NA/TIR/SM → WLC-PASSWORD-<CODE>)
 #   APPLICATIONINSIGHTS_CONNECTION_STRING  Key Vault reference (optional)
 #   BACKEND_BASE_URL                 Built from ACA_ENVIRONMENT_DEFAULT_DOMAIN
 #   NODE_ENV, PORT, LOG_LEVEL        Plain values
@@ -337,7 +338,11 @@ jobs:
               SAML_DECRYPTION_KEY="@Microsoft.KeyVault(SecretUri=https://${KV}.vault.azure.net/secrets/SAML-DECRYPTION-KEY/)" \
               SAML_LOGOUT_URL="@Microsoft.KeyVault(SecretUri=https://${KV}.vault.azure.net/secrets/SAML-LOGOUT-URL/)" \
               SAML_LOGOUT_CALLBACK_URL="@Microsoft.KeyVault(SecretUri=https://${KV}.vault.azure.net/secrets/SAML-LOGOUT-CALLBACK-URL/)" \
-              WLC_DEFAULT_PASSWORD="@Microsoft.KeyVault(SecretUri=https://${KV}.vault.azure.net/secrets/WLC-DEFAULT-PASSWORD/)" \
+              WLC_PASSWORD_MIL="@Microsoft.KeyVault(SecretUri=https://${KV}.vault.azure.net/secrets/WLC-PASSWORD-MIL/)" \
+              WLC_PASSWORD_AQ="@Microsoft.KeyVault(SecretUri=https://${KV}.vault.azure.net/secrets/WLC-PASSWORD-AQ/)" \
+              WLC_PASSWORD_NA="@Microsoft.KeyVault(SecretUri=https://${KV}.vault.azure.net/secrets/WLC-PASSWORD-NA/)" \
+              WLC_PASSWORD_TIR="@Microsoft.KeyVault(SecretUri=https://${KV}.vault.azure.net/secrets/WLC-PASSWORD-TIR/)" \
+              WLC_PASSWORD_SM="@Microsoft.KeyVault(SecretUri=https://${KV}.vault.azure.net/secrets/WLC-PASSWORD-SM/)" \
               APPLICATIONINSIGHTS_CONNECTION_STRING="@Microsoft.KeyVault(SecretUri=https://${KV}.vault.azure.net/secrets/APPINSIGHTS-CONNECTION-STRING/)" \
               MAIL_GRAPH_ENABLED=false \
               MAIL_GRAPH_TENANT_ID="${{ secrets.AZURE_TENANT_ID }}" \

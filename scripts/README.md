@@ -89,11 +89,13 @@ Secret **values** (Key Vault contents such as `SESSION-SECRET`, `SAML-CERT`,
 
 ## OIDC federated credential (`setup-oidc.sh`)
 
-`scripts/setup-oidc.sh` creates the App Registration + federated credentials +
-Key Vault RBAC for GitHub Actions. **Under the consume-only model, whether this
-identity is created by the app team or the infrastructure team is an open
-decision** — if infra owns it, this script becomes documentation only. Do not
-run it until that ownership is confirmed with the architect.
+Under the consume-only model the pipeline's OIDC identity (App Registration +
+service principal + federated credentials) and its Key Vault RBAC are created by
+the **infrastructure team**, not by this repo. `scripts/setup-oidc.sh` no longer
+creates anything: it prints the exact spec the infra team must apply and, with
+`--verify`, checks read-only that the expected federated credentials already
+exist (`az ad app ... list`). The infra team returns `AZURE_CLIENT_ID`,
+`AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID` to configure as GitHub secrets.
 
 ## Prerequisites
 

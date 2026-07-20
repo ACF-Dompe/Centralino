@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useLocale } from '../i18n';
 import { X, Mail, Building, User, Clock } from './icons';
 import { api } from '../api/client';
-import type { EmailConfig, Guest } from '../types';
+import type { Guest } from '../types';
 
 interface Props {
   guest: Guest;
@@ -10,18 +10,15 @@ interface Props {
   onClose: () => void;
 }
 
+// Mail is sent server-side via Microsoft Graph (§3); the sender address is
+// MAIL_GRAPH_FROM_ADDRESS on the backend. The UI shows the default for display.
+const SENDER_ADDRESS = 'noreply@dompe.com';
+
 export default function BadgeModal({ guest, ssid, onClose }: Props) {
   const [, , t] = useLocale();
-  const [emailCfg, setEmailCfg] = useState<EmailConfig | null>(null);
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    api.getEmailConfig()
-      .then((e) => setEmailCfg(e.data))
-      .catch(() => { /* keep null */ });
-  }, []);
 
   async function sendEmail() {
     if (!guest.email) return;
@@ -71,7 +68,7 @@ export default function BadgeModal({ guest, ssid, onClose }: Props) {
               <div className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">{t('modal.email.from')}</div>
               <div className="mt-1 flex items-center gap-2 text-sm">
                 <Mail className="h-4 w-4 text-slate-400" />
-                <span className="font-mono text-slate-800">{emailCfg?.sender ?? 'noreply@dompe.com'}</span>
+                <span className="font-mono text-slate-800">{SENDER_ADDRESS}</span>
               </div>
             </div>
             <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">

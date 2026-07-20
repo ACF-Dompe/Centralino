@@ -234,8 +234,8 @@ describe('Login', () => {
     it('calls wlcLogin with correct params on submit', async () => {
       const user = userEvent.setup();
 
-      const passwordInput = screen.getByLabelText('Password amministratore');
-      await user.type(passwordInput, 'test123');
+      // The WLC password is no longer entered in the UI (§2) — it is resolved
+      // server-side from Key Vault by sede. The form submits connection params only.
       await user.click(screen.getByText('Connetti al WLC'));
 
       await waitFor(() => {
@@ -243,7 +243,6 @@ describe('Login', () => {
           host: '172.18.106.100',
           port: 443,
           username: 'admin_guest',
-          password: 'test123',
           sedeId: 1,
         });
       });
@@ -251,7 +250,6 @@ describe('Login', () => {
 
     it('calls onAuthenticated on successful login', async () => {
       const user = userEvent.setup();
-      await user.type(screen.getByLabelText('Password amministratore'), 'test123');
       await user.click(screen.getByText('Connetti al WLC'));
 
       await waitFor(() => {
@@ -263,7 +261,6 @@ describe('Login', () => {
       mockWlcLogin.mockResolvedValue({ success: false, error: 'Credenziali WLC errate.', isUnreachable: false });
 
       const user = userEvent.setup();
-      await user.type(screen.getByLabelText('Password amministratore'), 'wrong');
       await user.click(screen.getByText('Connetti al WLC'));
 
       await waitFor(() => {
@@ -275,7 +272,6 @@ describe('Login', () => {
       mockWlcLogin.mockResolvedValue({ success: false, error: 'WLC non raggiungibile.', isUnreachable: true });
 
       const user = userEvent.setup();
-      await user.type(screen.getByLabelText('Password amministratore'), 'test123');
       await user.click(screen.getByText('Connetti al WLC'));
 
       await waitFor(() => {
@@ -297,7 +293,6 @@ describe('Login', () => {
       if (sedeBtns.length > 0) await user.click(sedeBtns[0]);
       await waitFor(() => expect(screen.getByText('Accesso al Wireless LAN Controller')).toBeInTheDocument());
 
-      await user.type(screen.getByLabelText('Password amministratore'), 'test123');
       await user.click(screen.getByText('Connetti al WLC'));
       await waitFor(() => expect(screen.getByText('WLC NON RAGGIUNGIBILE')).toBeInTheDocument());
       return user;

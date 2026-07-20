@@ -68,7 +68,7 @@ Tutti i **P0** (4/4) e **P1‑P2** (11/11) sono stati risolti nel codice. In que
 |---|---|---|---|
 | 1 | Due immagini/Dockerfile indipendenti | 🟢 Conforme | Stateless, non‑root, multi‑stage |
 | 2 | README + `.gitignore`; nessun segreto committato | 🟢 Conforme | README root/backend/frontend/scripts; segreti rimossi |
-| 3 | Config via env; segreti solo via KV ref | 🟡 Parziale | KV ref usati in pipeline; segreti WLC/SMTP non più in GET API ma ancora in DB (PUT li accetta) |
+| 3 | Config via env; segreti solo via KV ref | 🟢 Conforme | Password WLC in Key Vault per sede (`WLC_PASSWORD_<CODE>`), mai in DB (§2 v7); SMTP rimosso, mail solo via Graph (§3 v7). Resta solo `sms_config.api_key` in DB, ma la feature SMS è nascosta e il campo è vuoto |
 | 4 | API sotto `/api`, same‑origin, no CORS | 🟢 Conforme | CORS rimosso |
 | 5 | Frontend→backend server‑side via `BACKEND_BASE_URL` | ⚪ N/A | Nessun SSR |
 | 6 | Dietro AGW (URL relativi, header forwarded) | 🟢 Conforme | `trust proxy`; WS ora sotto `/api/ws` |

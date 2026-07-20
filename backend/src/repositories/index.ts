@@ -2,7 +2,8 @@
  * Repository layer — one place to translate between DB rows and domain types.
  */
 import { getDb } from '../db/index.js';
-import type { Guest, WlcConfig, EmailConfig, SmsConfig, SyncLog, GuestStatus, Sede } from '../types.js';
+import { wlcPasswordForSede } from '../config.js';
+import type { Guest, WlcConfig, SmsConfig, SyncLog, GuestStatus, Sede } from '../types.js';
 
 interface GuestRow {
   id: string;
@@ -198,12 +199,13 @@ interface WlcRow {
   port: number;
   ssh_port: number;
   username: string;
-  password: string;
   wlan_ssid: string;
   authenticated: number | boolean;
   sede_id: number | null;
 }
 
+// NOTE: the WLC password is NOT stored in the DB (§2). rowToWlc leaves it
+// empty; getWlcConfigBySede fills it from the environment (Key Vault) by sede.
 function rowToWlc(r: WlcRow): WlcConfig {
   return {
     id: Number(r.id),
@@ -211,11 +213,20 @@ function rowToWlc(r: WlcRow): WlcConfig {
     port: Number(r.port),
     sshPort: Number(r.ssh_port),
     username: String(r.username),
-    password: String(r.password),
+    password: '',
     wlanSsid: String(r.wlan_ssid),
     authenticated: Boolean(r.authenticated),
     sedeId: r.sede_id != null ? Number(r.sede_id) : null,
   };
+}
+
+/** Resolve a sede's short code (used to look up its WLC password env var). */
+async function resolveSedeCode(sedeId: number | null): Promise<string | null> {
+  if (sedeId == null) return null;
+  const db = await getDb();
+  const res = await db.query(`SELECT code FROM sedi WHERE id = ?`, [sedeId]);
+  const rows = res.rows as Array<{ code: string }>;
+  return rows.length > 0 ? String(rows[0].code) : null;
 }
 
 /**
@@ -237,14 +248,18 @@ export async function getWlcConfigBySede(sedeId: number | null): Promise<WlcConf
     res = await db.query(`SELECT * FROM wlc_config ORDER BY id ASC LIMIT 1`);
   }
   const r = (res.rows as WlcRow[])[0];
-  if (!r) {
-    return {
-      id: 0, host: '172.18.106.100', port: 443, sshPort: 22,
-      username: 'admin_guest', password: '', wlanSsid: 'Dompe Guest',
-      authenticated: false, sedeId: null,
-    };
-  }
-  return rowToWlc(r);
+  const base: WlcConfig = r
+    ? rowToWlc(r)
+    : {
+        id: 0, host: '172.18.106.100', port: 443, sshPort: 22,
+        username: 'admin_guest', password: '', wlanSsid: 'Dompe Guest',
+        authenticated: false, sedeId: null,
+      };
+  // Resolve the WLC password from the environment (Key Vault) by sede code —
+  // never from the DB (§2).
+  const code = await resolveSedeCode(sedeId ?? base.sedeId);
+  base.password = wlcPasswordForSede(code);
+  return base;
 }
 
 /**
@@ -257,12 +272,13 @@ export async function getWlcConfig(): Promise<WlcConfig> {
 
 export async function updateWlcConfigBySede(sedeId: number, patch: Partial<WlcConfig>): Promise<WlcConfig | null> {
   const db = await getDb();
+  // `password` is intentionally NOT in the map — the WLC password lives in
+  // Key Vault (env), never in the DB (§2).
   const map: Record<string, string> = {
     host: 'host',
     port: 'port',
     sshPort: 'ssh_port',
     username: 'username',
-    password: 'password',
     wlanSsid: 'wlan_ssid',
     authenticated: 'authenticated',
   };
@@ -289,12 +305,12 @@ export async function updateWlcConfigBySede(sedeId: number, patch: Partial<WlcCo
  */
 export async function updateWlcConfig(patch: Partial<WlcConfig>): Promise<WlcConfig> {
   const db = await getDb();
+  // `password` intentionally omitted — WLC password is env/Key Vault only (§2).
   const map: Record<string, string> = {
     host: 'host',
     port: 'port',
     sshPort: 'ssh_port',
     username: 'username',
-    password: 'password',
     wlanSsid: 'wlan_ssid',
     authenticated: 'authenticated',
   };
@@ -312,44 +328,9 @@ export async function updateWlcConfig(patch: Partial<WlcConfig>): Promise<WlcCon
   return getWlcConfig();
 }
 
-/* --------------------------- Email / SMS / Logs (unchanged) --------------------------- */
-
-export async function getEmailConfig(): Promise<EmailConfig> {
-  const db = await getDb();
-  const res = await db.query(`SELECT * FROM email_config WHERE id = 1`);
-  const r = (res.rows as Array<Record<string, unknown>>)[0] ?? {};
-  return {
-    id: 1,
-    smtpHost: (r.smtp_host as string | null) ?? null,
-    smtpPort: Number(r.smtp_port ?? 587),
-    sender: (r.sender as string | null) ?? null,
-    encryption: (r.encryption as string | null) ?? 'tls',
-    requireAuth: Boolean(r.require_auth),
-    username: (r.username as string | null) ?? null,
-    password: (r.password as string | null) ?? null,
-  };
-}
-
-export async function updateEmailConfig(patch: Partial<EmailConfig>): Promise<EmailConfig> {
-  const db = await getDb();
-  const map: Record<string, string> = {
-    smtpHost: 'smtp_host', smtpPort: 'smtp_port', sender: 'sender',
-    encryption: 'encryption', requireAuth: 'require_auth',
-    username: 'username', password: 'password',
-  };
-  const sets: string[] = [];
-  const params: unknown[] = [];
-  for (const [k, v] of Object.entries(patch)) {
-    const col = map[k];
-    if (!col) continue;
-    sets.push(`${col} = ?`);
-    params.push(v);
-  }
-  if (sets.length > 0) {
-    await db.query(`UPDATE email_config SET ${sets.join(', ')} WHERE id = 1`, params);
-  }
-  return getEmailConfig();
-}
+/* --------------------------- SMS / Logs --------------------------- */
+/* Email/SMTP config removed (§3): mail is sent only via Microsoft Graph
+   (see services/email.ts + graphMail.ts); there is no email_config table. */
 
 export async function getSmsConfig(): Promise<SmsConfig> {
   const db = await getDb();

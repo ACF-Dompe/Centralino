@@ -1,39 +1,25 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Cisco Guest Desk — Azure OIDC Federated Credential Setup
+# Guest Portal — Pipeline OIDC Identity (DOCUMENTATION / READ-ONLY PREFLIGHT)
 # =============================================================================
-# Creates/updates an Azure AD App Registration with federated identity
-# credentials for GitHub Actions (OIDC), and outputs the three secrets
-# needed by the CI/CD pipelines:
-#
-#   AZURE_CLIENT_ID       → App Registration Application (client) ID
-#   AZURE_TENANT_ID       → Azure AD tenant ID
-#   AZURE_SUBSCRIPTION_ID → Azure subscription ID
-#
-# CONSUME-ONLY MODEL: this script does NOT touch any platform resource. The
-# "Key Vault Secrets User" RBAC role for the pipeline identity / backend UAMI
-# on the platform Key Vault is assigned by the infrastructure team, not here.
-#
-# NOTE (open decision — see ANALISI §3.1/§4): whether the pipeline's OIDC App
-# Registration + federated credentials are created by the app team (this script)
-# or by the infrastructure team is still to be confirmed with the architect. If
-# infra owns it, reduce this script to documentation/preflight.
+# CONSUME-ONLY MODEL: the pipeline's OIDC identity (App Registration + service
+# principal + federated credentials) and its Key Vault RBAC are created by the
+# INFRASTRUCTURE TEAM, NOT by the app. This script therefore does NOT create or
+# modify anything. It only:
+#   1. Prints the exact specification the infra team must apply.
+#   2. Optionally (--verify) checks, read-only, that the expected federated
+#      credentials already exist (`az ad app ... list`, no create).
 #
 # Prerequisites:
-#   - Azure CLI (az) installed and logged in with Application Administrator
-#     rights in Entra ID (to create the App Registration). Subscription
-#     Contributor is NOT required — this script no longer assigns RBAC.
-#   - jq installed
+#   - Azure CLI (az) logged in with read access to Entra ID (for --verify)
 #   - Your GitHub repository owner/name (e.g. "my-org/centralino")
 #
 # Usage:
-#   ./scripts/setup-oidc.sh <github-repo> [--app-name <name>] [--dry-run]
+#   ./scripts/setup-oidc.sh <github-repo> [--app-name <name>] [--verify]
 #
 # Examples:
 #   ./scripts/setup-oidc.sh my-org/centralino
-#   ./scripts/setup-oidc.sh my-org/centralino --app-name "Guest Portal GitHub Actions"
-#   ./scripts/setup-oidc.sh my-org/centralino --dry-run
-#
+#   ./scripts/setup-oidc.sh my-org/centralino --verify
 # =============================================================================
 set -euo pipefail
 IFS=$'\n\t'
@@ -51,19 +37,18 @@ warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 err()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
 # ── Parse arguments ──────────────────────────────────────────────────────────
-DRY_RUN=false
+VERIFY=false
 APP_NAME="Guest Portal GitHub Actions OIDC"
 GITHUB_REPO=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --dry-run) DRY_RUN=true; shift ;;
-    -n) DRY_RUN=true; shift ;;
+    --verify) VERIFY=true; shift ;;
     --app-name) APP_NAME="$2"; shift 2 ;;
     --app-name=*) APP_NAME="${1#*=}"; shift ;;
     -*)
       err "Unknown option: $1"
-      echo "Usage: $0 <github-repo> [--app-name <name>] [--dry-run]"
+      echo "Usage: $0 <github-repo> [--app-name <name>] [--verify]"
       exit 1
       ;;
     *)  GITHUB_REPO="$1"; shift ;;
@@ -72,38 +57,60 @@ done
 
 if [[ -z "$GITHUB_REPO" ]]; then
   err "Missing GitHub repository argument."
-  echo "Usage: $0 <github-repo> [--app-name <name>] [--dry-run]"
-  echo ""
-  echo "Examples:"
-  echo "  $0 my-org/centralino"
-  echo "  $0 my-org/centralino --app-name \"CGD GitHub Actions\""
+  echo "Usage: $0 <github-repo> [--app-name <name>] [--verify]"
   exit 1
 fi
 
-if [[ "$DRY_RUN" == true ]]; then
-  warn "DRY RUN — commands will be printed but NOT executed."
-  echo ""
-fi
+# Federated credential subjects the infra team must configure.
+SUBJECTS=(
+  "repo:${GITHUB_REPO}:ref:refs/heads/main"
+  "repo:${GITHUB_REPO}:ref:refs/heads/staging"
+  "repo:${GITHUB_REPO}:environment:dev"
+  "repo:${GITHUB_REPO}:environment:stg"
+  "repo:${GITHUB_REPO}:environment:prod"
+)
 
-# ── Dry-run helper ──────────────────────────────────────────────────────────
-run() {
-  if [[ "$DRY_RUN" == true ]]; then
-    echo -e "  ${YELLOW}$*${NC}"
-  else
-    "$@"
-  fi
+# ── Print the specification for the infrastructure team ──────────────────────
+print_spec() {
+  echo ""
+  echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+  echo -e "${CYAN}  Pipeline OIDC identity — spec for the INFRASTRUCTURE TEAM     ${NC}"
+  echo -e "${CYAN}  (created by infra, NOT by this repo)                          ${NC}"
+  echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+  echo ""
+  echo -e "${YELLOW}1) App Registration (single-tenant) + service principal${NC}"
+  echo "   Display name (suggested): ${APP_NAME}"
+  echo "   Sign-in audience:         AzureADMyOrg (single tenant)"
+  echo "   Purpose:                  GitHub Actions OIDC for ${GITHUB_REPO}"
+  echo ""
+  echo -e "${YELLOW}2) Federated credentials${NC}"
+  echo "   Issuer:    https://token.actions.githubusercontent.com"
+  echo "   Audience:  api://AzureADTokenExchange"
+  echo "   Subjects:"
+  for s in "${SUBJECTS[@]}"; do
+    echo "     - ${s}"
+  done
+  echo ""
+  echo -e "${YELLOW}3) GitHub repository secrets to configure${NC}"
+  echo "   (values returned by the infra team after creating the identity)"
+  echo "     AZURE_CLIENT_ID        = <App Registration application (client) ID>"
+  echo "     AZURE_TENANT_ID        = <Entra ID tenant ID>"
+  echo "     AZURE_SUBSCRIPTION_ID  = <Azure subscription ID>"
+  echo ""
+  echo -e "${YELLOW}4) Key Vault RBAC (also infra)${NC}"
+  echo "   Grant 'Key Vault Secrets User' on the platform Key Vault to the"
+  echo "   pipeline identity and to the backend UAMI. Not done by this repo."
+  echo ""
+  echo "   Run with --verify to check (read-only) that the federated"
+  echo "   credentials already exist in Entra ID."
+  echo ""
 }
 
-# ── Prerequisites check ──────────────────────────────────────────────────────
-check_prerequisites() {
-  info "Checking prerequisites..."
-
+# ── Read-only verification (no create) ───────────────────────────────────────
+verify_credentials() {
+  info "Verifying prerequisites (read-only)..."
   if ! command -v az &>/dev/null; then
     err "Azure CLI not found. Install from https://aka.ms/install-azure-cli"
-    exit 1
-  fi
-  if ! command -v jq &>/dev/null; then
-    err "jq not found. Install: apt install jq / brew install jq"
     exit 1
   fi
   if ! az account show &>/dev/null; then
@@ -111,230 +118,50 @@ check_prerequisites() {
     exit 1
   fi
 
-  # Verify the user has permissions to create App Registrations
-  local user_type
-  user_type=$(az ad signed-in-user show --query "userPrincipalName" -o tsv 2>/dev/null || echo "")
-  if [[ -z "$user_type" ]]; then
-    warn "Could not determine current user. You may lack Azure AD read permissions."
+  info "Looking up App Registration '${APP_NAME}' (read-only)..."
+  local object_id
+  object_id=$(az ad app list --filter "displayName eq '${APP_NAME}'" --query "[0].id" -o tsv 2>/dev/null || echo "")
+  if [[ -z "$object_id" ]]; then
+    warn "App Registration '${APP_NAME}' not found — ask the infra team to create it."
+    return 1
   fi
+  ok "App Registration found (object id: ${object_id})."
 
-  SUBSCRIPTION_ID=$(az account show --query id -o tsv)
-  TENANT_ID=$(az account show --query tenantId -o tsv)
-  TENANT_NAME=$(az account show --query tenantDisplayName -o tsv 2>/dev/null || echo "N/A")
-
-  info "Subscription: ${SUBSCRIPTION_ID}"
-  info "Tenant:       ${TENANT_ID} (${TENANT_NAME})"
-  info "GitHub repo:  ${GITHUB_REPO}"
-  ok "Prerequisites satisfied."
-}
-
-# ── Create or get existing App Registration ──────────────────────────────────
-setup_app_registration() {
-  local display_name="$1"
-  local app_id app_object_id
-
-  info "Looking for existing app registration '${display_name}'..."
-
-  local existing
-  existing=$(az ad app list --filter "displayName eq '${display_name}'" --query "[0]" -o json 2>/dev/null || echo "null")
-
-  if [[ "$existing" != "null" ]] && [[ -n "$existing" ]]; then
-    app_id=$(echo "$existing" | jq -r '.appId')
-    app_object_id=$(echo "$existing" | jq -r '.id')
-    ok "App registration '${display_name}' already exists."
-    info "  App ID:        ${app_id}"
-    info "  Object ID:     ${app_object_id}"
-  else
-    info "Creating app registration '${display_name}'..."
-    local result
-    result=$(run az ad app create \
-      --display-name "$display_name" \
-      --sign-in-audience AzureADMyOrg \
-      --description "OIDC federated credential for GitHub Actions — ${GITHUB_REPO}" \
-      --query "{appId:appId, id:id}" \
-      -o json 2>/dev/null)
-
-    if [[ "$DRY_RUN" == false ]]; then
-      app_id=$(echo "$result" | jq -r '.appId')
-      app_object_id=$(echo "$result" | jq -r '.id')
-      ok "App registration created."
-      info "  App ID:        ${app_id}"
-      info "  Object ID:     ${app_object_id}"
+  local missing=0
+  for subject in "${SUBJECTS[@]}"; do
+    local found
+    found=$(az ad app federated-credential list --id "$object_id" \
+      --query "[?subject=='${subject}'].name" -o tsv 2>/dev/null || echo "")
+    if [[ -n "$found" ]]; then
+      ok "Federated credential present: ${subject}"
     else
-      # In dry-run, use placeholders
-      app_id="<app-id>"
-      app_object_id="<object-id>"
-    fi
-  fi
-
-  # Create service principal if not exists
-  local sp_exists
-  sp_exists=$(az ad sp list --filter "appId eq '${app_id}'" --query "[0].id" -o tsv 2>/dev/null || echo "")
-  if [[ -z "$sp_exists" ]]; then
-    info "Creating service principal for app registration..."
-    run az ad sp create --id "$app_id" --output none 2>/dev/null || true
-    if [[ "$DRY_RUN" == false ]]; then
-      ok "Service principal created."
-    fi
-  else
-    ok "Service principal already exists (ID: ${sp_exists})."
-  fi
-
-  APP_ID="$app_id"
-  APP_OBJECT_ID="$app_object_id"
-}
-
-# ── Create federated identity credentials ────────────────────────────────────
-# Each federated credential allows a specific GitHub branch/environment
-# to authenticate as the Azure AD application.
-setup_federated_credentials() {
-  local object_id="$1"
-  local repo="$2"
-  local credentials_created=0
-
-  # Subjects to create (in order of specificity):
-  #   ref:refs/heads/main      → push to main (prod deployments)
-  #   ref:refs/heads/staging   → push to staging (stg deployments)
-  #   environment:dev          → workflow_dispatch targeting dev
-  #   environment:stg          → workflow_dispatch targeting stg
-  #   environment:prod         → workflow_dispatch targeting prod
-  local subjects=(
-    "repo:${repo}:ref:refs/heads/main"
-    "repo:${repo}:ref:refs/heads/staging"
-  )
-
-  # Add environment-based subjects (for workflow_dispatch with environments)
-  for env in dev stg prod; do
-    subjects+=("repo:${repo}:environment:${env}")
-  done
-
-  info "Configuring federated identity credentials..."
-
-  for subject in "${subjects[@]}"; do
-    local cred_name
-    # Generate a readable credential name from the subject
-    cred_name=$(echo "$subject" | sed 's/[^a-zA-Z0-9_-]/-/g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//' | head -c 80)
-
-    # Check if credential already exists
-    local existing_cred
-    existing_cred=$(az ad app federated-credential list \
-      --id "$object_id" \
-      --query "[?subject=='${subject}'].name" \
-      -o tsv 2>/dev/null || echo "")
-
-    if [[ -n "$existing_cred" ]]; then
-      ok "Federated credential already exists: ${subject}"
-      info "  Credential name: ${existing_cred}"
-    else
-      info "Creating federated credential: ${subject}..."
-
-      local cred_json
-      cred_json=$(cat <<EOF
-{
-  "name": "${cred_name}",
-  "issuer": "https://token.actions.githubusercontent.com",
-  "subject": "${subject}",
-  "description": "GitHub Actions OIDC: ${GITHUB_REPO} — ${subject}",
-  "audiences": ["api://AzureADTokenExchange"]
-}
-EOF
-)
-
-      run az ad app federated-credential create \
-        --id "$object_id" \
-        --parameters "$cred_json" \
-        --output none
-
-      if [[ "$DRY_RUN" == false ]]; then
-        ok "Federated credential created: ${subject}"
-      else
-        info "  (would create credential for: ${subject})"
-      fi
-      ((credentials_created++))
+      warn "MISSING federated credential: ${subject}"
+      missing=1
     fi
   done
 
-  if [[ "$credentials_created" -eq 0 ]] && [[ "$DRY_RUN" == false ]]; then
-    info "All federated credentials already exist — no changes needed."
+  if [[ "$missing" -ne 0 ]]; then
+    err "One or more federated credentials are missing — ask the infra team to add them."
+    return 1
   fi
-}
-
-# NOTE: Key Vault RBAC is intentionally NOT assigned here.
-# Under the consume-only model, granting "Key Vault Secrets User" on the
-# platform Key Vault (to the pipeline identity and the backend UAMI) is the
-# infrastructure team's responsibility. This script only manages the OIDC
-# App Registration + federated credentials.
-
-# ── Output secrets ───────────────────────────────────────────────────────────
-print_output() {
-  echo ""
-  echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
-  echo -e "${GREEN}  OIDC Setup Complete — GitHub Secrets Configuration          ${NC}"
-  echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
-  echo ""
-  echo -e "${YELLOW}Configure these as GitHub Actions repository secrets:${NC}"
-  echo "  GitHub → Settings → Secrets and variables → Actions → New repository secret"
-  echo ""
-  echo "  ┌────────────────────────────────────────────────────────────────────┐"
-  echo "  │ ${CYAN}AZURE_CLIENT_ID${NC}         = ${APP_ID}  │"
-  echo "  │ ${CYAN}AZURE_TENANT_ID${NC}         = ${TENANT_ID} │"
-  echo "  │ ${CYAN}AZURE_SUBSCRIPTION_ID${NC}   = ${SUBSCRIPTION_ID} │"
-  echo "  └────────────────────────────────────────────────────────────────────┘"
-  echo ""
-  echo -e "${YELLOW}Federated credentials configured:${NC}"
-  echo "  repo:${GITHUB_REPO}:ref:refs/heads/main     → push to main (prod)"
-  echo "  repo:${GITHUB_REPO}:ref:refs/heads/staging  → push to staging (stg)"
-  echo "  repo:${GITHUB_REPO}:environment:dev          → workflow_dispatch dev"
-  echo "  repo:${GITHUB_REPO}:environment:stg          → workflow_dispatch stg"
-  echo "  repo:${GITHUB_REPO}:environment:prod          → workflow_dispatch prod"
-  echo ""
-  echo -e "${YELLOW}Federated credential details (Azure Portal):${NC}"
-  echo "  Entra ID → App registrations → ${APP_NAME} → Certificates & secrets"
-  echo "  → Federated credentials"
-  echo ""
-  echo -e "${YELLOW}App Registration details:${NC}"
-  echo "  Name:           ${APP_NAME}"
-  echo "  App (client) ID: ${APP_ID}"
-  echo "  Object ID:      ${APP_OBJECT_ID}"
-  echo ""
-
-  if [[ "$DRY_RUN" == true ]]; then
-    warn "DRY RUN — no resources were created."
-    echo "  Re-run without --dry-run to execute."
-    echo ""
-  fi
-
-  echo -e "${YELLOW}Next steps:${NC}"
-  echo "  1. Add the three AZURE_* secrets to GitHub repository secrets"
-  echo "  2. Ask the infrastructure team to grant the pipeline identity and the"
-  echo "     backend UAMI the 'Key Vault Secrets User' role on the platform Key"
-  echo "     Vault (this script no longer assigns RBAC)."
-  echo "  3. Configure the parametrized platform-name secrets (RG_NAME, KV_NAME,"
-  echo "     ACA_*_NAME, UAMI_*_NAME, MIGRATION_JOB_NAME, ...)."
-  echo "  4. Verify the platform resources exist (read-only preflight):"
-  echo "     GitHub → Actions → 'Azure Platform Preflight'  (or ./scripts/provision.sh <env>)"
-  echo ""
-  echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+  ok "All expected federated credentials are present."
 }
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 main() {
   echo ""
   echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
-  echo -e "${CYAN}  Guest Portal — Azure OIDC Federated Credential Setup        ${NC}"
+  echo -e "${CYAN}  Guest Portal — Pipeline OIDC identity (consume-only)         ${NC}"
   echo -e "${CYAN}  GitHub repo: ${GITHUB_REPO}${NC}"
   echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
-  echo ""
 
-  check_prerequisites
+  print_spec
 
-  setup_app_registration "$APP_NAME"
-
-  setup_federated_credentials "$APP_OBJECT_ID" "$GITHUB_REPO"
-
-  # Key Vault RBAC is assigned by the infrastructure team (consume-only) — not here.
-
-  print_output
+  if [[ "$VERIFY" == true ]]; then
+    verify_credentials || exit 1
+  else
+    info "Documentation mode. Re-run with --verify to check existing credentials."
+  fi
 }
 
 main "$@"

@@ -15,14 +15,14 @@ interface SedeSeed {
   name: string;
   city: string;
   address: string;
-  wlc: { host: string; sshPort: number; username: string; password: string; wlanSsid: string };
+  wlc: { host: string; sshPort: number; username: string; wlanSsid: string };
 }
 
 /**
  * Sede (location) data with WLC connection defaults.
- * The WLC PASSWORD is intentionally empty — the operator must set it
- * via the UI login flow. These are infrastructure defaults (host/IPs)
- * that are NOT secrets and are safe to keep in source.
+ * The WLC PASSWORD is NOT part of the DB/seed (§2): it lives in Key Vault
+ * and is injected as WLC_PASSWORD_<CODE>. These are infrastructure defaults
+ * (host/IPs/SSID) that are NOT secrets and are safe to keep in source.
  */
 const SEDI: SedeSeed[] = [
   {
@@ -30,35 +30,35 @@ const SEDI: SedeSeed[] = [
     name: 'Dompe Milano HQ',
     city: 'Milano',
     address: 'Via Santa Lucia 6, 20122 Milano (MI)',
-    wlc: { host: '172.18.106.100', sshPort: 22, username: 'admin_guest', password: '', wlanSsid: 'Dompe Guest' },
+    wlc: { host: '172.18.106.100', sshPort: 22, username: 'admin_guest', wlanSsid: 'Dompe Guest' },
   },
   {
     code: 'AQ',
     name: "Dompe L'Aquila",
     city: "L'Aquila",
     address: 'Via Campo di Pile s.n.c., 67100 L\'Aquila (AQ)',
-    wlc: { host: '172.18.106.101', sshPort: 22, username: 'admin_guest', password: '', wlanSsid: 'Dompe Guest AQ' },
+    wlc: { host: '172.18.106.101', sshPort: 22, username: 'admin_guest', wlanSsid: 'Dompe Guest AQ' },
   },
   {
     code: 'NA',
     name: 'Dompe Napoli',
     city: 'Napoli',
     address: 'Via Tommaso De Amicis 95, 80131 Napoli (NA)',
-    wlc: { host: '172.18.106.102', sshPort: 22, username: 'admin_guest', password: '', wlanSsid: 'Dompe Guest NA' },
+    wlc: { host: '172.18.106.102', sshPort: 22, username: 'admin_guest', wlanSsid: 'Dompe Guest NA' },
   },
   {
     code: 'TIR',
     name: 'Dompe Tirana',
     city: 'Tirana',
     address: 'Arena Center, Hyrja D, Kati 6, Sheshi Italia, Tirana, Albania',
-    wlc: { host: '172.18.106.103', sshPort: 22, username: 'admin_guest', password: '', wlanSsid: 'Dompe Guest TIR' },
+    wlc: { host: '172.18.106.103', sshPort: 22, username: 'admin_guest', wlanSsid: 'Dompe Guest TIR' },
   },
   {
     code: 'SM',
     name: 'Dompe San Mateo',
     city: 'San Mateo',
     address: '400 S El Camino Real, Suite 400, San Mateo, CA 94402, USA',
-    wlc: { host: '172.18.106.104', sshPort: 22, username: 'admin_guest', password: '', wlanSsid: 'Dompe Guest SM' },
+    wlc: { host: '172.18.106.104', sshPort: 22, username: 'admin_guest', wlanSsid: 'Dompe Guest SM' },
   },
 ];
 
@@ -86,15 +86,15 @@ export async function runSeed(client: DbClient): Promise<void> {
     let wlcId: number;
     if (i === 0 && legacyWlcId != null) {
       await client.query(
-        `UPDATE wlc_config SET host = ?, port = 443, ssh_port = ?, username = ?, password = ?, wlan_ssid = ?, authenticated = ?, sede_id = NULL WHERE id = ?`,
-        [s.wlc.host, s.wlc.sshPort, s.wlc.username, s.wlc.password, s.wlc.wlanSsid, false, legacyWlcId],
+        `UPDATE wlc_config SET host = ?, port = 443, ssh_port = ?, username = ?, wlan_ssid = ?, authenticated = ?, sede_id = NULL WHERE id = ?`,
+        [s.wlc.host, s.wlc.sshPort, s.wlc.username, s.wlc.wlanSsid, false, legacyWlcId],
       );
       wlcId = legacyWlcId;
     } else {
       const wlcRes = await client.query(
-        `INSERT INTO wlc_config (host, port, ssh_port, username, password, wlan_ssid, authenticated)
-         VALUES (?, 443, ?, ?, ?, ?, ?) RETURNING id`,
-        [s.wlc.host, s.wlc.sshPort, s.wlc.username, s.wlc.password, s.wlc.wlanSsid, false],
+        `INSERT INTO wlc_config (host, port, ssh_port, username, wlan_ssid, authenticated)
+         VALUES (?, 443, ?, ?, ?, ?) RETURNING id`,
+        [s.wlc.host, s.wlc.sshPort, s.wlc.username, s.wlc.wlanSsid, false],
       );
       wlcId = Number((wlcRes.rows[0] as { id: number }).id);
     }
@@ -121,14 +121,8 @@ export async function runSeed(client: DbClient): Promise<void> {
     }
   }
 
-  // --- Global email config ---
-  const emailCount = await client.query(`SELECT COUNT(*) as c FROM email_config`);
-  if (Number((emailCount.rows[0] as { c: number }).c) === 0) {
-    await client.query(
-      `INSERT INTO email_config (id, smtp_host, smtp_port, sender, encryption, require_auth, username, password)
-       VALUES (1, 'smtp.dompe.com', 587, 'it.security@dompe.com', 'tls', true, 'it.security@dompe.com', '')`,
-    );
-  }
+  // Email/SMTP config seed removed (§3): mail is Graph-only, sender is
+  // MAIL_GRAPH_FROM_ADDRESS; there is no email_config table.
 
   // --- Global SMS config ---
   const smsCount = await client.query(`SELECT COUNT(*) as c FROM sms_config`);

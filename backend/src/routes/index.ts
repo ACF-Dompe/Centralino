@@ -15,8 +15,6 @@ import {
   updateWlcConfigBySede,
   getWlcConfig,
   updateWlcConfig,
-  getEmailConfig,
-  updateEmailConfig,
   getSmsConfig,
   updateSmsConfig,
   listSyncLogs,
@@ -25,6 +23,7 @@ import {
   listSedi,
   getSedeById,
 } from '../repositories/index.js';
+import { wlcPasswordForSede } from '../config.js';
 import { loginWebUi } from '../services/wlcWebui.js';
 import { execSsh, parseUsernameList, minutesToLifetime, extractGuestUsers } from '../services/wlcSsh.js';
 import { sendCredentialEmail } from '../services/email.js';
@@ -33,7 +32,7 @@ import { generateCredentials } from '../utils/credentials.js';
 import { sanitizeIOSXE, validateUsername, validatePassword, validateHost, validateDurationMinutes } from '../utils/sanitize.js';
 import { getDb } from '../db/index.js';
 import { log } from '../logger.js';
-import type { Guest, GuestStatus, WlcConfig } from '../types.js';
+import type { Guest, GuestStatus } from '../types.js';
 
 export const router = Router();
 
@@ -103,33 +102,43 @@ router.get('/sedi/:id', async (req: Request, res: Response) => {
 /* ----------------------------- WLC (per-sede) ----------------------------- */
 
 router.post('/wlc/login', async (req: Request, res: Response) => {
-  const { host, port, username, password, sedeId } = req.body ?? {};
-  if (!host || !username || !password) {
-    return res.status(400).json({ success: false, error: 'host, username e password sono obbligatori' });
+  // The WLC password is NEVER accepted from the client nor persisted (§2):
+  // it comes from Key Vault (env var per sede). This endpoint only validates
+  // connectivity and records the authenticated status for the sede.
+  const { host, port, username, sedeId } = req.body ?? {};
+  if (!host || !username) {
+    return res.status(400).json({ success: false, error: 'host e username sono obbligatori' });
   }
 
-  // Sanitize before storing — these values flow through the DB and are later
-  // used in SSH commands from guest CRUD endpoints.
-  let safeUsername: string, safePassword: string;
+  // Sanitize the username — it flows into SSH commands from guest CRUD endpoints.
+  let safeUsername: string;
   try {
     safeUsername = validateUsername(username);
-    safePassword = validatePassword(password);
   } catch (err) {
     return res.status(400).json({ success: false, error: (err as Error).message });
+  }
+
+  // Resolve the WLC password from Key Vault (env) by sede code.
+  const sede = sedeId != null ? await getSedeById(Number(sedeId)) : null;
+  const password = wlcPasswordForSede(sede?.code ?? null);
+  if (!password) {
+    return res.status(400).json({
+      success: false,
+      error: 'Password WLC non configurata per questa sede (impostare WLC_PASSWORD_<CODICE_SEDE> in Key Vault).',
+    });
   }
 
   const result = await loginWebUi({
     host: String(host),
     port: Number(port) || 443,
     username: safeUsername,
-    password: safePassword,
+    password,
   });
   if (result.success && sedeId) {
     await updateWlcConfigBySede(Number(sedeId), {
       host: String(host),
       port: Number(port) || 443,
       username: safeUsername,
-      password: safePassword,
       authenticated: true,
     });
   } else if (sedeId && (!('isUnreachable' in result) || !result.isUnreachable)) {
@@ -137,7 +146,6 @@ router.post('/wlc/login', async (req: Request, res: Response) => {
       host: String(host),
       port: Number(port) || 443,
       username: safeUsername,
-      password: safePassword,
       authenticated: false,
     });
   }
@@ -519,7 +527,7 @@ router.post('/guests', async (req: Request, res: Response) => {
       });
       await addSyncLog({
         action: mail.ok ? `email-credentials sent (${mail.mode})` : `email-credentials failed: ${mail.error}`,
-        method: 'SMTP',
+        method: 'GRAPH',
         url: String(email),
         payload: null,
         statusCode: mail.ok ? 200 : 500,
@@ -604,7 +612,7 @@ router.post('/guests/:id/resend-credentials', async (req: Request, res: Response
   });
   await addSyncLog({
     action: mail.ok ? `resend-email sent (${mail.mode})` : `resend-email failed: ${mail.error}`,
-    method: 'SMTP',
+    method: 'GRAPH',
     url: before.email,
     payload: null,
     statusCode: mail.ok ? 200 : 500,
@@ -719,12 +727,7 @@ router.get('/config/wlc', async (_req, res) => {
   res.json({ data: { ...cfg, password: undefined } });
 });
 router.put('/config/wlc', async (req, res) => res.json({ data: await updateWlcConfig(req.body ?? {}) }));
-router.get('/config/email', async (_req, res) => {
-  const cfg = await getEmailConfig();
-  // Strip password from GET response.
-  res.json({ data: { ...cfg, password: undefined } });
-});
-router.put('/config/email', async (req, res) => res.json({ data: await updateEmailConfig(req.body ?? {}) }));
+// Email/SMTP config endpoints removed (§3): mail is Graph-only, no email_config.
 router.get('/config/sms', async (_req, res) => {
   const cfg = await getSmsConfig();
   // Strip apiKey from GET response.

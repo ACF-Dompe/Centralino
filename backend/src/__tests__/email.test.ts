@@ -1,23 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { Transporter } from 'nodemailer';
 
 // ── Mocks ──────────────────────────────────────────────────────────────────
-
-const mockSendMail = vi.fn();
-
-vi.mock('nodemailer', () => ({
-  default: {
-    createTransport: vi.fn(() => ({
-      sendMail: mockSendMail,
-      close: vi.fn(),
-    } as unknown as Transporter)),
-  },
-}));
-
-const mockGetEmailConfig = vi.fn();
-vi.mock('../repositories/index.js', () => ({
-  getEmailConfig: () => mockGetEmailConfig(),
-}));
+// SMTP/nodemailer has been removed (§3): mail is delivered only via Microsoft
+// Graph, with a demo-log fallback when Graph is not configured.
 
 // Mock config for Graph API tests
 const mockConfig = { mail: { graph: { enabled: false } } };
@@ -85,113 +70,27 @@ describe('sendCredentialEmail', () => {
       expect(mockGraphSend).toHaveBeenCalledWith(defaultParams);
     });
 
-    it('returns graph error when Graph API fails (no SMTP fallback)', async () => {
+    it('returns graph error when Graph API fails (no fallback)', async () => {
       mockGraphSend.mockResolvedValue({ ok: false, error: 'Unauthorized' });
 
       const { sendCredentialEmail } = await import('../services/email.js');
       const result = await sendCredentialEmail(defaultParams);
 
-      // When Graph is explicitly configured, failure is final — no fallback
+      // Graph failure is final — there is no SMTP fallback anymore.
       expect(result).toEqual({ ok: false, mode: 'graph', error: 'Unauthorized' });
-      expect(mockSendMail).not.toHaveBeenCalled();
     });
   });
 
-  // ── SMTP path ─────────────────────────────────────────────────────────
+  // ── Demo-log path (Graph not configured) ───────────────────────────────
 
-  describe('when Graph is not configured but SMTP is', () => {
-    it('sends via SMTP and returns smtp mode on success', async () => {
-      mockGetEmailConfig.mockResolvedValue({
-        smtpHost: 'smtp.example.com', smtpPort: 587, sender: 'noreply@dompe.com',
-        encryption: 'starttls', requireAuth: true, username: 'user', password: 'pass',
-      });
-      mockSendMail.mockResolvedValue({ messageId: '<abc@example.com>' });
-
-      const { sendCredentialEmail } = await import('../services/email.js');
-      const result = await sendCredentialEmail(defaultParams);
-
-      expect(result).toEqual({ ok: true, messageId: '<abc@example.com>', mode: 'smtp' });
-      expect(mockSendMail).toHaveBeenCalledOnce();
-      expect(mockGraphSend).toHaveBeenCalledOnce(); // tried Graph first, got null
-    });
-
-    it('returns error when SMTP send fails', async () => {
-      mockGetEmailConfig.mockResolvedValue({
-        smtpHost: 'smtp.example.com', smtpPort: 587, sender: 'noreply@dompe.com',
-        encryption: 'tls', requireAuth: false, username: '', password: '',
-      });
-      mockSendMail.mockRejectedValue(new Error('Connection refused'));
-
-      const { sendCredentialEmail } = await import('../services/email.js');
-      const result = await sendCredentialEmail(defaultParams);
-
-      expect(result).toEqual({ ok: false, mode: 'smtp', error: 'Connection refused' });
-    });
-  });
-
-  // ── Demo-log path ─────────────────────────────────────────────────────
-
-  describe('when no transport is configured', () => {
-    it('returns demo-log mode when Graph is off and SMTP has no host', async () => {
-      mockGetEmailConfig.mockResolvedValue({
-        smtpHost: '', smtpPort: 587, sender: '', encryption: 'tls',
-        requireAuth: false, username: '', password: '',
-      });
-
+  describe('when Graph is not configured', () => {
+    it('returns demo-log mode', async () => {
+      // mockGraphSend returns null (default) → Graph not configured
       const { sendCredentialEmail } = await import('../services/email.js');
       const result = await sendCredentialEmail(defaultParams);
 
       expect(result).toEqual({ ok: true, mode: 'demo-log' });
-      expect(mockSendMail).not.toHaveBeenCalled();
-    });
-  });
-
-  // ── SMTP detail tests ─────────────────────────────────────────────────
-
-  describe('SMTP details', () => {
-    it('uses custom sender from config when provided', async () => {
-      mockGetEmailConfig.mockResolvedValue({
-        smtpHost: 'smtp.example.com', smtpPort: 587, sender: 'custom@dompe.com',
-        encryption: 'tls', requireAuth: false, username: '', password: '',
-      });
-      mockSendMail.mockResolvedValue({ messageId: '<def@example.com>' });
-
-      const { sendCredentialEmail } = await import('../services/email.js');
-      const result = await sendCredentialEmail(defaultParams);
-
-      expect(result.ok).toBe(true);
-      expect(mockSendMail.mock.calls[0][0].from).toBe('custom@dompe.com');
-    });
-
-    it('falls back to noreply@dompe.com when sender is null', async () => {
-      mockGetEmailConfig.mockResolvedValue({
-        smtpHost: 'smtp.example.com', smtpPort: 587, sender: null,
-        encryption: 'tls', requireAuth: false, username: '', password: '',
-      });
-      mockSendMail.mockResolvedValue({ messageId: '<ghi@example.com>' });
-
-      const { sendCredentialEmail } = await import('../services/email.js');
-      const result = await sendCredentialEmail(defaultParams);
-
-      expect(result.ok).toBe(true);
-      expect(mockSendMail.mock.calls[0][0].from).toBe('noreply@dompe.com');
-    });
-
-    it('includes guest details in the email body', async () => {
-      mockGetEmailConfig.mockResolvedValue({
-        smtpHost: 'smtp.example.com', smtpPort: 587, sender: 'noreply@dompe.com',
-        encryption: 'tls', requireAuth: false, username: '', password: '',
-      });
-      mockSendMail.mockResolvedValue({ messageId: '<mno@example.com>' });
-
-      const { sendCredentialEmail } = await import('../services/email.js');
-      const result = await sendCredentialEmail(defaultParams);
-
-      expect(result.ok).toBe(true);
-      const text = mockSendMail.mock.calls[0][0].text;
-      expect(text).toContain('Mario Rossi');
-      expect(text).toContain('Sponsor Test');
-      expect(text).toContain('DOMPE-4321');
+      expect(mockGraphSend).toHaveBeenCalledOnce();
     });
   });
 });

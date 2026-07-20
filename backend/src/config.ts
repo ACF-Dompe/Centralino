@@ -111,7 +111,8 @@ export const config = {
   /**
    * Microsoft Graph API email configuration.
    * Platform-provided App Registration with Mail.Send permission.
-   * Falls back to SMTP (from email_config table) when Graph is not configured.
+   * Mail is delivered ONLY via Graph (§3); when Graph is not configured
+   * (local dev) the credential email is logged to the console (demo-log).
    */
   mail: {
     graph: {
@@ -156,3 +157,22 @@ export const config = {
     region: azure.region,
   },
 };
+
+/**
+ * Resolve the WLC admin password for a sede from the environment.
+ *
+ * Per-sede model (§2): one Key Vault secret per site (`WLC-PASSWORD-<CODE>`,
+ * environment-agnostic) is injected as the env var `WLC_PASSWORD_<CODE>`
+ * (Key Vault reference). The password is NEVER read from or written to the DB.
+ *
+ * Falls back to `WLC_DEFAULT_PASSWORD` (local dev only) when the per-sede
+ * variable is not set. Returns '' when nothing is configured.
+ */
+export function wlcPasswordForSede(sedeCode: string | null | undefined): string {
+  if (sedeCode) {
+    const key = 'WLC_PASSWORD_' + sedeCode.toUpperCase().replace(/[^A-Z0-9]/g, '_');
+    const v = process.env[key];
+    if (v && v.length > 0) return v;
+  }
+  return config.wlc.defaultPassword;
+}

@@ -48,27 +48,17 @@ CREATE TABLE IF NOT EXISTS sedi (
 );
 CREATE INDEX IF NOT EXISTS idx_sedi_code ON sedi(code);
 
+-- WLC password is NOT stored in the DB (§2): it lives in Key Vault, injected
+-- as WLC_PASSWORD_<CODE> env vars and resolved per-sede at runtime.
 CREATE TABLE IF NOT EXISTS wlc_config (
   id              SERIAL PRIMARY KEY,
   host            VARCHAR(255) NOT NULL DEFAULT '172.18.106.100',
   port            INTEGER NOT NULL DEFAULT 443,
   ssh_port        INTEGER NOT NULL DEFAULT 22,
   username        VARCHAR(100) NOT NULL DEFAULT 'admin_guest',
-  password        VARCHAR(255) NOT NULL DEFAULT '',
   wlan_ssid       VARCHAR(100) NOT NULL DEFAULT 'Dompe Guest',
   authenticated   BOOLEAN NOT NULL DEFAULT FALSE,
   sede_id         INTEGER
-);
-
-CREATE TABLE IF NOT EXISTS email_config (
-  id              INTEGER PRIMARY KEY DEFAULT 1,
-  smtp_host       VARCHAR(255),
-  smtp_port       INTEGER DEFAULT 587,
-  sender          VARCHAR(255),
-  encryption      VARCHAR(20) DEFAULT 'tls',
-  require_auth    BOOLEAN DEFAULT TRUE,
-  username        VARCHAR(255),
-  password        VARCHAR(255)
 );
 
 CREATE TABLE IF NOT EXISTS sms_config (
