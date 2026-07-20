@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+#### Compliance — Review v5 fixes
+- **`setup-oidc.sh` — §3.1:** Removed the Key Vault RBAC assignment (`az role assignment create` + the hardcoded `kv-guestportal-*` name). Under consume-only, granting "Key Vault Secrets User" on the platform Key Vault is the infrastructure team's job. Updated the obsolete hints that referenced `provision.sh` as a Key-Vault creator (it is now a read-only preflight); dropped the "Contributor" prerequisite (only Application Administrator is needed). The OIDC App Registration + federated credentials remain (their ownership is an open decision with the architect, §4.1).
+
 #### Compliance — Review v4 fixes (consume-only model)
 - **Consume-only pipeline — §1 (P1):** The pipeline no longer creates ANY Azure resource. `deploy-azure.yml` dropped the DB-bootstrap stage (no `CREATE DATABASE`/user/grants), the `az containerapp job create`, and the `az acr repository update` immutability step. It now: build → push → **start the pre-provisioned migration job** → `az containerapp update --image` on existing apps. Pipeline is now 4 stages.
 - **Read-only preflight — §1 (P1):** `scripts/provision.sh` rewritten as a read-only preflight (verifies platform resources via `az ... show`, prints the env-var → Key Vault map; no `create`/`set`). `provision-infra.yml` converted to an "Azure Platform Preflight" workflow. `scripts/README.md` rewritten for the consume-only model.

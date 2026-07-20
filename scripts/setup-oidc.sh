@@ -10,9 +10,19 @@
 #   AZURE_TENANT_ID       → Azure AD tenant ID
 #   AZURE_SUBSCRIPTION_ID → Azure subscription ID
 #
+# CONSUME-ONLY MODEL: this script does NOT touch any platform resource. The
+# "Key Vault Secrets User" RBAC role for the pipeline identity / backend UAMI
+# on the platform Key Vault is assigned by the infrastructure team, not here.
+#
+# NOTE (open decision — see ANALISI §3.1/§4): whether the pipeline's OIDC App
+# Registration + federated credentials are created by the app team (this script)
+# or by the infrastructure team is still to be confirmed with the architect. If
+# infra owns it, reduce this script to documentation/preflight.
+#
 # Prerequisites:
-#   - Azure CLI (az) installed and logged in with Azure AD admin rights
-#     (Application Administrator + Contributor on the subscription)
+#   - Azure CLI (az) installed and logged in with Application Administrator
+#     rights in Entra ID (to create the App Registration). Subscription
+#     Contributor is NOT required — this script no longer assigns RBAC.
 #   - jq installed
 #   - Your GitHub repository owner/name (e.g. "my-org/centralino")
 #
@@ -249,57 +259,11 @@ EOF
   fi
 }
 
-# ── Assign RBAC role on Key Vault (so the SP can read secrets) ──────────────
-assign_key_vault_role() {
-  local app_id="$1"
-  local env_suffix="${2:-dev}"
-
-  local kv_name="kv-guestportal-${env_suffix}"
-
-  # Check if Key Vault exists
-  if az keyvault show --name "$kv_name" &>/dev/null 2>&1; then
-    info "Assigning 'Key Vault Secrets User' role to app registration on '${kv_name}'..."
-
-    local sp_id
-    sp_id=$(az ad sp list --filter "appId eq '${app_id}'" --query "[0].id" -o tsv 2>/dev/null || echo "")
-
-    if [[ -n "$sp_id" ]]; then
-      local kv_scope
-      kv_scope=$(az keyvault show --name "$kv_name" --query id -o tsv 2>/dev/null || echo "")
-
-      if [[ -n "$kv_scope" ]]; then
-        # Check if role assignment exists
-        local role_exists
-        role_exists=$(az role assignment list \
-          --assignee "$sp_id" \
-          --scope "$kv_scope" \
-          --role "Key Vault Secrets User" \
-          --query "[].id" \
-          -o tsv 2>/dev/null | head -1 || echo "")
-
-        if [[ -z "$role_exists" ]]; then
-          run az role assignment create \
-            --assignee "$sp_id" \
-            --role "Key Vault Secrets User" \
-            --scope "$kv_scope" \
-            --output none
-          if [[ "$DRY_RUN" == false ]]; then
-            ok "Assigned 'Key Vault Secrets User' role on '${kv_name}'."
-          fi
-        else
-          ok "Role 'Key Vault Secrets User' already assigned on '${kv_name}'."
-        fi
-      else
-        warn "Could not determine Key Vault scope for '${kv_name}'."
-      fi
-    else
-      warn "Service principal not found for app ID '${app_id}'."
-    fi
-  else
-    info "Key Vault '${kv_name}' does not exist yet — skipping RBAC assignment."
-    info "  (Run './scripts/provision.sh ${env}' first, then re-run this script)"
-  fi
-}
+# NOTE: Key Vault RBAC is intentionally NOT assigned here.
+# Under the consume-only model, granting "Key Vault Secrets User" on the
+# platform Key Vault (to the pipeline identity and the backend UAMI) is the
+# infrastructure team's responsibility. This script only manages the OIDC
+# App Registration + federated credentials.
 
 # ── Output secrets ───────────────────────────────────────────────────────────
 print_output() {
@@ -342,10 +306,13 @@ print_output() {
 
   echo -e "${YELLOW}Next steps:${NC}"
   echo "  1. Add the three AZURE_* secrets to GitHub repository secrets"
-  echo "  2. Run './scripts/provision.sh dev' (if not already done)"
-  echo "  3. Re-run this script after provisioning to assign KV RBAC:"
-  echo "     ./scripts/setup-oidc.sh ${GITHUB_REPO}"
-  echo "  4. Trigger a test workflow: GitHub → Actions → provision-infra.yml"
+  echo "  2. Ask the infrastructure team to grant the pipeline identity and the"
+  echo "     backend UAMI the 'Key Vault Secrets User' role on the platform Key"
+  echo "     Vault (this script no longer assigns RBAC)."
+  echo "  3. Configure the parametrized platform-name secrets (RG_NAME, KV_NAME,"
+  echo "     ACA_*_NAME, UAMI_*_NAME, MIGRATION_JOB_NAME, ...)."
+  echo "  4. Verify the platform resources exist (read-only preflight):"
+  echo "     GitHub → Actions → 'Azure Platform Preflight'  (or ./scripts/provision.sh <env>)"
   echo ""
   echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 }
@@ -365,10 +332,7 @@ main() {
 
   setup_federated_credentials "$APP_OBJECT_ID" "$GITHUB_REPO"
 
-  # Try assigning KV role for all three environments
-  for env_suffix in dev stg prod; do
-    assign_key_vault_role "$APP_ID" "$env_suffix"
-  done
+  # Key Vault RBAC is assigned by the infrastructure team (consume-only) — not here.
 
   print_output
 }
