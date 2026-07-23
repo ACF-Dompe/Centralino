@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+#### Compliance — Review v7 follow-up (minor cleanups)
+- **Dead `guests.password` column removed (§3.2):** the guest password is one-time and never persisted, so the unused `password` column was dropped from the `guests` DDL and from the repository (INSERT/`rowToGuest`/`updateGuest` map). `Guest.password` stays in the type and is always `null`.
+- **Stale `.env.example` comment fixed (§3.3):** the Graph email note no longer says "falls back to SMTP (email_config table)" — mail is Graph-only with a dev demo-log fallback.
+- **Public SMS provider removed from DDL default (§3.4):** `sms_config.gateway_type` no longer defaults to `'textbelt'` (no default now); the SMS feature stays dormant/hidden.
+
 #### Compliance — Review v7 fixes
 - **OIDC identity → infrastructure-owned — §1:** `scripts/setup-oidc.sh` no longer creates the App Registration / service principal / federated credentials (removed `az ad app create`, `az ad sp create`, `az ad app federated-credential create`). It is now a documentation + read-only preflight script: it prints the exact spec the infra team must apply and, with `--verify`, checks read-only (`az ad app ... list`) that the expected federated credentials exist. Docs updated accordingly.
 - **WLC password → Key Vault per sede, never in the DB — §2:** The WLC admin password is now one Key Vault secret per site (`WLC-PASSWORD-<CODE>`, env-agnostic), injected as `WLC_PASSWORD_<CODE>` and resolved server-side by `sede.code` (`config.wlcPasswordForSede`). Removed the `password` column from `wlc_config` (migrate + seed), dropped it from repository reads/writes (`rowToWlc`, `updateWlcConfig*`), and removed it from the `WlcConfig` client contract. `POST /wlc/login` no longer accepts or persists a password — it validates connectivity using the per-sede env password. The Login form and ConfigPanel no longer collect a WLC password (sede selection preserved). Deploy pipeline injects `WLC_PASSWORD_{MIL,AQ,NA,TIR,SM}` as Key Vault references.

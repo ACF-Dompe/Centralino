@@ -13,7 +13,6 @@ interface GuestRow {
   company: string | null;
   host: string;
   username: string;
-  password: string | null;
   duration_minutes: number;
   elapsed_seconds: number;
   status: GuestStatus;
@@ -32,7 +31,7 @@ function rowToGuest(r: GuestRow): Guest {
     company: r.company,
     host: r.host,
     username: r.username,
-    password: r.password, // null when not stored (post-refactor)
+    password: null, // one-time password is never persisted (no DB column)
     durationMinutes: r.duration_minutes,
     elapsedSeconds: r.elapsed_seconds,
     status: r.status,
@@ -89,8 +88,8 @@ export async function createGuest(
   const status = g.status ?? 'pending';
   await db.query(
     `INSERT INTO guests
-       (id, name, email, phone, company, host, username, password, duration_minutes, elapsed_seconds, status, created_at, enabled_at, remarks, sede_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, CURRENT_TIMESTAMP, ?, ?, ?)`,
+       (id, name, email, phone, company, host, username, duration_minutes, elapsed_seconds, status, created_at, enabled_at, remarks, sede_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, CURRENT_TIMESTAMP, ?, ?, ?)`,
     [
       g.id,
       g.name,
@@ -99,7 +98,6 @@ export async function createGuest(
       g.company ?? 'Ospite Individuale',
       g.host,
       g.username,
-      g.password ?? null,
       g.durationMinutes,
       status,
       g.enabledAt ?? null,
@@ -119,7 +117,6 @@ export async function updateGuest(id: string, patch: Partial<Guest>): Promise<Gu
     company: 'company',
     host: 'host',
     username: 'username',
-    password: 'password',
     durationMinutes: 'duration_minutes',
     elapsedSeconds: 'elapsed_seconds',
     status: 'status',

@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS guests (
   company         VARCHAR(255) DEFAULT 'Ospite Individuale',
   host            VARCHAR(255) NOT NULL,
   username        VARCHAR(100) NOT NULL UNIQUE,
-  password        VARCHAR(100),
+  -- Guest password is one-time and NEVER persisted (generated in RAM, pushed to
+  -- the WLC and emailed) — no password column.
   duration_minutes INTEGER NOT NULL DEFAULT 240,
   elapsed_seconds INTEGER NOT NULL DEFAULT 0,
   status          VARCHAR(20) NOT NULL DEFAULT 'pending',
@@ -63,7 +64,7 @@ CREATE TABLE IF NOT EXISTS wlc_config (
 
 CREATE TABLE IF NOT EXISTS sms_config (
   id              INTEGER PRIMARY KEY DEFAULT 1,
-  gateway_type    VARCHAR(50) DEFAULT 'textbelt',
+  gateway_type    VARCHAR(50),
   api_key         VARCHAR(255),
   sender_id       VARCHAR(11) DEFAULT 'DompeGuest',
   webhook_url     VARCHAR(500)
