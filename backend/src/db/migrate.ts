@@ -7,9 +7,14 @@
  *
  * Connects to DATABASE_URL, runs all pending migrations,
  * and exits with code 0 on success, 1 on failure.
+ *
+ * Authentication: password from DATABASE_URL when present (local dev),
+ * otherwise an Entra ID access token via DefaultAzureCredential — the
+ * production case on Azure PostgreSQL, where the DB login is the backend UAMI.
  */
 import type { DbClient } from './index.js';
-import { config } from '../config.js';
+import { config, AZURE_DB_SCOPE } from '../config.js';
+import { DefaultAzureCredential } from '@azure/identity';
 import pg from 'pg';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -117,16 +122,40 @@ export async function runMigrations(client: DbClient): Promise<void> {
  * Build a minimal DbClient directly from DATABASE_URL, bypassing getDb()
  * (which would also run migrations/seed based on config flags). The migration
  * job is an independent ACA job — it must connect and migrate on its own.
+ *
+ * Authentication (mirrors `db/index.ts`):
+ *   - DATABASE_URL contains a password → used directly (local dev).
+ *   - DATABASE_URL has NO password → an Entra ID access token is acquired via
+ *     DefaultAzureCredential (ACA managed identity, Azure CLI, …) and used as
+ *     the connection password. A single token is enough: the job is short-lived.
  */
-async function createMigrationClient(): Promise<DbClient> {
+export async function createMigrationClient(): Promise<DbClient> {
   const parsed = new URL(config.databaseUrl);
+  const urlPassword = parsed.password ? decodeURIComponent(parsed.password) : null;
+
+  let password: string;
+  if (urlPassword) {
+    password = urlPassword;
+  } else {
+    console.log('DATABASE_URL has no password — obtaining Entra ID token for PostgreSQL...');
+    try {
+      const accessToken = await new DefaultAzureCredential().getToken(AZURE_DB_SCOPE);
+      if (!accessToken?.token) {
+        throw new Error('DefaultAzureCredential returned no token');
+      }
+      password = accessToken.token;
+    } catch (err) {
+      throw new Error(`Entra ID token acquisition failed: ${(err as Error).message}`);
+    }
+  }
+
   const pool = new pg.Pool({
     host: parsed.hostname,
     port: Number(parsed.port) || 5432,
     database: parsed.pathname.replace(/^\//, ''),
     user: decodeURIComponent(parsed.username),
-    password: parsed.password ? decodeURIComponent(parsed.password) : undefined,
-    ssl: config.db.sslEnabled ? { rejectUnauthorized: false } : false,
+    password,
+    ssl: config.db.sslEnabled ? { rejectUnauthorized: config.db.sslRejectUnauthorized } : false,
     max: 1,
     connectionTimeoutMillis: 15_000,
   });
@@ -144,15 +173,21 @@ async function createMigrationClient(): Promise<DbClient> {
 
 async function main(): Promise<void> {
   console.log('Migration CLI — connecting to database...');
-  const client = await createMigrationClient();
+  // The client is created INSIDE the try so that connection/token-acquisition
+  // failures also produce the clean error message and exit code 1 (instead of
+  // an unhandled rejection).
+  let client: DbClient | null = null;
   try {
+    client = await createMigrationClient();
     await runMigrations(client);
     console.log('✅ Migrations completed successfully');
     await client.close();
     process.exit(0);
   } catch (err) {
     console.error('❌ Migration failed:', (err as Error).message);
-    await client.close();
+    if (client) {
+      await client.close().catch(() => { /* ignore close errors */ });
+    }
     process.exit(1);
   }
 }

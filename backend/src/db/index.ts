@@ -12,12 +12,12 @@
  */
 import pg from 'pg';
 import { DefaultAzureCredential } from '@azure/identity';
-import { config } from '../config.js';
+import { config, AZURE_DB_SCOPE } from '../config.js';
 import { runMigrations } from './migrate.js';
 import { runSeed } from './seed.js';
 import { log } from '../logger.js';
 
-const AZURE_SCOPE = 'https://ossrdbms-aad.database.windows.net/.default';
+const AZURE_SCOPE = AZURE_DB_SCOPE;
 const TOKEN_REFRESH_MS = 45 * 60 * 1000; // 45 minutes
 
 export type DbDriver = 'postgres';

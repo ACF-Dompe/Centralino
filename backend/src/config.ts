@@ -18,6 +18,15 @@ function readNumber(name: string, fallback: number): number {
 }
 
 /**
+ * Entra ID token scope (audience) for Azure Database for PostgreSQL.
+ * Single source of truth — used by both the runtime pool (`db/index.ts`) and
+ * the migration CLI (`db/migrate.ts`). It lives here (rather than in
+ * `db/index.ts`) because `db/index.ts` imports `db/migrate.ts` at runtime:
+ * exporting it from there would create a circular import in the migration job.
+ */
+export const AZURE_DB_SCOPE = 'https://ossrdbms-aad.database.windows.net/.default';
+
+/**
  * Azure-specific configuration for the Container Apps deployment.
  * These variables are injected via ACA environment variables (Key Vault references).
  */
