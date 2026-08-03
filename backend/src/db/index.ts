@@ -7,8 +7,16 @@
  *   - If DATABASE_URL has NO password → Entra ID token is obtained via
  *     DefaultAzureCredential (ACA managed identity, Azure CLI, etc.).
  *
- * The Entra ID token is refreshed every 45 minutes (tokens typically last 1h).
- * On connection/auth failure, the pool is recreated with a fresh token.
+ * Token lifecycle: the token is NOT acquired once and held as a static
+ * password. `pg` accepts `password` as an async function and invokes it for
+ * every new physical connection, so each connection authenticates with a
+ * currently-valid token. Combined with a connection lifetime shorter than the
+ * token TTL (guidelines §6), the pool is created once and never recreated.
+ *
+ * This replaces the previous design (periodic pool recreation on a 45-minute
+ * timer), which swapped the module-level pool while the DbClient still held the
+ * old one in a closure — after the first refresh every query failed with
+ * "Cannot use a pool after calling end on the pool", permanently.
  */
 import pg from 'pg';
 import { DefaultAzureCredential } from '@azure/identity';
@@ -18,7 +26,6 @@ import { runSeed } from './seed.js';
 import { log } from '../logger.js';
 
 const AZURE_SCOPE = AZURE_DB_SCOPE;
-const TOKEN_REFRESH_MS = 45 * 60 * 1000; // 45 minutes
 
 export type DbDriver = 'postgres';
 
@@ -52,38 +59,83 @@ function parseDatabaseUrl(url: string): {
 
 let _pool: pg.Pool | null = null;
 let _client: DbClient | null = null;
-let _tokenRefreshTimer: ReturnType<typeof setInterval> | null = null;
 
 /**
- * Obtain an Entra ID access token for PostgreSQL using DefaultAzureCredential.
+ * Idle connections are recycled well inside the token validity window.
+ * Guidelines §6: the connection lifecycle must be shorter than the token TTL.
+ */
+const IDLE_TIMEOUT_MS = 30_000;
+
+/**
+ * Hard cap on the lifetime of a physical connection (pg >= 8.11 / pg-pool >= 3.6).
+ *
+ * `idleTimeoutMillis` alone is not sufficient: a connection that stays busy is
+ * never idle and could therefore outlive its Entra token (~60 min), after which
+ * PostgreSQL rejects it. 30 minutes is comfortably below the ~3600s TTL, so
+ * every connection is retired and re-authenticated with a fresh token long
+ * before the token it was opened with expires.
+ */
+const MAX_CONNECTION_LIFETIME_SECONDS = 1_800;
+
+/**
+ * The credential is created ONCE and reused.
+ *
+ * The password callback below runs on every new physical connection, so a new
+ * credential per call would defeat the SDK's internal token cache (and issue a
+ * managed-identity HTTP request per connection). `DefaultAzureCredential`
+ * caches tokens internally and only round-trips when the cached token is close
+ * to expiry.
+ */
+let _credential: DefaultAzureCredential | null = null;
+
+function getCredential(): DefaultAzureCredential {
+  if (!_credential) {
+    _credential = new DefaultAzureCredential();
+  }
+  return _credential;
+}
+
+/**
+ * Obtain an Entra ID access token for PostgreSQL.
+ *
+ * Passed to `pg` as the `password` callback, so it is invoked for EVERY new
+ * physical connection — each one authenticates with a currently-valid token.
+ * This is what makes periodic pool recreation unnecessary.
  */
 async function getEntraToken(): Promise<string> {
-  const credential = new DefaultAzureCredential();
-  const response = await credential.getToken(AZURE_SCOPE);
-  // AccessToken interface: { token: string, expiresOnTimestamp: number }
+  let response;
+  try {
+    response = await getCredential().getToken(AZURE_SCOPE);
+  } catch (err) {
+    log.error({ err: (err as Error).message }, 'Failed to obtain Entra ID token for DB');
+    throw new Error(`Entra ID token acquisition failed: ${(err as Error).message}`);
+  }
+  // AccessToken: { token: string, expiresOnTimestamp: number }
+  if (!response?.token) {
+    throw new Error(`Entra ID token acquisition failed: no token returned for scope ${AZURE_SCOPE}`);
+  }
+  // Never log the token itself — the expiry timestamp is safe and useful.
+  log.info(
+    { expiresOn: new Date(response.expiresOnTimestamp).toISOString() },
+    'Entra ID token acquired for PostgreSQL connection',
+  );
   return response.token;
 }
 
 /**
- * Create a pg.Pool, resolving the password either from the URL or
- * via Entra ID token.
+ * Create the pg.Pool.
+ *
+ * Authentication:
+ *   - DATABASE_URL contains a password → static string (local dev).
+ *   - DATABASE_URL has NO password → `password` is set to the async token
+ *     getter FUNCTION (not its result). `pg` calls it per new connection, so
+ *     the pool never has to be closed and recreated to pick up a fresh token.
  */
-async function createPool(): Promise<pg.Pool> {
+function createPool(): pg.Pool {
   const conn = parseDatabaseUrl(config.databaseUrl);
-  let password: string;
 
-  if (conn.password) {
-    // Password-based authentication (local dev)
-    password = conn.password;
-  } else {
-    // Entra ID token authentication (ACA / managed identity)
-    log.info('DATABASE_URL has no password — obtaining Entra ID token for PostgreSQL...');
-    try {
-      password = await getEntraToken();
-    } catch (err) {
-      log.error({ err: (err as Error).message }, 'Failed to obtain Entra ID token for DB');
-      throw new Error(`Entra ID token acquisition failed: ${(err as Error).message}`);
-    }
+  if (!conn.password) {
+    log.info('DATABASE_URL has no password — using Entra ID token authentication for PostgreSQL');
   }
 
   const pool = new pg.Pool({
@@ -91,9 +143,11 @@ async function createPool(): Promise<pg.Pool> {
     port: conn.port,
     database: conn.database,
     user: conn.user,
-    password,
+    // Pass the FUNCTION for Entra mode: pg awaits it on every new connection.
+    password: conn.password ?? getEntraToken,
     max: 10,
-    idleTimeoutMillis: 30_000,
+    idleTimeoutMillis: IDLE_TIMEOUT_MS,
+    maxLifetimeSeconds: MAX_CONNECTION_LIFETIME_SECONDS,
     connectionTimeoutMillis: 10_000,
     // ACA requires SSL; bare Docker containers (e2e CI) do not.
     // When SSL is on, the server certificate is validated against the system
@@ -101,7 +155,7 @@ async function createPool(): Promise<pg.Pool> {
     ssl: config.db.sslEnabled ? { rejectUnauthorized: config.db.sslRejectUnauthorized } : false,
   });
 
-  // Log pool errors (e.g., idle connection dropped by PG)
+  // An error on an IDLE client must never take down the process.
   pool.on('error', (err) => {
     log.error({ err: err.message }, 'Unexpected PostgreSQL pool error');
   });
@@ -110,92 +164,58 @@ async function createPool(): Promise<pg.Pool> {
 }
 
 /**
- * Handle authentication failures by refreshing the Entra ID token
- * and replacing the pool. Call this when you get an auth error.
+ * Return the live pool.
+ *
+ * The client NEVER captures a pool in a closure: it resolves the current pool
+ * on every call. With the per-connection token callback the pool is no longer
+ * recreated, so this is defence-in-depth — it makes the
+ * "Cannot use a pool after calling end on the pool" class of bug structurally
+ * impossible even if pool replacement is ever reintroduced.
  */
-async function refreshTokenAndPool(): Promise<void> {
-  log.info('Refreshing Entra ID token and recreating DB pool...');
-  try {
-    const newPool = await createPool();
-    // Drain old pool
-    if (_pool) {
-      await _pool.end().catch(() => { /* ignore drain errors */ });
-    }
-    _pool = newPool;
-    log.info('DB pool recreated with fresh token');
-  } catch (err) {
-    log.error({ err: (err as Error).message }, 'Failed to refresh DB pool');
+function getPool(): pg.Pool {
+  if (!_pool) {
+    throw new Error('DB pool is not initialised — call getDb() first');
   }
+  return _pool;
 }
 
 /**
- * Build a DB client backed by the pg.Pool.
+ * Build a DB client backed by the current pg.Pool.
+ *
+ * No token-expiry retry logic is needed any more: `pg` resolves a fresh token
+ * for every new physical connection, and connections are retired before their
+ * token can expire (see MAX_CONNECTION_LIFETIME_SECONDS). Errors therefore
+ * propagate to the caller instead of being masked by a pool rebuild.
  */
-function buildClient(pool: pg.Pool): DbClient {
+function buildClient(): DbClient {
   return {
     driver: 'postgres',
 
     query: async (text, params) => {
-      try {
-        const sql = toDriverSql(text, 'postgres');
-        const res = await pool.query(sql, (params ?? []) as never[]);
-        return { rows: res.rows, rowCount: res.rowCount ?? 0 };
-      } catch (err) {
-        // Detect authentication failure — refresh token and retry once
-        const msg = (err as Error).message;
-        if (
-          /password authentication failed|no pg_hba.conf entry|could not connect/i.test(msg)
-        ) {
-          log.warn({ err: msg }, 'Auth error — refreshing token and retrying query');
-          await refreshTokenAndPool();
-          // Retry with new pool
-          const sql = toDriverSql(text, 'postgres');
-          const res = await _pool!.query(sql, (params ?? []) as never[]);
-          return { rows: res.rows, rowCount: res.rowCount ?? 0 };
-        }
-        throw err;
-      }
+      const sql = toDriverSql(text, 'postgres');
+      const res = await getPool().query(sql, (params ?? []) as never[]);
+      return { rows: res.rows, rowCount: res.rowCount ?? 0 };
     },
 
     exec: async (text) => {
-      try {
-        await pool.query(text);
-      } catch (err) {
-        const msg = (err as Error).message;
-        if (
-          /password authentication failed|no pg_hba.conf entry|could not connect/i.test(msg)
-        ) {
-          log.warn({ err: msg }, 'Auth error — refreshing token and retrying exec');
-          await refreshTokenAndPool();
-          await _pool!.query(text);
-          return;
-        }
-        throw err;
-      }
+      await getPool().query(text);
     },
 
     close: async () => {
-      if (_tokenRefreshTimer) {
-        clearInterval(_tokenRefreshTimer);
-        _tokenRefreshTimer = null;
+      const pool = _pool;
+      _pool = null;
+      _client = null;
+      if (pool) {
+        await pool.end();
       }
-      await pool.end();
     },
   };
 }
 
 export async function getDb(): Promise<DbClient> {
   if (!_client) {
-    _pool = await createPool();
-    _client = buildClient(_pool);
-
-    // Periodically refresh the Entra ID token (if using token auth)
-    const conn = parseDatabaseUrl(config.databaseUrl);
-    if (!conn.password) {
-      _tokenRefreshTimer = setInterval(async () => {
-        await refreshTokenAndPool();
-      }, TOKEN_REFRESH_MS);
-    }
+    _pool = createPool();
+    _client = buildClient();
 
     // Run migrations on startup — controlled by SKIP_MIGRATIONS env var.
     // Guidelines §6/§8: migrations are a CI step, not run at app startup.
