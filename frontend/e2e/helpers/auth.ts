@@ -1,6 +1,25 @@
 import { expect, type Page } from '@playwright/test';
 
 /**
+ * E2E helper: mock the break-glass status endpoint.
+ *
+ * The SSO screen asks the backend whether the emergency login is usable before
+ * rendering its link. Left unmocked the call would reach the real backend and
+ * make the presence of that link depend on the environment, so every helper
+ * that renders the SSO screen pins it — disabled by default, which is what a
+ * healthy production tenant looks like.
+ */
+export async function mockBreakGlassStatus(page: Page, enabled = false): Promise<void> {
+  await page.route('**/api/auth/breakglass/status', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ success: true, data: { enabled } }),
+    });
+  });
+}
+
+/**
  * E2E helper: navigate to the app, pick the first sede card, submit the WLC
  * form, and accept the "WLC NON RAGGIUNGIBILE" modal to enter Demo Sandbox.
  *
@@ -17,6 +36,8 @@ export async function enterDemoSandbox(page: Page): Promise<void> {
   // because Playwright's glob matching against full URLs (protocol + host + path)
   // can be unreliable in some environments. The catch-all pattern `**/api/**`
   // is the most reliable way to intercept all API requests.
+
+  await mockBreakGlassStatus(page);
 
   // 1. SAML not configured → 404, app skips SSO and shows WLC login directly
   await page.route('**/api/auth/me', async (route) => {
@@ -149,6 +170,8 @@ export async function setupSsoCommonRoutes(
 ): Promise<void> {
   const wlcResponse = options?.wlcPostResponse;
 
+  await mockBreakGlassStatus(page);
+
   // 1. SSO authenticated (Mario Rossi)
   await page.route('**/api/auth/me', async (route) => {
     await route.fulfill({
@@ -164,6 +187,7 @@ export async function setupSsoCommonRoutes(
           givenName: 'Mario',
           surname: 'Rossi',
           objectId: 'a1b2c3d4-...',
+          authMethod: 'saml',
         },
       }),
     });
@@ -399,6 +423,8 @@ export async function enterSsoHappyPath(page: Page): Promise<void> {
  * "Seleziona la sede" heading visible.
  */
 export async function enterSsoUnavailable(page: Page): Promise<void> {
+  await mockBreakGlassStatus(page);
+
   // Intercept /api/auth/me → 404 (SAML not configured)
   await page.route('**/api/auth/me', async (route) => {
     await route.fulfill({

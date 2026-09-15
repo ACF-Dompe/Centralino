@@ -1,5 +1,6 @@
 /**
- * Authentication routes for SSO SAML 2.0 via Microsoft Entra ID.
+ * Authentication routes for SSO SAML 2.0 via Microsoft Entra ID, plus the
+ * break-glass local login used when the IdP is unavailable.
  *
  * Routes (all mounted at /api/auth):
  *   GET  /api/auth/login    — redirect to the IdP (Entra ID)
@@ -7,25 +8,310 @@
  *   POST /api/auth/logout   — initiate SLO (redirects to IdP) or local logout
  *   POST /api/auth/slo/callback — SAML LogoutResponse handler
  *   GET  /api/auth/me       — return the current user profile (or 401)
+ *   GET  /api/auth/breakglass/status — whether break-glass login is usable
+ *   POST /api/auth/breakglass/login  — break-glass username/password login
  *
  * When SAML is not configured (local dev), /me returns 404 and /login
- * returns 501 so the frontend knows SSO is unavailable.
+ * returns 501 so the frontend knows SSO is unavailable. The break-glass routes
+ * are mounted in BOTH cases on purpose: the whole point of the path is to work
+ * when the SAML side is broken or absent.
  */
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import passport from 'passport';
+import { config } from '../config.js';
 import { log } from '../logger.js';
-import type { SamlUser, SamlStrategy } from '../auth/saml.js';
+import type { SamlStrategy } from '../auth/saml.js';
 import { buildSloRedirectUrl } from '../auth/saml.js';
+import type { AppUser } from '../auth/user.js';
+import { toBreakGlassUser } from '../auth/user.js';
+import {
+  DUMMY_PASSWORD_HASH,
+  verifyPassword,
+} from '../auth/password.js';
+import {
+  getBreakGlassAccount,
+  registerFailedAttempt,
+  registerSuccessfulLogin,
+} from '../repositories/breakglass.js';
+import { createIpAllowlist, type IpAllowlist } from '../utils/ipAllowlist.js';
+import { createLoginThrottle, type LoginThrottle } from '../utils/loginThrottle.js';
 import { isLocalUrl } from '../utils/sanitize.js';
+
+type BreakGlassConfig = typeof config.breakGlass;
 
 interface AuthRouterOptions {
   samlEnabled: boolean;
   samlStrategy?: SamlStrategy;
+  /** Break-glass settings. Defaults to `config.breakGlass`; injected by tests. */
+  breakGlass?: BreakGlassConfig;
+}
+
+/**
+ * The only message the break-glass endpoint ever returns on failure.
+ *
+ * Every rejection reason — unknown username, wrong password, disabled, expired,
+ * locked out — produces this exact response. Distinguishing them would let an
+ * attacker enumerate which break-glass accounts exist and which are live. The
+ * real reason goes to the audit log instead.
+ */
+const BREAKGLASS_GENERIC_ERROR = 'Credenziali non valide.';
+
+/** Payload shape returned by /me and by a successful break-glass login. */
+function toProfile(user: AppUser) {
+  return {
+    nameID: user.nameID,
+    email: user.email,
+    displayName: user.displayName,
+    givenName: user.givenName,
+    surname: user.surname,
+    objectId: user.objectId,
+    authMethod: user.authMethod,
+  };
+}
+
+/** Common audit fields for every break-glass log line. */
+function auditContext(req: Request) {
+  return {
+    ip: req.ip,
+    userAgent: req.headers['user-agent'] ?? '',
+    correlationId: req.correlationId ?? '',
+  };
+}
+
+/**
+ * Mount the break-glass routes.
+ *
+ * SECURITY NOTE — this path deliberately bypasses Entra Conditional Access and
+ * MFA and, by explicit decision, carries no second factor (see COMPLIANCE.md).
+ * The controls that stand in for one are all implemented here or in the modules
+ * this function pulls in:
+ *   - `config.breakGlass.enabled` defaults to false: the feature ships dark
+ *   - optional CIDR allowlist, evaluated before anything else
+ *   - per-IP sliding-window throttle (per replica) + per-account lockout (in
+ *     the database, therefore global)
+ *   - a constant-cost password check and one single generic error message, so
+ *     neither timing nor wording reveals whether an account exists
+ *   - session regeneration on success and a shortened cookie lifetime
+ *   - every attempt, allowed or denied, logged at warn level for alerting
+ */
+function registerBreakGlassRoutes(
+  router: Router,
+  bg: BreakGlassConfig,
+  throttle: LoginThrottle,
+  allowlist: IpAllowlist,
+): void {
+  /**
+   * GET /api/auth/breakglass/status
+   * Tells the frontend whether to offer the emergency login link at all.
+   * Reports `enabled: false` to a client outside the allowlist too, so the
+   * endpoint is not advertised to callers that could never use it.
+   */
+  router.get('/breakglass/status', (req: Request, res: Response) => {
+    res.json({
+      success: true,
+      data: { enabled: bg.enabled && allowlist.allows(req.ip) },
+    });
+  });
+
+  /**
+   * POST /api/auth/breakglass/login
+   * Body: { username, password }
+   *
+   * Returns 404 when the feature is disabled or the caller is outside the
+   * allowlist — not 403, which would confirm that the endpoint exists.
+   */
+  router.post('/breakglass/login', (req: Request, res: Response, next: NextFunction) => {
+    if (!bg.enabled) {
+      return res.status(404).json({ success: false, error: 'Not found' });
+    }
+
+    const ip = req.ip;
+
+    if (!allowlist.allows(ip)) {
+      log.warn(
+        { event: 'breakglass-login-denied', reason: 'ip-not-allowed', ...auditContext(req) },
+        'Break-glass login refused — source IP outside BREAKGLASS_IP_ALLOWLIST',
+      );
+      return res.status(404).json({ success: false, error: 'Not found' });
+    }
+
+    if (!throttle.check(ip)) {
+      log.warn(
+        { event: 'breakglass-login-denied', reason: 'ip-throttled', ...auditContext(req) },
+        'Break-glass login refused — too many attempts from this source IP',
+      );
+      return res.status(429).json({ success: false, error: BREAKGLASS_GENERIC_ERROR });
+    }
+
+    const body = req.body as { username?: unknown; password?: unknown };
+    const username = typeof body.username === 'string' ? body.username.trim() : '';
+    const password = typeof body.password === 'string' ? body.password : '';
+
+    if (username.length === 0 || password.length === 0) {
+      throttle.recordFailure(ip);
+      log.warn(
+        { event: 'breakglass-login-denied', reason: 'missing-credentials', ...auditContext(req) },
+        'Break-glass login refused — username or password missing',
+      );
+      return res.status(401).json({ success: false, error: BREAKGLASS_GENERIC_ERROR });
+    }
+
+    void (async () => {
+      try {
+        const account = await getBreakGlassAccount(username);
+
+        // Always spend one scrypt derivation, whether or not the account
+        // exists, so response latency cannot be used to enumerate usernames.
+        const passwordOk = verifyPassword(
+          password,
+          account?.passwordHash ?? DUMMY_PASSWORD_HASH,
+        );
+
+        const now = new Date();
+        const locked = account?.lockedUntil != null && account.lockedUntil > now;
+        const expired = account?.expiresAt != null && account.expiresAt <= now;
+
+        // Order matters: the lockout, disabled and expired checks come before
+        // the password verdict so that a locked account never increments its
+        // own counter again. Otherwise sustained guessing would keep extending
+        // the lock and the legitimate operator could never wait it out.
+        let reason: string | null = null;
+        if (!account) {
+          reason = 'unknown-account';
+        } else if (locked) {
+          reason = 'account-locked';
+        } else if (!account.enabled) {
+          reason = 'account-disabled';
+        } else if (expired) {
+          reason = 'account-expired';
+        } else if (!passwordOk) {
+          reason = 'bad-password';
+        }
+
+        if (reason !== null) {
+          throttle.recordFailure(ip);
+
+          // Only a wrong password counts towards the account lockout.
+          if (reason === 'bad-password' && account) {
+            const lockedUntil = await registerFailedAttempt(
+              account.username,
+              bg.maxFailedAttempts,
+              bg.lockoutMinutes,
+            );
+            if (lockedUntil != null && lockedUntil > now) {
+              log.warn(
+                {
+                  event: 'breakglass-account-locked',
+                  username: account.username,
+                  lockedUntil: lockedUntil.toISOString(),
+                  ...auditContext(req),
+                },
+                'Break-glass account locked after repeated failures',
+              );
+            }
+          }
+
+          log.warn(
+            { event: 'breakglass-login-denied', reason, username, ...auditContext(req) },
+            'Break-glass login denied',
+          );
+          return res.status(401).json({ success: false, error: BREAKGLASS_GENERIC_ERROR });
+        }
+
+        // `account` is non-null here: `reason` is set whenever it is missing.
+        const authenticated = account as NonNullable<typeof account>;
+        const user = toBreakGlassUser(authenticated.username, authenticated.displayName);
+
+        // No explicit session.regenerate() here: passport's own
+        // SessionManager.logIn() already regenerates before serialising the
+        // user, precisely to defeat session fixation. Calling it ourselves
+        // first would mean two destroy+create round-trips against the session
+        // store on the one code path that has to stay reliable.
+        req.login(user, (loginErr: Error | null) => {
+          if (loginErr) return next(loginErr);
+
+          // Break-glass sessions expire sooner than SSO ones.
+          //
+          // This must be re-saved: passport already called session.save()
+          // with the default 24 h expiry, and connect-pg-simple derives the
+          // row's `expire` column from cookie.expires. Without the second
+          // save the browser would stop sending the cookie after the short
+          // TTL, but the row would stay valid for 24 h — so a stolen cookie
+          // would outlive the window this setting is meant to enforce.
+          req.session.cookie.maxAge = bg.sessionTtlMinutes * 60_000;
+
+          req.session.save((saveErr) => {
+            if (saveErr) return next(saveErr);
+
+            throttle.reset(ip);
+
+            // Best-effort bookkeeping: a failure here must not deny a login
+            // that has already succeeded.
+            registerSuccessfulLogin(authenticated.username).catch((err: Error) => {
+              log.warn(
+                { err: err.message, username: authenticated.username },
+                'Could not record break-glass last_login_at',
+              );
+            });
+
+            // Logged at warn (not info) so a Log Analytics alert can fire on
+            // it: a successful break-glass login is an event someone should
+            // look at, every single time.
+            log.warn(
+              {
+                event: 'breakglass-login-success',
+                username: authenticated.username,
+                sessionTtlMinutes: bg.sessionTtlMinutes,
+                ...auditContext(req),
+              },
+              'Break-glass login SUCCEEDED — SSO was bypassed',
+            );
+
+            res.json({
+              success: true,
+              data: { ...toProfile(user), sessionTtlMinutes: bg.sessionTtlMinutes },
+            });
+          });
+        });
+      } catch (err) {
+        // Never leak a database or hashing error to the client: it would
+        // distinguish "account exists but something broke" from a plain miss.
+        log.error(
+          { err: (err as Error).message, username, ...auditContext(req) },
+          'Break-glass login failed with an internal error',
+        );
+        res.status(500).json({ success: false, error: 'Internal Server Error' });
+      }
+    })();
+  });
 }
 
 export function createAuthRouter(opts: AuthRouterOptions): Router {
   const { samlEnabled, samlStrategy } = opts;
+  const bg = opts.breakGlass ?? config.breakGlass;
   const router = Router();
+
+  // ── Break-glass (mounted regardless of the SAML configuration) ──────────
+  const throttle = createLoginThrottle(
+    bg.maxAttemptsPerIp,
+    bg.ipWindowMinutes * 60_000,
+  );
+  const allowlist = createIpAllowlist(bg.ipAllowlist);
+
+  if (bg.enabled) {
+    log.warn(
+      {
+        ipAllowlistConfigured: !allowlist.unrestricted,
+        sessionTtlMinutes: bg.sessionTtlMinutes,
+        maxFailedAttempts: bg.maxFailedAttempts,
+      },
+      allowlist.unrestricted
+        ? 'Break-glass login ENABLED with no IP allowlist — set BREAKGLASS_IP_ALLOWLIST'
+        : 'Break-glass login ENABLED',
+    );
+  }
+
+  registerBreakGlassRoutes(router, bg, throttle, allowlist);
 
   if (!samlEnabled) {
     // ── SSO disabled (local dev) ──────────────────────────────────────────
@@ -54,8 +340,13 @@ export function createAuthRouter(opts: AuthRouterOptions): Router {
       res.status(501).json({ success: false, error: 'SSO is not configured.' });
     });
 
-    router.get('/me', (_req: Request, res: Response) => {
-      // 404 = SSO not available; frontend should skip SSO prompt.
+    router.get('/me', (req: Request, res: Response) => {
+      // A break-glass session can exist even with SAML switched off, so return
+      // it when present. Only with no session at all is this a 404 = "SSO not
+      // available", which tells the frontend to skip the SSO prompt.
+      if (req.isAuthenticated() && req.user) {
+        return res.json({ success: true, data: toProfile(req.user as AppUser) });
+      }
       res.status(404).json({ success: false, error: 'SSO is not configured.' });
     });
 
@@ -111,13 +402,21 @@ export function createAuthRouter(opts: AuthRouterOptions): Router {
    * app even if the IdP session persists.
    */
   router.post('/logout', (req: Request, res: Response, next: NextFunction) => {
-    const user = req.user as SamlUser | undefined;
+    const user = req.user as AppUser | undefined;
 
-    if (!user || !samlStrategy) {
-      // No user or no SAML strategy — local logout only
+    // A break-glass session has no IdP counterpart: its `nameID` is a local
+    // username, so handing it to the SAML SLO builder would produce a
+    // LogoutRequest for a subject Entra has never heard of. Local logout only.
+    if (!user || !samlStrategy || user.authMethod !== 'saml') {
       req.logout(() => {
         req.session.destroy(() => {
           res.clearCookie('guestportal.sid');
+          if (user?.authMethod === 'breakglass') {
+            log.warn(
+              { event: 'breakglass-logout', username: user.nameID, ...auditContext(req) },
+              'Break-glass session terminated',
+            );
+          }
           res.json({ success: true });
         });
       });
@@ -172,6 +471,8 @@ export function createAuthRouter(opts: AuthRouterOptions): Router {
    * GET /api/auth/me
    * Returns the current user profile from the session.
    * 200 with user data when authenticated, 401 otherwise.
+   * `authMethod` tells the frontend whether this is an SSO or break-glass
+   * session, so it can surface the emergency-access banner.
    */
   router.get('/me', (req: Request, res: Response) => {
     if (!req.isAuthenticated()) {
@@ -180,18 +481,7 @@ export function createAuthRouter(opts: AuthRouterOptions): Router {
         error: 'Not authenticated. Use /api/auth/login to authenticate.',
       });
     }
-    const user = req.user as SamlUser;
-    res.json({
-      success: true,
-      data: {
-        nameID: user.nameID,
-        email: user.email,
-        displayName: user.displayName,
-        givenName: user.givenName,
-        surname: user.surname,
-        objectId: user.objectId,
-      },
-    });
+    res.json({ success: true, data: toProfile(req.user as AppUser) });
   });
 
   return router;

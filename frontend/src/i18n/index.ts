@@ -218,6 +218,20 @@ const dictionaries: Record<Locale, Dict> = {
     'sso.logout': 'Logout SSO',
     'sso.operator': 'Operatore SSO',
 
+    // Accesso di emergenza (break-glass)
+    'breakglass.link': 'Accesso di emergenza',
+    'breakglass.heading': 'Accesso di emergenza',
+    'breakglass.subtitle': 'Da usare solo quando il Single Sign-On aziendale non è disponibile.',
+    'breakglass.warning': 'Questo accesso aggira il Single Sign-On e l\'autenticazione a più fattori. Ogni tentativo viene registrato e notificato al team di sicurezza.',
+    'breakglass.username': 'Utente di emergenza',
+    'breakglass.password': 'Password',
+    'breakglass.submit': 'Accedi',
+    'breakglass.backToSso': 'Torna all\'accesso SSO',
+    'breakglass.error': 'Credenziali non valide, account non abilitato o troppi tentativi. Contatta il team di sicurezza.',
+    'breakglass.badge': 'Emergenza',
+    'breakglass.banner': 'Sessione di emergenza attiva: il Single Sign-On è stato aggirato. La sessione è tracciata e ha durata ridotta — esci appena l\'SSO torna disponibile.',
+    'breakglass.logout': 'Esci (emergenza)',
+
     // Notifiche WS
     'app.event': 'Evento recente',
     'app.events': '{n} eventi recenti',
@@ -430,6 +444,20 @@ const dictionaries: Record<Locale, Dict> = {
     'sso.description': 'You will be redirected to the Microsoft Entra ID portal for authentication. Use your corporate credentials.',
     'sso.logout': 'SSO Logout',
     'sso.operator': 'SSO Operator',
+
+    // Break-glass emergency access
+    'breakglass.link': 'Emergency access',
+    'breakglass.heading': 'Emergency access',
+    'breakglass.subtitle': 'Use this only when corporate Single Sign-On is unavailable.',
+    'breakglass.warning': 'This login bypasses Single Sign-On and multi-factor authentication. Every attempt is logged and reported to the security team.',
+    'breakglass.username': 'Emergency user',
+    'breakglass.password': 'Password',
+    'breakglass.submit': 'Sign in',
+    'breakglass.backToSso': 'Back to SSO sign-in',
+    'breakglass.error': 'Invalid credentials, account not enabled, or too many attempts. Contact the security team.',
+    'breakglass.badge': 'Emergency',
+    'breakglass.banner': 'Emergency session active: Single Sign-On was bypassed. This session is audited and short-lived — sign out as soon as SSO is back.',
+    'breakglass.logout': 'Sign out (emergency)',
 
     // WS notifications
     'app.event': 'Recent event',

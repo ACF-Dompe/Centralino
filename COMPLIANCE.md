@@ -35,7 +35,8 @@ Tutti i **P0** (4/4) e **P1‑P2** (11/11) sono stati risolti nel codice. In que
 | **5.2** | `targetPassword` in audit log `sync_logs` | ✅ **FIXED** | `const safePayload = { ...cfg, targetPassword: '***' }` prima del log. |
 | **5.3** | Default TLS insicuri (`rejectUnauthorized: false`) | ✅ **FIXED** | `WLC_TLS_REJECT_UNAUTHORIZED` default `true` in produzione, `false` in dev. `hostVerifier` SSH attivo solo se `WLC_SSH_HOST_KEY` è impostata. |
 | **5.4** | WebSocket `/ws` non autenticato | ✅ **FIXED** | Path: `/api/ws` + `sessionVerifier.verifySession()` sull'upgrade → 401 se non autenticato. |
-| **5.5** | SAML hardening | ✅ **FIXED** | `@node-saml/passport-saml` ✅ `wantAssertionsSigned: true` ✅ `wantAuthnResponseSigned: true` ✅ `validateInResponseTo: ValidateInResponseTo.ifPresent` ✅ `audience: params.issuer` ✅ `isLocalUrl()` su redirect ✅ |
+| **5.5** | SAML hardening | ✅ **FIXED** | `@node-saml/passport-saml` ✅ `wantAssertionsSigned: true` ✅ `wantAuthnResponseSigned: true` ✅ `validateInResponseTo: ValidateInResponseTo.ifPresent` ✅ `audience: params.issuer` ✅ `isLocalUrl()` su redirect ✅ `disableRequestedAuthnContext: true` ✅ (vedi 5.8) |
+| **5.8** | AuthnRequest vincolava il metodo di autenticazione (`AADSTS75011`) | ✅ **FIXED** | `@node-saml/node-saml` 5.1.0 inserisce per default `RequestedAuthnContext = PasswordProtectedTransport` con `Comparison="exact"` (`lib/saml.js:86-88,100,187-199`). Entra ID onora il vincolo, quindi **ogni** accesso passwordless (CBA, Windows Hello, FIDO2 → `amr = X509, MultiFactor, X509Device`) veniva rifiutato con `AADSTS75011`. Il metodo di autenticazione è una decisione di Conditional Access / Authentication Strength del tenant, non del service provider: `disableRequestedAuthnContext: true` (default, override con `SAML_DISABLE_REQUESTED_AUTHN_CONTEXT`) rimuove l'elemento dall'AuthnRequest. Pinnato anche in `deploy-azure.yml` perché un override manuale non sopravviva a un deploy. Verificato sull'XML generato, non solo sull'opzione. |
 
 ---
 
@@ -89,6 +90,43 @@ Tutti i **P0** (4/4) e **P1‑P2** (11/11) sono stati risolti nel codice. In que
 
 ---
 
+## Deviazioni consapevoli (rischio accettato)
+
+### D1 — Accesso break-glass senza secondo fattore
+
+| Campo | Valore |
+|---|---|
+| **Cosa** | Login locale username/password (`POST /api/auth/breakglass/login`) che consente l'accesso alla console quando Entra ID / SAML SSO non è disponibile. |
+| **Perché** | Continuità operativa: senza di esso un outage dell'IdP rende la console inutilizzabile e gli ospiti non registrabili. |
+| **Deviazione** | Aggira Conditional Access e MFA di Entra. **Non ha un secondo fattore**: è una scelta esplicita del richiedente, presa dopo che il rischio è stato rappresentato (l'alternativa proposta era password + TOTP su `node:crypto`, senza dipendenze aggiuntive). |
+| **Rischio residuo** | Una password compromessa è sufficiente per accedere alla console con pieni privilegi da internet (l'app è pubblicata su `guestportal.dompe.com`). Il rischio **non è eliminato**, solo ridotto. |
+
+**Controlli compensativi implementati** (tutti nel codice, non solo procedurali):
+
+| Controllo | Dove |
+|---|---|
+| Kill switch `BREAKGLASS_ENABLED`, default **`false`** — l'endpoint risponde `404` finché non viene abilitato deliberatamente | `config.ts`, `routes/auth.ts` |
+| Allowlist CIDR `BREAKGLASS_IP_ALLOWLIST`, valutata prima di tutto il resto; **fail-closed** se tutte le voci sono malformate; chi è fuori riceve `404` e non vede il link nella UI | `utils/ipAllowlist.ts` |
+| Hash scrypt (RFC 7914) con salt per record, `timingSafeEqual`, nessuna dipendenza nuova; la password in chiaro non è mai persistita, loggata o restituita | `auth/password.ts` |
+| Lockout per account persistito a DB (quindi **globale** su tutte le repliche ACA); solo la password errata lo incrementa, così il guessing non può prolungare il blocco all'operatore legittimo | `repositories/breakglass.ts` |
+| Throttle per IP sorgente a finestra scorrevole (in memoria → per replica; il lockout a DB è il controllo globale) | `utils/loginThrottle.ts` |
+| Verifica password a **costo costante** (hash fittizio quando l'utente non esiste) e **un solo messaggio di errore** per ogni causa di rifiuto → nessuna enumerazione account per timing o per wording | `auth/password.ts`, `routes/auth.ts` |
+| Rigenerazione della sessione al login (anti session-fixation) e TTL cookie ridotto (default 120 min vs 24 h SSO) | `routes/auth.ts` |
+| Scadenza per account (`expires_at`) per time-boxare le credenziali | `breakglass_users` |
+| Audit a livello `warn` di **ogni** tentativo, riuscito o no, con `event`/`reason`/`ip`/`userAgent`/`correlationId`; alert KQL obbligatorio in guida di deploy §1.3.4 | `routes/auth.ts` |
+| Account creabili **solo da CLI**: nessun endpoint HTTP di gestione, che sarebbe una via di privilege escalation da una sessione compromessa | `scripts/breakglass.ts` |
+| Banner ambra persistente + badge in dashboard: una sessione di emergenza non può passare per una sessione normale | `Dashboard.tsx` |
+| Il logout break-glass **non** tenta il Single Logout SAML (il `nameID` è un utente locale, non un soggetto Entra) | `routes/auth.ts` |
+
+**Limiti noti, a verbale:**
+
+1. Nessun secondo fattore — vedi *Rischio residuo*.
+2. Dipende da PostgreSQL: copre un outage di **Entra/SSO**, non del **database**.
+3. Il throttle per IP è per-replica; il lockout per account è globale.
+4. `BREAKGLASS_IP_ALLOWLIST` vuota espone l'endpoint a internet: in assenza di secondo fattore è il controllo compensativo più efficace e va popolata con i CIDR di egress corporate/VPN. Il backend logga un `warn` esplicito all'avvio se il break-glass è abilitato senza allowlist.
+
+---
+
 ## Backlog di Remediation Aggiornato
 
 ### Ancora aperti (richiedono azione esterna / coordinamento)
@@ -124,6 +162,8 @@ Tutti i **P0** (4/4) e **P1‑P2** (11/11) sono stati risolti nel codice. In que
 | **—** | **`docker-security.yml`: sostituita action wrapper con `docker run` diretto (log visibili, gating affidabile)** | — | `df641852` |
 | **—** | **3/3 workflow CI verdi consecutivi (CI + E2E + Docker Security)** | — | `df641852` |
 | **—** | **`.trivyignore` rimosso (CVE fixato alla fonte)** | — | `df641852` |
+| **P1** | **`AADSTS75011`: rimosso `RequestedAuthnContext` dall'AuthnRequest (compatibilità CBA/Windows Hello/FIDO2)** | 5.8 | *questa sessione* |
+| **—** | **Accesso break-glass con controlli compensativi (deviazione D1)** | D1 | *questa sessione* |
 
 ---
 
@@ -131,7 +171,7 @@ Tutti i **P0** (4/4) e **P1‑P2** (11/11) sono stati risolti nel codice. In que
 
 | Metrica | Valore |
 |---|---|
-| **Test unitari** | 391 (170 frontend + 221 backend) — 0 errori |
+| **Test unitari** | 464 conteggiati staticamente (169 frontend + 295 backend), di cui **70 nuovi** per il fix 5.8 e la deviazione D1 — da riconfermare con `make test` |
 | **Test E2E** | 22/22 — CI verde |
 | **TypeScript** | 0 errori (frontend + backend) |
 | **Vulnerabilità CRITICAL/HIGH** | 0 |

@@ -7,13 +7,14 @@
  */
 import session from 'express-session';
 import connectPgSimple from 'connect-pg-simple';
-import type { SamlUser } from './saml.js';
+import type { AppUser } from './user.js';
 
 const PgStore = connectPgSimple(session);
 
 export interface SessionData extends session.SessionData {
   passport?: {
-    user?: SamlUser;
+    /** Either a SAML SSO user or a break-glass one — see auth/user.ts. */
+    user?: AppUser;
   };
 }
 

@@ -27,6 +27,10 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return (await res.json()) as T;
 }
 
+/**
+ * The authenticated operator, from either SSO or the break-glass login.
+ * `authMethod` drives the emergency-access banner in the dashboard.
+ */
 export interface SamlUser {
   nameID: string;
   email: string;
@@ -34,6 +38,7 @@ export interface SamlUser {
   givenName: string;
   surname: string;
   objectId: string | null;
+  authMethod?: 'saml' | 'breakglass';
 }
 
 export const api = {
@@ -48,6 +53,26 @@ export const api = {
   getMe: () => request<{ success: boolean; data: SamlUser }>('/auth/me'),
   /** Logout from SSO — destroys the session. */
   logout: () => request<{ success: boolean }>('/auth/logout', { method: 'POST' }),
+
+  // Break-glass (emergency local login, used when Entra ID / SSO is down)
+  /**
+   * Whether the emergency login is available to this client. The backend
+   * answers `false` both when the feature is switched off and when the caller
+   * is outside the configured CIDR allowlist, so the link is only ever shown
+   * to someone who could actually use it.
+   */
+  breakGlassStatus: () =>
+    request<{ success: boolean; data: { enabled: boolean } }>('/auth/breakglass/status'),
+  /**
+   * Emergency username/password login. On failure the backend deliberately
+   * returns one generic message for every reason (unknown user, wrong
+   * password, locked, disabled, expired) — do not try to interpret it.
+   */
+  breakGlassLogin: (body: { username: string; password: string }) =>
+    request<{ success: boolean; data: SamlUser & { sessionTtlMinutes: number } }>(
+      '/auth/breakglass/login',
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
 
   // Sedi
   listSedi: () => request<{ data: Sede[] }>('/sedi'),

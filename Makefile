@@ -16,7 +16,7 @@
 # =============================================================================
 
 .PHONY: help install dev build typecheck test test-backend test-frontend
-.PHONY: docker-scan lint
+.PHONY: docker-scan lint breakglass
 
 # ── Help ─────────────────────────────────────────────────────────────────────
 
@@ -54,6 +54,11 @@ test-frontend: ## Run frontend unit tests (Vitest)
 lint: ## Run ESLint (if configured)
 	@echo 'No linter configured — run typecheck instead'
 	$(MAKE) typecheck
+
+# ── Break-glass accounts ────────────────────────────────────────────────────
+
+breakglass: ## Manage break-glass accounts (e.g. make breakglass ARGS="list")
+	@npm run breakglass -w backend -- $(ARGS)
 
 # ── Docker image scanning ──────────────────────────────────────────────────
 

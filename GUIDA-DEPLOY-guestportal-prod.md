@@ -70,9 +70,111 @@ az extension add --name containerapp --upgrade -y
 - **Claims:** emailaddress, name, givenname, surname, objectidentifier; NameID = persistent (source `user.userPrincipalName`).
 - Recupera `SAML_ENTRY_POINT` (SingleSignOnService dalla Federation Metadata) e il **certificato IdP (PEM)** → secret `SAML-CERT`.
 
+> **Nessuna configurazione Entra è richiesta per il metodo di autenticazione.**
+> Quale metodo sia accettabile lo decidono le policy di Conditional Access /
+> Authentication Strength del tenant. L'applicazione **non deve** dichiararlo
+> nell'AuthnRequest: lo fa la libreria `@node-saml/node-saml` per default e
+> produce `AADSTS75011` su tutti gli accessi passwordless (CBA, Windows Hello,
+> FIDO2). Per questo `SAML_DISABLE_REQUESTED_AUTHN_CONTEXT` vale `true` — vedi
+> §12 Troubleshooting. Un'Enterprise Application SAML non ha un'impostazione
+> supportata per ignorare un `RequestedAuthnContext` ricevuto: il rimedio è
+> esclusivamente lato applicazione.
+
 ### 1.2 App Registration per Microsoft Graph (mail)
 - Permesso **applicativo** `Mail.Send` + **admin consent**; genera un client secret → `MAIL-GRAPH-CLIENT-SECRET`.
 - Annota `MAIL_GRAPH_CLIENT_ID`, `MAIL_GRAPH_TENANT_ID`, `MAIL_GRAPH_USER_ID` (mailbox mittente licenziata).
+
+### 1.3 Accesso break-glass (login locale di emergenza)
+
+Login username/password che funziona quando Entra ID / SSO non è raggiungibile.
+**Non richiede nulla lato Entra**: è interamente applicativo.
+
+> ⚠️ **Aggira Conditional Access e MFA e, per decisione esplicita, non ha un
+> secondo fattore.** È una deviazione documentata e accettata (`COMPLIANCE.md`).
+> Nasce disabilitata: abilitala solo dopo aver impostato `BREAKGLASS_IP_ALLOWLIST`
+> e creato l'alert del §1.3.4.
+>
+> Dipende da PostgreSQL: copre un outage di **Entra/SSO**, non un outage del
+> **database** (che avrebbe già fermato anche le sessioni).
+
+#### 1.3.1 Variabili ACA (nessuna è un secret)
+
+```bash
+az containerapp update -n <ACA_BACKEND_NAME> -g <RG_NAME> --set-env-vars \
+  BREAKGLASS_ENABLED=true \
+  BREAKGLASS_IP_ALLOWLIST="<CIDR-egress-corporate>,<CIDR-VPN>" \
+  BREAKGLASS_SESSION_TTL_MINUTES=120 \
+  BREAKGLASS_MAX_FAILED_ATTEMPTS=5 \
+  BREAKGLASS_LOCKOUT_MINUTES=15
+```
+
+`BREAKGLASS_IP_ALLOWLIST` è, in assenza di secondo fattore, il controllo
+compensativo più efficace: chi è fuori dalla lista riceve `404` e non vede
+nemmeno il link nella UI. Lasciarla vuota significa esporre l'endpoint a
+internet. Se **tutte** le voci sono malformate il comportamento è fail-closed
+(nega tutto) e l'errore è a log.
+
+#### 1.3.2 Creazione dell'account
+
+La tabella `breakglass_users` è creata dal job di migrazione (§6). Gli account si
+creano **solo** da CLI dentro il container backend — non esiste un endpoint HTTP
+di gestione, che sarebbe una superficie di privilege escalation:
+
+```bash
+az containerapp exec -n <ACA_BACKEND_NAME> -g <RG_NAME> \
+  --command "node backend/dist/scripts/breakglass.js set bg.operator --display 'Break Glass Operator' --expires 2027-12-31"
+```
+
+> Il percorso è `backend/dist/...`: la `WORKDIR` dell'immagine è `/app` e la
+> build viene copiata in `/app/backend/dist` — lo stesso path usato dal `CMD`
+> del container.
+
+Il comando stampa **una sola volta** una password generata (32 caratteri,
+~192 bit di entropia): archiviala subito nel password manager del team, non è
+recuperabile. Solo l'hash scrypt finisce a database.
+
+Altri comandi: `list`, `unlock <user>`, `disable <user>`, `enable <user>`,
+`delete <user>`. Rieseguire `set` sullo stesso username **ruota** la password e
+azzera il lockout — è la procedura di rotazione.
+
+Per fornire una password scelta invece di generarla, usare `--stdin-password`
+(la password **non** va mai passata come argomento: finirebbe nella history
+della shell e nella process list del container).
+
+#### 1.3.3 Verifica
+
+1. Apri l'app: sotto il bottone SSO deve comparire **"Accesso di emergenza"**
+   (se non compare, controlla `BREAKGLASS_ENABLED` e l'allowlist verso il tuo IP).
+2. Accedi con l'account creato → la dashboard mostra un **banner ambra
+   persistente** e il badge "Emergenza" accanto all'utente.
+3. Esci: il logout è locale e **non** tenta il Single Logout SAML.
+4. Sbaglia la password 5 volte → l'account si blocca per 15 minuti;
+   sbloccalo con `breakglass.js unlock`.
+
+#### 1.3.4 Alert su Log Analytics (obbligatorio)
+
+Ogni tentativo è loggato a livello `warn` con un campo `event`. Crea una regola
+di alert sul workspace del Container App Environment:
+
+```kusto
+ContainerAppConsoleLogs_CL
+| where TimeGenerated > ago(15m)
+| extend d = parse_json(Log_s)
+| where tostring(d.event) startswith "breakglass-"
+| project TimeGenerated, event = tostring(d.event), reason = tostring(d.reason),
+          username = tostring(d.username), ip = tostring(d.ip),
+          userAgent = tostring(d.userAgent), correlationId = tostring(d.correlationId)
+| order by TimeGenerated desc
+```
+
+Eventi emessi: `breakglass-login-success` (un bypass SSO è avvenuto — da
+verificare **sempre**), `breakglass-login-denied` (con `reason`:
+`unknown-account`, `bad-password`, `account-locked`, `account-disabled`,
+`account-expired`, `ip-not-allowed`, `ip-throttled`, `missing-credentials`),
+`breakglass-account-locked`, `breakglass-logout`.
+
+Severità suggerite: **Sev 1** su `breakglass-login-success`, **Sev 2** su più di
+5 `breakglass-login-denied` in 15 minuti.
 
 ---
 
@@ -197,6 +299,7 @@ az containerapp create \
     SAML_ENTRY_POINT="<...>" \
     SAML_ISSUER="https://guestportal.dompe.com/saml" \
     SAML_CALLBACK_URL="https://guestportal.dompe.com/api/auth/callback" \
+    SAML_DISABLE_REQUESTED_AUTHN_CONTEXT=true \
     SAML_CERT="@Microsoft.KeyVault(SecretUri=https://<KV_NAME>.vault.azure.net/secrets/SAML-CERT/)" \
     SESSION_SECRET="@Microsoft.KeyVault(SecretUri=https://<KV_NAME>.vault.azure.net/secrets/SESSION-SECRET/)" \
     WLC_PASSWORD_MIL="@Microsoft.KeyVault(SecretUri=https://<KV_NAME>.vault.azure.net/secrets/WLC-PASSWORD-MIL/)" \
@@ -216,6 +319,10 @@ az containerapp update -n ca-guestportal-backend-prod -g <RG_NAME> \
   --set-env-vars BACKEND_BASE_URL="http://ca-guestportal-backend-prod.${ACA_DOMAIN}"
 ```
 > ⚠️ `WLC_SSH_HOST_KEY` è unico nel codice ma i WLC sono 5: vedi §12 (follow‑up host‑key per sede). In prod, senza host key l'SSH è *fail‑closed*.
+>
+> `SAML_DISABLE_REQUESTED_AUTHN_CONTEXT=true` è il default del codice: è esplicitato qui perché rimuoverlo o portarlo a `false` rompe tutti i login passwordless con `AADSTS75011` (§1.1, §12).
+>
+> Le variabili `BREAKGLASS_*` **non** sono impostate qui: l'accesso di emergenza nasce disabilitato e va abilitato deliberatamente seguendo il §1.3.
 
 ### 7.2 Frontend (ingress **external**, UAMI solo pull)
 ```bash
@@ -312,6 +419,20 @@ curl -fsS https://guestportal.dompe.com/healthz       # 200 (frontend)
 ```
 Browser: apertura → **SSO Entra** → app; selezione sede → creazione ospite → il **WLC** risponde (SSH); invio credenziali → **mail via Graph** ricevuta.
 
+Verifica che l'AuthnRequest non vincoli il metodo di autenticazione (previene
+`AADSTS75011` sugli accessi passwordless):
+
+```bash
+# Prendi il valore di SAMLRequest dall'URL di redirect di /api/auth/login, poi:
+python3 -c "import sys,base64,zlib,urllib.parse; print(zlib.decompress(base64.b64decode(urllib.parse.unquote(sys.argv[1])),-15).decode())" '<SAMLRequest>' \
+  | grep -c RequestedAuthnContext   # deve stampare 0
+```
+
+> Le variabili `BREAKGLASS_*` non sono gestite dalla pipeline: `az containerapp
+> update --set-env-vars` **aggiunge/aggiorna** solo le variabili indicate e
+> conserva le altre, quindi quanto impostato a mano al §1.3 sopravvive ai deploy
+> successivi.
+
 ---
 
 ## 10. (Opzionale) Deploy a regime via pipeline
@@ -341,6 +462,10 @@ Migrazioni idempotenti/additive → il rollback immagine non richiede rollback s
 | `readyz` = 503 | DB irraggiungibile o principal Entra/grant mancanti (§4) |
 | Auth DB fallita | login ≠ nome UAMI oppure `pgaadauth_create_principal` non eseguito (§4) |
 | SSO KO / errore firma | `SAML_ENTRY_POINT/ISSUER/CALLBACK_URL` o `SAML-CERT` errati (§1.1) |
+| **`AADSTS75011: Authentication method 'X509, MultiFactor, X509Device' ... doesn't match requested authentication method 'Password, ProtectedTransport'`** | L'AuthnRequest chiede esplicitamente `PasswordProtectedTransport` con `Comparison="exact"` e l'utente si è autenticato passwordless (CBA, Windows Hello, FIDO2). **Non è un problema di configurazione Entra** e non esiste un'impostazione lato Enterprise Application per ignorare il vincolo: verificare che `SAML_DISABLE_REQUESTED_AUTHN_CONTEXT` **non** sia `false` sul backend (default `true`, §1.1) e che l'immagine sia ≥ la versione con il fix. Verifica sul campo: aprire `/api/auth/login`, prendere `SAMLRequest` dall'URL di redirect verso `login.microsoftonline.com`, poi URL-decode → base64-decode → inflate; l'XML **non** deve contenere `RequestedAuthnContext`. |
+| Il link "Accesso di emergenza" non compare | `BREAKGLASS_ENABLED≠true`, oppure l'IP del client è fuori da `BREAKGLASS_IP_ALLOWLIST` (§1.3.1). L'endpoint risponde `404` in entrambi i casi, di proposito. |
+| Login break-glass sempre rifiutato | Account inesistente, disabilitato, scaduto o bloccato: il messaggio all'utente è volutamente identico in tutti i casi. La causa reale è nel log, campo `reason` (§1.3.4). Sbloccare con `breakglass.js unlock <user>`. |
+| Break-glass KO con DB giù | Atteso: gli account stanno su PostgreSQL. Il break-glass copre un outage di Entra/SSO, non del database (§1.3). |
 | **404 "Azure Container App - Unavailable"** su ogni path (anche `/`), da VM o AGW | **App creata con `--ingress internal`**: in un ambiente internal è raggiungibile solo dalle altre Container App dello stesso ambiente. Correggere con `az containerapp ingress enable --type external` (§7.4) e riallineare i pool AGW al nuovo FQDN (senza `.internal.`). Sintomo diagnostico: l'app risponde 200 dall'interno del container (`az containerapp exec` → `wget http://127.0.0.1:3000/api/healthz`) ma 404 dall'esterno. |
 | 502 dall'AGW | pool/probe puntano a un FQDN errato o probe `/api/healthz`/`/healthz` KO (§8) |
 | WLC non risponde | egress `172.18.0.0/16` non abilitato (§8) o `WLC_SSH_HOST_KEY` non impostato (fail‑closed) |
@@ -360,6 +485,7 @@ Migrazioni idempotenti/additive → il rollback immagine non richiede rollback s
 - [ ] AGW: pool allineati ai FQDN effettivi + probe/settings/listener/route + DNS `guestportal.dompe.com` → IP privato (§8)
 - [ ] Egress verso `172.18.0.0/16` + host key SSH (§8/§7)
 - [ ] Verifica health + SSO + WLC + mail (§9)
+- [ ] **Se si vuole l'accesso di emergenza** (opzionale, off per default): `BREAKGLASS_IP_ALLOWLIST` popolata con i CIDR corporate/VPN → `BREAKGLASS_ENABLED=true` → account creato da CLI e password archiviata nel password manager → alert Log Analytics attivo → verifica banner e lockout (§1.3)
 
 ---
 

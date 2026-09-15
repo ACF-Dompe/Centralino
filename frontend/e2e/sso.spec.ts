@@ -12,7 +12,7 @@
  * user has not yet authenticated.
  */
 import { test, expect } from '@playwright/test';
-import { enterSsoDemoSandbox, enterSsoHappyPath, enterSsoUnavailable, setupSsoCommonRoutes, setupSsoLogoutRoutes } from './helpers/auth';
+import { enterSsoDemoSandbox, enterSsoHappyPath, enterSsoUnavailable, mockBreakGlassStatus, setupSsoCommonRoutes, setupSsoLogoutRoutes } from './helpers/auth';
 
 test.describe('SSO SAML login screen', () => {
   test('shows the WLC login with SSO user tag after SSO authentication', async ({
@@ -44,6 +44,8 @@ test.describe('SSO SAML login screen', () => {
   test('shows the SSO login screen when SAML is configured but user is not authenticated', async ({
     page,
   }) => {
+    await mockBreakGlassStatus(page);
+
     // Intercept /api/auth/me → 401 (SAML configured, session missing)
     await page.route('**/api/auth/me', async (route) => {
       await route.fulfill({
@@ -71,6 +73,41 @@ test.describe('SSO SAML login screen', () => {
     // The corporate branding elements should also be visible
     await expect(page.getByText(/Dompè Guest Desk/i)).toBeVisible();
     await expect(page.getByText(/Corporate Console|Single Sign-On/i).first()).toBeVisible();
+
+    // With break-glass disabled the emergency link must not be offered.
+    await expect(page.getByTestId('breakglass-link')).toHaveCount(0);
+  });
+
+  test('offers the emergency login when break-glass is enabled', async ({ page }) => {
+    await mockBreakGlassStatus(page, true);
+
+    await page.route('**/api/auth/me', async (route) => {
+      await route.fulfill({
+        status: 401,
+        contentType: 'application/json',
+        body: JSON.stringify({ success: false, error: 'Not authenticated.' }),
+      });
+    });
+
+    await page.goto('/');
+
+    await expect(
+      page.getByRole('heading', { name: /Accesso con Single Sign-On/i }),
+    ).toBeVisible({ timeout: 15_000 });
+
+    const link = page.getByTestId('breakglass-link');
+    await expect(link).toBeVisible();
+    await link.click();
+
+    // The emergency form replaces the SSO card and warns that access is audited.
+    await expect(page.getByTestId('breakglass-form')).toBeVisible();
+    await expect(page.getByTestId('breakglass-username')).toBeVisible();
+    await expect(page.getByTestId('breakglass-password')).toHaveAttribute('type', 'password');
+    await expect(page.getByRole('link', { name: /Accedi con SSO/i })).toHaveCount(0);
+
+    // Cancelling returns to the normal SSO card.
+    await page.getByTestId('breakglass-cancel').click();
+    await expect(page.getByRole('link', { name: /Accedi con SSO/i })).toBeVisible();
   });
 
   test('completes the full auth flow: SSO → select sede → WLC login → dashboard', async ({

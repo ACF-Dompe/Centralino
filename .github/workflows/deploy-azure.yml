@@ -55,6 +55,11 @@
 #   SAML_ENTRY_POINT                 From GitHub secret (non-secret URL)
 #   SAML_ISSUER                      From GitHub secret (non-secret URI)
 #   SAML_CALLBACK_URL                From GitHub secret (non-secret URL)
+#   SAML_DISABLE_REQUESTED_AUTHN_CONTEXT  Pinned to true. Requesting
+#                                    PasswordProtectedTransport makes Entra ID
+#                                    reject every passwordless sign-in with
+#                                    AADSTS75011 — pinned here so a manual
+#                                    override cannot survive a deploy.
 #   SAML_CERT                        Key Vault reference
 #   SAML_DECRYPTION_KEY              Key Vault reference (optional)
 #   SAML_LOGOUT_URL                  Key Vault reference (optional)
@@ -64,6 +69,11 @@
 #   APPLICATIONINSIGHTS_CONNECTION_STRING  Key Vault reference (optional)
 #   BACKEND_BASE_URL                 Built from ACA_ENVIRONMENT_DEFAULT_DOMAIN
 #   NODE_ENV, PORT, LOG_LEVEL        Plain values
+#
+# BREAKGLASS_* is deliberately NOT set here. The emergency login is off by
+# default and must be enabled consciously by the infra team (see the deploy
+# guide §1.3). `--set-env-vars` merges rather than replaces, so the values they
+# set by hand survive every subsequent pipeline deploy.
 #   SKIP_MIGRATIONS, SEED_ENABLED    Plain values (true and false by default — CI handles migrations)
 #
 #   MAIL_GRAPH_ENABLED               Plain value (false by default)
@@ -334,6 +344,7 @@ jobs:
               SAML_ENTRY_POINT="${{ secrets.SAML_ENTRY_POINT }}" \
               SAML_ISSUER="${{ secrets.SAML_ISSUER }}" \
               SAML_CALLBACK_URL="${{ secrets.SAML_CALLBACK_URL }}" \
+              SAML_DISABLE_REQUESTED_AUTHN_CONTEXT=true \
               SAML_CERT="@Microsoft.KeyVault(SecretUri=https://${KV}.vault.azure.net/secrets/SAML-CERT/)" \
               SAML_DECRYPTION_KEY="@Microsoft.KeyVault(SecretUri=https://${KV}.vault.azure.net/secrets/SAML-DECRYPTION-KEY/)" \
               SAML_LOGOUT_URL="@Microsoft.KeyVault(SecretUri=https://${KV}.vault.azure.net/secrets/SAML-LOGOUT-URL/)" \

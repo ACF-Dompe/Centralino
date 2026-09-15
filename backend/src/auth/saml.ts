@@ -14,12 +14,21 @@
  *   - wantAuthnResponseSigned: true — reject unsigned authn responses
  *   - validateInResponseTo: true — prevent SAML response replay
  *   - audience: set to SAML_ISSUER — verify intended audience
+ *   - disableRequestedAuthnContext: true — do not dictate the auth method
  */
 import { Strategy as SamlStrategy, ValidateInResponseTo } from '@node-saml/passport-saml';
 
 export type { SamlStrategy };
 
 export interface SamlUser {
+  /**
+   * Discriminant for `AppUser` (see auth/user.ts): distinguishes an Entra ID
+   * SSO session from a break-glass one. Both shapes are stored under
+   * `session.passport.user`, so anything reading the session must be able to
+   * tell them apart — the logout route in particular, which may only attempt
+   * SAML Single Logout for a genuine SAML session.
+   */
+  authMethod: 'saml';
   nameID: string;
   nameIDFormat?: string;
   email: string;
@@ -44,6 +53,11 @@ export function createSamlStrategy(params: {
   identifierFormat?: string;
   logoutUrl?: string;
   logoutCallbackUrl?: string;
+  /**
+   * Omit RequestedAuthnContext from the AuthnRequest. Defaults to `true`.
+   * See the `disableRequestedAuthnContext` note in the strategy config below.
+   */
+  disableRequestedAuthnContext?: boolean;
 }): SamlStrategy | null {
   if (!params.entryPoint || !params.issuer) {
     return null;
@@ -56,6 +70,7 @@ export function createSamlStrategy(params: {
     }
 
     const user: SamlUser = {
+      authMethod: 'saml',
       nameID: profile.nameID ?? '',
       nameIDFormat: profile.nameIDFormat ?? undefined,
       email:
@@ -112,6 +127,20 @@ export function createSamlStrategy(params: {
       validateInResponseTo: ValidateInResponseTo.ifPresent,
       // Verify the SAML response was intended for this specific app instance.
       audience: params.issuer,
+      // Do NOT tell the IdP *how* the user must authenticate.
+      //
+      // node-saml defaults to injecting
+      //   <RequestedAuthnContext Comparison="exact">
+      //     <AuthnContextClassRef>...PasswordProtectedTransport</AuthnContextClassRef>
+      // into every AuthnRequest. Entra ID honours that constraint, so any user
+      // who signed in with certificate-based auth, Windows Hello or FIDO2
+      // (amr = X509, MultiFactor, X509Device) cannot satisfy it and the login
+      // fails with AADSTS75011 instead of being let through.
+      //
+      // Choosing the authentication method is the IdP's job — it is driven by
+      // Conditional Access / Authentication Strength policies in Entra, not by
+      // the service provider. Omitting the element lets Entra apply them.
+      disableRequestedAuthnContext: params.disableRequestedAuthnContext ?? true,
       // Cache request IDs for InResponseTo validation (30 minute TTL).
       requestIdExpirationPeriodMs: 1_800_000,
     },

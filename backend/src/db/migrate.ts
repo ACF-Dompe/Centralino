@@ -75,6 +75,24 @@ CREATE TABLE IF NOT EXISTS sms_config (
   webhook_url     VARCHAR(500)
 );
 
+-- Break-glass local accounts, used only when Entra ID / SAML SSO is down.
+-- Passwords are stored as scrypt hashes (auth/password.ts) — never plaintext.
+-- Rows are created exclusively by the breakglass CLI, never over HTTP.
+-- failed_attempts / locked_until live here (not in memory) so the lockout is
+-- shared by every ACA replica.
+CREATE TABLE IF NOT EXISTS breakglass_users (
+  username        VARCHAR(100) PRIMARY KEY,
+  display_name    VARCHAR(255) NOT NULL,
+  password_hash   TEXT NOT NULL,
+  enabled         BOOLEAN NOT NULL DEFAULT TRUE,
+  expires_at      TIMESTAMP,
+  failed_attempts INTEGER NOT NULL DEFAULT 0,
+  locked_until    TIMESTAMP,
+  last_login_at   TIMESTAMP,
+  created_at      TIMESTAMP NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS sync_logs (
   id              SERIAL PRIMARY KEY,
   timestamp       TIMESTAMP NOT NULL DEFAULT NOW(),

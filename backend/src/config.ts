@@ -98,6 +98,16 @@ export const config = {
     cert: readString('SAML_CERT', ''),
     decryptionKey: readString('SAML_DECRYPTION_KEY', ''),
     identifierFormat: readString('SAML_IDENTIFIER_FORMAT', 'urn:oasis:names:tc:SAML:2.0:nameid-format:persistent'),
+    /**
+     * Omit RequestedAuthnContext from the AuthnRequest. Default: true.
+     *
+     * Must stay true against Entra ID: requesting PasswordProtectedTransport
+     * (node-saml's own default) breaks every passwordless sign-in with
+     * AADSTS75011. Set to false only for an IdP that requires an explicit
+     * authentication context.
+     */
+    disableRequestedAuthnContext:
+      readString('SAML_DISABLE_REQUESTED_AUTHN_CONTEXT', 'true').toLowerCase() === 'true',
     /** IdP Single Logout endpoint (defaults to entryPoint if not set). */
     logoutUrl: readString('SAML_LOGOUT_URL', ''),
     /**
@@ -105,6 +115,44 @@ export const config = {
      * Defaults to the callbackUrl with /callback replaced by /slo/callback.
      */
     logoutCallbackUrl: readString('SAML_LOGOUT_CALLBACK_URL', ''),
+  },
+
+  /**
+   * Break-glass authentication — a local username/password login that works
+   * when Entra ID / SAML SSO is unavailable.
+   *
+   * SECURITY: this path deliberately bypasses Entra Conditional Access and
+   * MFA, and by design carries no second factor. It is a documented, accepted
+   * deviation (COMPLIANCE.md) guarded by compensating controls only:
+   *   - `enabled` defaults to FALSE — the feature ships dark
+   *   - scrypt password hashes in `breakglass_users` (never plaintext)
+   *   - per-account lockout in the database (global across ACA replicas)
+   *   - per-IP throttling in memory (per replica)
+   *   - optional CIDR allowlist — the strongest control available here
+   *   - short session TTL, per-account expiry, and audit logging of every
+   *     attempt at warn level so Log Analytics can alert on it
+   * Accounts are created ONLY through the `breakglass` CLI, never over HTTP.
+   */
+  breakGlass: {
+    /** Master kill switch. Fail-closed: the feature is off unless enabled. */
+    enabled: readString('BREAKGLASS_ENABLED', 'false').toLowerCase() === 'true',
+    /** Session lifetime for a break-glass login (shorter than the SSO one). */
+    sessionTtlMinutes: readNumber('BREAKGLASS_SESSION_TTL_MINUTES', 120),
+    /** Consecutive failures before the account is locked. */
+    maxFailedAttempts: readNumber('BREAKGLASS_MAX_FAILED_ATTEMPTS', 5),
+    /** How long an account stays locked after hitting the threshold. */
+    lockoutMinutes: readNumber('BREAKGLASS_LOCKOUT_MINUTES', 15),
+    /** Failed attempts allowed per source IP inside the throttle window. */
+    maxAttemptsPerIp: readNumber('BREAKGLASS_MAX_ATTEMPTS_PER_IP', 10),
+    /** Sliding window for the per-IP throttle. */
+    ipWindowMinutes: readNumber('BREAKGLASS_IP_WINDOW_MINUTES', 15),
+    /**
+     * Comma-separated CIDRs (IPv4/IPv6) allowed to reach the break-glass
+     * endpoint. Empty = no network restriction. Strongly recommended: set it
+     * to the corporate / VPN egress ranges — with no second factor in play
+     * this is the most effective compensating control available.
+     */
+    ipAllowlist: readString('BREAKGLASS_IP_ALLOWLIST', ''),
   },
 
   /**

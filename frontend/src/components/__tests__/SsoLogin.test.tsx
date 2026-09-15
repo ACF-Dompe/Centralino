@@ -1,12 +1,21 @@
 /**
  * Unit tests for SsoLogin component.
  *
- * Tests rendering of SSO login screen with i18n.
- * The component is pure presentational — no API calls, no state.
+ * Tests rendering of the SSO login screen with i18n, plus the discreet
+ * emergency-access link, which is only rendered when the backend says the
+ * break-glass path is usable by this client.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import SsoLogin from '../SsoLogin';
+
+const mockApi = vi.hoisted(() => ({
+  breakGlassStatus: vi.fn(),
+  breakGlassLogin: vi.fn(),
+}));
+
+vi.mock('../../api/client', () => ({ api: mockApi }));
 
 // Mock i18n
 vi.mock('../../i18n', () => ({
@@ -25,6 +34,16 @@ vi.mock('../../i18n', () => ({
         'login.bullet.locations': '5 sedi disponibili',
         'login.bullet.credentials': 'Credenziali temporanee',
         'login.bullet.sync': 'Sincronizzazione WLC',
+        'login.or': 'oppure',
+        'breakglass.link': 'Accesso di emergenza',
+        'breakglass.heading': 'Accesso di emergenza',
+        'breakglass.subtitle': 'Da usare solo quando l\'SSO non è disponibile',
+        'breakglass.warning': 'Questo accesso aggira il Single Sign-On',
+        'breakglass.username': 'Utente di emergenza',
+        'breakglass.password': 'Password',
+        'breakglass.submit': 'Accedi',
+        'breakglass.backToSso': 'Torna all\'accesso SSO',
+        'breakglass.error': 'Credenziali non valide',
       };
       return dict[key] ?? key;
     },
@@ -32,6 +51,12 @@ vi.mock('../../i18n', () => ({
 }));
 
 describe('SsoLogin', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Default: the emergency path is off, matching a healthy production tenant.
+    mockApi.breakGlassStatus.mockResolvedValue({ success: true, data: { enabled: false } });
+  });
+
   it('renders the SSO heading', () => {
     render(<SsoLogin />);
     expect(screen.getByText('Accesso con Single Sign-On')).toBeInTheDocument();
@@ -75,5 +100,68 @@ describe('SsoLogin', () => {
   it('renders the SSO description paragraph', () => {
     render(<SsoLogin />);
     expect(screen.getByText(/Verrai reindirizzato a Microsoft Entra ID/)).toBeInTheDocument();
+  });
+
+  describe('emergency access link', () => {
+    it('is hidden when the backend reports the break-glass path as unavailable', async () => {
+      render(<SsoLogin />);
+      await waitFor(() => expect(mockApi.breakGlassStatus).toHaveBeenCalled());
+      expect(screen.queryByTestId('breakglass-link')).not.toBeInTheDocument();
+    });
+
+    it('is hidden when the status call fails', async () => {
+      mockApi.breakGlassStatus.mockRejectedValue(new Error('network down'));
+      render(<SsoLogin />);
+      await waitFor(() => expect(mockApi.breakGlassStatus).toHaveBeenCalled());
+      expect(screen.queryByTestId('breakglass-link')).not.toBeInTheDocument();
+    });
+
+    it('is shown when the backend reports it as available', async () => {
+      mockApi.breakGlassStatus.mockResolvedValue({ success: true, data: { enabled: true } });
+      render(<SsoLogin />);
+      expect(await screen.findByTestId('breakglass-link')).toBeInTheDocument();
+    });
+
+    it('swaps the SSO card for the emergency form when clicked', async () => {
+      mockApi.breakGlassStatus.mockResolvedValue({ success: true, data: { enabled: true } });
+      render(<SsoLogin />);
+
+      await userEvent.click(await screen.findByTestId('breakglass-link'));
+
+      expect(screen.getByTestId('breakglass-form')).toBeInTheDocument();
+      expect(screen.queryByText('Accedi con SSO')).not.toBeInTheDocument();
+    });
+
+    it('returns to the SSO card when the emergency form is cancelled', async () => {
+      mockApi.breakGlassStatus.mockResolvedValue({ success: true, data: { enabled: true } });
+      render(<SsoLogin />);
+
+      await userEvent.click(await screen.findByTestId('breakglass-link'));
+      await userEvent.click(screen.getByTestId('breakglass-cancel'));
+
+      expect(screen.queryByTestId('breakglass-form')).not.toBeInTheDocument();
+      expect(screen.getByText('Accedi con SSO')).toBeInTheDocument();
+    });
+
+    it('notifies the parent after a successful emergency login', async () => {
+      mockApi.breakGlassStatus.mockResolvedValue({ success: true, data: { enabled: true } });
+      mockApi.breakGlassLogin.mockResolvedValue({
+        success: true,
+        data: { nameID: 'bg.operator', authMethod: 'breakglass' },
+      });
+      const onBreakGlassAuthenticated = vi.fn();
+      render(<SsoLogin onBreakGlassAuthenticated={onBreakGlassAuthenticated} />);
+
+      await userEvent.click(await screen.findByTestId('breakglass-link'));
+      await userEvent.type(screen.getByTestId('breakglass-username'), 'bg.operator');
+      await userEvent.type(screen.getByTestId('breakglass-password'), 'a-long-test-password');
+      await userEvent.click(screen.getByTestId('breakglass-submit'));
+
+      await waitFor(() => expect(onBreakGlassAuthenticated).toHaveBeenCalled());
+      expect(mockApi.breakGlassLogin).toHaveBeenCalledWith({
+        username: 'bg.operator',
+        password: 'a-long-test-password',
+      });
+    });
   });
 });

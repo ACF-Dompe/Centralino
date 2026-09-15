@@ -29,6 +29,8 @@ const POLL_INTERVAL_MS = 30_000;
 
 export default function Dashboard({ config, sede, ssoUser, onDisconnect, onConfigUpdate, onSsoLogout }: DashboardProps) {
   const [, , t] = useLocale();
+  /** True when the operator got in through the emergency login, not SSO. */
+  const isBreakGlass = ssoUser?.authMethod === 'breakglass';
   const [guests, setGuests] = useState<Guest[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -303,11 +305,25 @@ export default function Dashboard({ config, sede, ssoUser, onDisconnect, onConfi
               </div>
             )}
             {ssoUser && (
-              <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs text-slate-600" title={ssoUser.email}>
-                <User className="h-3.5 w-3.5" />
-                <span className="font-medium text-slate-700">{ssoUser.displayName}</span>
-                <span className="text-slate-500">{ssoUser.email}</span>
-              </div>
+              isBreakGlass ? (
+                <div
+                  data-testid="breakglass-user-tag"
+                  className="flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-800"
+                  title={t('breakglass.banner')}
+                >
+                  <Lock className="h-3.5 w-3.5" />
+                  <span className="font-medium">{ssoUser.displayName}</span>
+                  <span className="rounded bg-amber-200/70 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide">
+                    {t('breakglass.badge')}
+                  </span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs text-slate-600" title={ssoUser.email}>
+                  <User className="h-3.5 w-3.5" />
+                  <span className="font-medium text-slate-700">{ssoUser.displayName}</span>
+                  <span className="text-slate-500">{ssoUser.email}</span>
+                </div>
+              )
             )}
             <div className="text-xs text-slate-500">
               {t('header.lastSync')}: <span className="font-medium text-slate-700">{lastSync ? lastSync.toLocaleTimeString() : t('header.never')}</span>
@@ -322,13 +338,34 @@ export default function Dashboard({ config, sede, ssoUser, onDisconnect, onConfi
               <Power className="h-4 w-4" /> <span className="hidden sm:inline">{t('header.disconnect')}</span>
             </button>
             {onSsoLogout && (
-              <button data-testid="sso-logout-btn" className="btn-ghost text-rose-600 hover:bg-rose-50" onClick={onSsoLogout} title={t('sso.logout')}>
-                <Power className="h-4 w-4" /> <span className="hidden sm:inline">{t('sso.logout')}</span>
+              <button
+                data-testid="sso-logout-btn"
+                className="btn-ghost text-rose-600 hover:bg-rose-50"
+                onClick={onSsoLogout}
+                title={isBreakGlass ? t('breakglass.logout') : t('sso.logout')}
+              >
+                <Power className="h-4 w-4" />{' '}
+                <span className="hidden sm:inline">
+                  {isBreakGlass ? t('breakglass.logout') : t('sso.logout')}
+                </span>
               </button>
             )}
           </div>
         </div>
       </header>
+
+      {/* Emergency access is never allowed to look like a normal session: the
+          banner stays visible for the whole life of a break-glass session. */}
+      {isBreakGlass && (
+        <div
+          data-testid="breakglass-banner"
+          role="status"
+          className="border-b border-amber-300 bg-amber-100 px-4 py-2 text-center text-xs font-medium text-amber-900"
+        >
+          <AlertTriangle className="mr-1.5 inline h-4 w-4 align-text-bottom" />
+          {t('breakglass.banner')}
+        </div>
+      )}
 
       <main className="mx-auto max-w-7xl space-y-6 px-4 py-6">
         <div className="grid grid-cols-2 gap-4 md:grid-cols-4">

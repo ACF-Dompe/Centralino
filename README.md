@@ -36,6 +36,7 @@ with **SSO SAML 2.0** authentication via **Microsoft Entra ID**.
 
 - **SSO SAML 2.0** via Microsoft Entra ID — optional, fallback to WLC-only in dev
 - **Single Logout (SLO)** — destroys both local and IdP sessions
+- **Break-glass access** — audited emergency local login for an Entra/SSO outage, off by default
 - **WLC Login** with HTTPS Basic Auth to `/webui/index.html`
 - **Demo / Sandbox** mode when the WLC is unreachable (10s timeout)
 - **Guest CRUD** with auto-generated credentials (`g.{slug}{3digits}` / `DOMPE-{4digits}`)
@@ -206,6 +207,7 @@ is logged out of the app even if the IdP session persists.
 | `SAML_IDENTIFIER_FORMAT` | — | NameID format (default: persistent) |
 | `SAML_LOGOUT_URL` | — | IdP SLO endpoint (enables Single Logout) |
 | `SAML_LOGOUT_CALLBACK_URL` | — | IdP LogoutResponse destination |
+| `SAML_DISABLE_REQUESTED_AUTHN_CONTEXT` | — | Default `true`; keep it true (see §7) |
 
 In ACA production, all secrets (`SAML_CERT`, `SAML_DECRYPTION_KEY`, `SESSION_SECRET`)
 should be stored as **Key Vault secrets** and referenced via:
@@ -225,6 +227,60 @@ should be stored as **Key Vault secrets** and referenced via:
 
 If SSO is not configured, the app skips the SSO screen entirely and shows the
 WLC login directly (useful for local development without Azure AD access).
+
+### 7. The application must not dictate the authentication method
+
+`@node-saml/node-saml` injects, by default, a `RequestedAuthnContext` of
+`urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport` with
+`Comparison="exact"` into every AuthnRequest. Entra ID honours that, so a user
+who signed in with certificate-based authentication, Windows Hello or FIDO2
+cannot satisfy it and the login fails with:
+
+```
+AADSTS75011: Authentication method 'X509, MultiFactor, X509Device' by which the
+user authenticated with the service doesn't match requested authentication
+method 'Password, ProtectedTransport'.
+```
+
+Which methods are acceptable is a Conditional Access / Authentication Strength
+decision inside Entra, not a service-provider one, so the strategy omits the
+element entirely (`SAML_DISABLE_REQUESTED_AUTHN_CONTEXT`, default `true`).
+
+**There is nothing to change on the Entra side for this**: a SAML enterprise
+application has no supported switch to make Entra ignore a `RequestedAuthnContext`
+it receives. The fix belongs in the application.
+
+To confirm the fix on a deployed instance, open `/api/auth/login`, take the
+`SAMLRequest` parameter from the redirect towards `login.microsoftonline.com`,
+then URL-decode → base64-decode → inflate it: the XML must contain no
+`RequestedAuthnContext` element.
+
+---
+
+## Break-glass access (emergency login)
+
+A local username/password login that works when Entra ID / SAML SSO is down.
+Disabled by default (`BREAKGLASS_ENABLED=false`).
+
+> ⚠️ It bypasses Entra Conditional Access and MFA and, by explicit decision,
+> carries **no second factor**. This is a documented, accepted deviation —
+> see `COMPLIANCE.md` for the compensating controls and the residual risk.
+
+When enabled, the SSO screen shows a discreet **"Accesso di emergenza"** link
+(only to clients inside `BREAKGLASS_IP_ALLOWLIST`, if one is set). A break-glass
+session shows a persistent banner in the dashboard, has a shorter lifetime than
+an SSO session, and every login attempt is logged at `warn` level for alerting.
+
+Accounts live in the `breakglass_users` table and are managed only with the CLI:
+
+```bash
+make breakglass ARGS="list"
+make breakglass ARGS='set bg.operator --display "Break Glass" --expires 2027-12-31'
+```
+
+Setup, operations and the Log Analytics alert query are in
+[GUIDA-DEPLOY-guestportal-prod.md](GUIDA-DEPLOY-guestportal-prod.md) §1.3;
+the design rationale is in [backend/README.md](backend/README.md).
 
 ---
 
@@ -250,6 +306,14 @@ WLC login directly (useful for local development without Azure AD access).
 | `SESSION_SECRET` | — | Session cookie signing secret |
 | `SAML_LOGOUT_URL` | — | SLO endpoint (optional) |
 | `SAML_LOGOUT_CALLBACK_URL` | — | SLO callback destination |
+| `SAML_DISABLE_REQUESTED_AUTHN_CONTEXT` | `true` | Omit RequestedAuthnContext — keep true on Entra ID |
+| `BREAKGLASS_ENABLED` | `false` | Emergency local login (see §Break-glass) |
+| `BREAKGLASS_IP_ALLOWLIST` | — | CIDRs allowed to reach the break-glass endpoint |
+| `BREAKGLASS_SESSION_TTL_MINUTES` | `120` | Break-glass session lifetime |
+| `BREAKGLASS_MAX_FAILED_ATTEMPTS` | `5` | Wrong passwords before the account locks |
+| `BREAKGLASS_LOCKOUT_MINUTES` | `15` | How long the lock lasts |
+| `BREAKGLASS_MAX_ATTEMPTS_PER_IP` | `10` | Failures allowed per source IP in the window |
+| `BREAKGLASS_IP_WINDOW_MINUTES` | `15` | Per-IP throttle window |
 | `APPLICATIONINSIGHTS_CONNECTION_STRING` | — | Azure App Insights (optional) |
 
 ## Project layout
@@ -258,14 +322,15 @@ WLC login directly (useful for local development without Azure AD access).
 .
 ├── backend/                    # Express + TypeScript API
 │   ├── src/
-│   │   ├── auth/               # SAML strategy, session config
+│   │   ├── auth/               # SAML strategy, session config, break-glass passwords
 │   │   ├── db/                 # Migrations, seed, PostgreSQL driver
 │   │   ├── middleware/          # ensureAuthenticated guard
+│   │   ├── scripts/            # breakglass CLI (account management)
 │   │   ├── services/           # WLC HTTPS + SSH + background timer
 │   │   ├── repositories/       # DB row → domain mapping
 │   │   ├── routes/             # REST endpoints (+ auth routes)
 │   │   ├── types/              # Additional type declarations
-│   │   ├── utils/              # Credential gen, time formatting
+│   │   ├── utils/              # Credential gen, time formatting, login guards
 │   │   ├── config.ts           # Centralised env-var config
 │   │   ├── logger.ts           # Pino-based structured logging
 │   │   └── index.ts            # Server entry (wires session, passport, routes)
@@ -273,7 +338,7 @@ WLC login directly (useful for local development without Azure AD access).
 │   └── tsconfig.json
 ├── frontend/                   # React + Vite + Tailwind
 │   ├── src/
-│   │   ├── components/         # SsoLogin, Login, Dashboard, GuestTable…
+│   │   ├── components/         # SsoLogin, BreakGlassLogin, Login, Dashboard…
 │   │   ├── i18n/               # IT/EN translations
 │   │   ├── api/                # API client (+ auth methods)
 │   │   ├── utils/              # Time formatting
@@ -306,7 +371,9 @@ WLC login directly (useful for local development without Azure AD access).
 | POST   | `/api/auth/callback` | SAML ACS — receive AuthnResponse from Entra ID |
 | POST   | `/api/auth/logout` | Logout (local + SLO redirect to Entra ID) |
 | POST   | `/api/auth/slo/callback` | Receive LogoutResponse from Entra ID (SLO) |
-| GET    | `/api/auth/me` | Return current SSO user profile (401/404 if unauthenticated) |
+| GET    | `/api/auth/me` | Return current user profile + `authMethod` (401/404 if unauthenticated) |
+| GET    | `/api/auth/breakglass/status` | Whether the emergency login is usable by this client |
+| POST   | `/api/auth/breakglass/login` | Emergency local login (404 when disabled or IP not allowed) |
 | GET    | `/api/health` | Liveness probe (public, no auth required) |
 | POST   | `/api/wlc/login` | Verify WLC HTTPS credentials |
 | POST   | `/api/wlc/create-user` | Create guest account on the WLC (SSH) |

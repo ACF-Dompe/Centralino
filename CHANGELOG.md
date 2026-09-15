@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+#### SSO — `AADSTS75011` on every passwordless sign-in
+- **The AuthnRequest no longer constrains the authentication method.** `@node-saml/node-saml` 5.1.0 injects, by default, `RequestedAuthnContext = urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport` with `Comparison="exact"` into every AuthnRequest. Entra ID honours that constraint, so any user who signed in with certificate-based authentication, Windows Hello or FIDO2 (`amr = X509, MultiFactor, X509Device`) was rejected with `AADSTS75011` instead of being let through. Which method is acceptable is a Conditional Access / Authentication Strength decision inside the tenant, not a service-provider one — and a SAML enterprise application has no supported switch to make Entra ignore a `RequestedAuthnContext` it receives, so the fix belongs here. `createSamlStrategy` now sets `disableRequestedAuthnContext: true` by default (`backend/src/auth/saml.ts`), overridable with `SAML_DISABLE_REQUESTED_AUTHN_CONTEXT` for an IdP that demands an explicit context. The value is also pinned in `deploy-azure.yml` so a manual override cannot survive a deploy. New tests assert the generated AuthnRequest XML, not just the option flag.
+
+### Added
+
+#### Break-glass access (emergency local login)
+- **`POST /api/auth/breakglass/login` + `GET /api/auth/breakglass/status`:** a local username/password login that works when Entra ID / SAML SSO is unavailable. Accounts live in the new `breakglass_users` table. Disabled by default (`BREAKGLASS_ENABLED=false`).
+- **⚠️ Accepted deviation, documented as D1 in `COMPLIANCE.md`:** this path bypasses Entra Conditional Access and MFA and, by explicit decision, carries no second factor. The residual risk is stated there alongside the compensating controls below. It depends on PostgreSQL, so it covers an Entra/SSO outage — not a database outage.
+- **Compensating controls:** kill switch off by default (endpoint returns `404` until enabled); optional CIDR allowlist `BREAKGLASS_IP_ALLOWLIST`, evaluated first and fail-closed on a fully malformed list, with callers outside it getting `404` and never seeing the link in the UI; scrypt password hashing on Node's own `node:crypto` (no bcrypt/argon2 dependency added); per-account lockout persisted in the database so it holds across ACA replicas, advanced only by a wrong password so guessing cannot extend a lock against the legitimate operator; per-IP sliding-window throttle; constant-cost password verification plus one single generic error for every failure reason, so neither timing nor wording enumerates accounts; session regeneration on login and a shortened cookie TTL; per-account `expires_at`; and every attempt logged at `warn` level with `event`/`reason`/`ip`/`correlationId` for a Log Analytics alert.
+- **Account management is CLI-only** (`backend/src/scripts/breakglass.ts`; `make breakglass ARGS="…"` locally, `node backend/dist/scripts/breakglass.js …` in the container): `list`, `set`, `enable`, `disable`, `unlock`, `delete`. There is deliberately no HTTP endpoint for it, which would be a privilege-escalation surface. The password is never accepted as a command-line argument — it is either generated and printed once, or read from stdin with `--stdin-password`.
+- **Session model:** `AppUser` is now a discriminated union of `SamlUser` and `BreakGlassUser` on `authMethod` (`backend/src/auth/user.ts`). `/api/auth/me` returns `authMethod`; `POST /api/auth/logout` no longer attempts SAML Single Logout for a break-glass session, whose `nameID` is a local username rather than an Entra subject.
+- **Frontend:** a discreet "Accesso di emergenza" link on the SSO screen (rendered only when the backend reports the path as usable by that client), the `BreakGlassLogin` form, and a persistent amber banner plus badge in the dashboard so an emergency session can never be mistaken for a normal one. IT/EN translations added.
+- **Deploy guide:** new §1.3 with the enablement procedure, account creation, verification steps and the mandatory Log Analytics KQL alert; §12 gains troubleshooting rows for `AADSTS75011` and for the break-glass failure modes.
+
 ### Changed
 
 #### Compliance — Review v7 follow-up (minor cleanups)

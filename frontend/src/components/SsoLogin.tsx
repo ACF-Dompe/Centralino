@@ -1,8 +1,29 @@
+import { useEffect, useState } from 'react';
+import { api } from '../api/client';
 import { useLocale } from '../i18n';
+import BreakGlassLogin from './BreakGlassLogin';
 import { Building, ArrowRight, LogIn } from './icons';
 
-export default function SsoLogin() {
+interface SsoLoginProps {
+  /** Called after a successful break-glass login, to re-run the bootstrap. */
+  onBreakGlassAuthenticated?: () => void;
+}
+
+export default function SsoLogin({ onBreakGlassAuthenticated }: SsoLoginProps = {}) {
   const [, , t] = useLocale();
+  const [breakGlassAvailable, setBreakGlassAvailable] = useState(false);
+  const [showBreakGlass, setShowBreakGlass] = useState(false);
+
+  // The backend reports `false` both when the feature is off and when this
+  // client is outside the CIDR allowlist, so the link never appears to someone
+  // who could not use it anyway.
+  useEffect(() => {
+    let cancelled = false;
+    api.breakGlassStatus()
+      .then((r) => { if (!cancelled) setBreakGlassAvailable(r.data.enabled); })
+      .catch(() => { if (!cancelled) setBreakGlassAvailable(false); });
+    return () => { cancelled = true; };
+  }, []);
 
   return (
     <div className="grid min-h-screen lg:grid-cols-2">
@@ -36,13 +57,19 @@ export default function SsoLogin() {
         </div>
       </div>
 
-      {/* Right panel: SSO login */}
+      {/* Right panel: SSO login, or the emergency form when requested */}
       <div className="flex items-center justify-center bg-slate-50 p-6">
         <div className="w-full max-w-md">
           <div className="mb-6 flex items-center gap-3 lg:hidden">
             <img src="/logo.png" alt="Dompe" className="h-6" />
           </div>
 
+          {showBreakGlass ? (
+            <BreakGlassLogin
+              onAuthenticated={() => onBreakGlassAuthenticated?.()}
+              onCancel={() => setShowBreakGlass(false)}
+            />
+          ) : (
           <div className="card p-8 text-center">
             <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-navy shadow-card">
               <LogIn className="h-8 w-8 text-white" />
@@ -67,7 +94,29 @@ export default function SsoLogin() {
             <p className="mt-4 text-xs text-slate-400">
               {t('sso.description')}
             </p>
+
+            {breakGlassAvailable && (
+              <>
+                <div className="mt-6 flex items-center gap-3">
+                  <div className="h-px flex-1 bg-slate-200" />
+                  <span className="text-[10px] font-medium uppercase tracking-widest text-slate-400">
+                    {t('login.or')}
+                  </span>
+                  <div className="h-px flex-1 bg-slate-200" />
+                </div>
+
+                <button
+                  data-testid="breakglass-link"
+                  type="button"
+                  onClick={() => setShowBreakGlass(true)}
+                  className="mt-3 text-xs font-medium text-slate-500 underline decoration-dotted underline-offset-4 transition hover:text-navy"
+                >
+                  {t('breakglass.link')}
+                </button>
+              </>
+            )}
           </div>
+          )}
         </div>
       </div>
     </div>

@@ -89,6 +89,7 @@ async function main(): Promise<void> {
     identifierFormat: config.saml.identifierFormat,
     logoutUrl: config.saml.logoutUrl || undefined,
     logoutCallbackUrl: config.saml.logoutCallbackUrl || undefined,
+    disableRequestedAuthnContext: config.saml.disableRequestedAuthnContext,
   });
 
   if (samlStrategy) {

@@ -16,6 +16,12 @@ type AuthState =
 export default function App() {
   const [state, setState] = useState<AuthState>({ phase: 'loading' });
   const [locale, setLocale] = useState<Locale>(getLocale());
+  /**
+   * Bumped to re-run the bootstrap without a full page reload — used after a
+   * break-glass login, which establishes the session over XHR rather than
+   * through the SAML redirect round-trip.
+   */
+  const [bootstrapKey, setBootstrapKey] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -70,7 +76,7 @@ export default function App() {
 
     bootstrap();
     return () => { cancelled = true; };
-  }, []);
+  }, [bootstrapKey]);
 
   function handleWlcAuth(cfg: WlcConfig, sede: Sede | null) {
     const user = state.phase === 'sso-authenticated' ? state.user : null;
@@ -125,7 +131,14 @@ export default function App() {
         </div>
       )}
 
-      {state.phase === 'sso-required' && <SsoLogin />}
+      {state.phase === 'sso-required' && (
+        <SsoLogin
+          onBreakGlassAuthenticated={() => {
+            setState({ phase: 'loading' });
+            setBootstrapKey((k) => k + 1);
+          }}
+        />
+      )}
 
       {showWlcLogin && (
         <Login
