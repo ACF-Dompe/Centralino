@@ -38,6 +38,8 @@ Tutti i **P0** (4/4) e **P1‑P2** (11/11) sono stati risolti nel codice. In que
 | **5.5** | SAML hardening | ✅ **FIXED** | `@node-saml/passport-saml` ✅ `wantAssertionsSigned: true` ✅ `wantAuthnResponseSigned: true` ✅ `validateInResponseTo: ValidateInResponseTo.ifPresent` ✅ `audience: params.issuer` ✅ `isLocalUrl()` su redirect ✅ `disableRequestedAuthnContext: true` ✅ (vedi 5.8) |
 | **5.8** | AuthnRequest vincolava il metodo di autenticazione (`AADSTS75011`) | ✅ **FIXED** | `@node-saml/node-saml` 5.1.0 inserisce per default `RequestedAuthnContext = PasswordProtectedTransport` con `Comparison="exact"` (`lib/saml.js:86-88,100,187-199`). Entra ID onora il vincolo, quindi **ogni** accesso passwordless (CBA, Windows Hello, FIDO2 → `amr = X509, MultiFactor, X509Device`) veniva rifiutato con `AADSTS75011`. Il metodo di autenticazione è una decisione di Conditional Access / Authentication Strength del tenant, non del service provider: `disableRequestedAuthnContext: true` (default, override con `SAML_DISABLE_REQUESTED_AUTHN_CONTEXT`) rimuove l'elemento dall'AuthnRequest. Pinnato anche in `deploy-azure.yml` perché un override manuale non sopravviva a un deploy. Verificato sull'XML generato, non solo sull'opzione. |
 | **5.9** | Session store senza TLS né credenziale Entra | ✅ **FIXED** | `createSessionStore()` passava `conString` a `connect-pg-simple`, che costruisce un `pg.Pool` proprio **senza `ssl` e senza password**. Contro Azure PostgreSQL la connessione è rifiutata prima dell'autenticazione (`no pg_hba.conf entry ... no encryption`) e, anche cifrata, non avrebbe credenziale: con Entra la password non sta in `DATABASE_URL` ma arriva dal callback `password` installato solo da `db/index.ts`. Difetto latente finché l'SSO non poteva completarsi (nessuna sessione doveva essere persistita con successo), emerso col fix 5.8. Il factory del pool è ora esportato come `createDbPool()` — unico punto che sa raggiungere il DB, TLS e token inclusi — e lo store riceve un pool. Corregge anche l'autenticazione WebSocket, che leggeva le sessioni dallo stesso store inservibile. Test: `sessionStore.test.ts`. |
+| **5.10** | ACS SAML senza parser del body → loop di redirect infinito con Entra | ✅ **FIXED** | Entra consegna l'AuthnResponse con binding HTTP-POST (`application/x-www-form-urlencoded`, campo `SAMLResponse`), ma l'app montava solo `express.json()`. Con `req.body` vuoto passport-saml non trovava `SAMLResponse` e interpretava il POST come **inizio** di un nuovo login: rispondeva al callback con una nuova AuthnRequest, Entra ripostava la risposta, loop infinito senza alcun errore. Latente finché `AADSTS75011` impediva a Entra di raggiungere l'ACS. `express.urlencoded({ extended: false, limit: '1mb' })` è ora agganciato a `POST /callback` e `POST /slo/callback` **dentro** `createAuthRouter`, così il parser viaggia con le route che ne hanno bisogno; il limite 1 MB sostituisce il default 100 KB, insufficiente per un'assertion cifrata grande. Nessuna modifica lato Entra. Test: `samlCallback.test.ts`, con controllo negativo che riproduce il loop. |
+| **9.1** | Log delle richieste cieco sugli endpoint di autenticazione | ✅ **FIXED** | Il middleware di logging era registrato **dopo** il router di auth, quindi `/api/auth/*` non compariva mai nel log — esattamente gli endpoint necessari a diagnosticare un problema di login (è costato un ciclo di diagnosi sull'incidente 5.10). Ora è registrato prima di ogni router; `path`/`method`/`ip`/user-agent sono catturati all'arrivo della richiesta anziché letti nel gestore `finish`, che riportava `/healthz` per una richiesta a `/api/healthz` perché un router montato riscrive `req.url` mentre gira. La query string resta esclusa dal log (contiene il parametro `redirect` e la SAMLRequest). |
 
 ---
 
@@ -165,6 +167,8 @@ Tutti i **P0** (4/4) e **P1‑P2** (11/11) sono stati risolti nel codice. In que
 | **—** | **`.trivyignore` rimosso (CVE fixato alla fonte)** | — | `df641852` |
 | **P1** | **`AADSTS75011`: rimosso `RequestedAuthnContext` dall'AuthnRequest (compatibilità CBA/Windows Hello/FIDO2)** | 5.8 | *questa sessione* |
 | **P1** | **Session store con TLS e token Entra (era `conString`, connessione rifiutata da `pg_hba`)** | 5.9 | *questa sessione* |
+| **P1** | **ACS SAML: parser urlencoded sul callback (era loop di redirect infinito con Entra)** | 5.10 | *questa sessione* |
+| **P2** | **Log delle richieste spostato prima dei router (`/api/auth/*` non era tracciato)** | 9.1 | *questa sessione* |
 | **—** | **Accesso break-glass con controlli compensativi (deviazione D1)** | D1 | *questa sessione* |
 
 ---
@@ -173,7 +177,7 @@ Tutti i **P0** (4/4) e **P1‑P2** (11/11) sono stati risolti nel codice. In que
 
 | Metrica | Valore |
 |---|---|
-| **Test unitari** | 472 conteggiati staticamente (169 frontend + 303 backend), di cui **77 nuovi** per i fix 5.8/5.9 e la deviazione D1 — da riconfermare con `make test` |
+| **Test unitari** | 477 conteggiati staticamente (169 frontend + 308 backend), di cui **93 nuovi** per i fix 5.8/5.9/5.10/9.1 e la deviazione D1 — da riconfermare con `make test` |
 | **Test E2E** | 22/22 — CI verde |
 | **TypeScript** | 0 errori (frontend + backend) |
 | **Vulnerabilità CRITICAL/HIGH** | 0 |

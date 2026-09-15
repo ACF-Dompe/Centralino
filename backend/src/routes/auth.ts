@@ -16,7 +16,7 @@
  * are mounted in BOTH cases on purpose: the whole point of the path is to work
  * when the SAML side is broken or absent.
  */
-import { Router, type Request, type Response, type NextFunction } from 'express';
+import express, { Router, type Request, type Response, type NextFunction } from 'express';
 import passport from 'passport';
 import { config } from '../config.js';
 import { log } from '../logger.js';
@@ -55,6 +55,23 @@ interface AuthRouterOptions {
  * real reason goes to the audit log instead.
  */
 const BREAKGLASS_GENERIC_ERROR = 'Credenziali non valide.';
+
+/**
+ * Body parser for the two SAML POST endpoints.
+ *
+ * Entra ID delivers the AuthnResponse and the LogoutResponse with the
+ * HTTP-POST binding, i.e. `application/x-www-form-urlencoded` with a
+ * `SAMLResponse` field. It is attached HERE, to the routes that need it,
+ * rather than left to whoever wires the app: without it `req.body` is empty,
+ * passport-saml sees no `SAMLResponse` and concludes the request is a fresh
+ * login *initiation* — so it answers the callback with a brand-new
+ * AuthnRequest, the IdP posts the response straight back, and the browser
+ * spins in an infinite redirect loop with no error anywhere.
+ *
+ * `extended: false` is enough (SAML fields are flat) and the limit matches the
+ * JSON one: a signed assertion is a few KB, an encrypted one can be larger.
+ */
+const parseSamlBody = express.urlencoded({ extended: false, limit: '1mb' });
 
 /** Payload shape returned by /me and by a successful break-glass login. */
 function toProfile(user: AppUser) {
@@ -376,7 +393,7 @@ export function createAuthRouter(opts: AuthRouterOptions): Router {
    * On success the browser is redirected to the frontend (or the saved
    * redirect path). On failure it is redirected to the root with an error.
    */
-  router.post('/callback', (req: Request, res: Response, next: NextFunction) => {
+  router.post('/callback', parseSamlBody, (req: Request, res: Response, next: NextFunction) => {
     passport.authenticate('saml', {
       failureRedirect: '/?sso_error=authentication-failed',
     })(req, res, (err: unknown) => {
@@ -461,6 +478,7 @@ export function createAuthRouter(opts: AuthRouterOptions): Router {
    */
   router.post(
     '/slo/callback',
+    parseSamlBody,
     passport.authenticate('saml', {
       successRedirect: '/',
       failureRedirect: '/?sso_error=slo-failed',

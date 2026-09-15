@@ -104,31 +104,45 @@ async function main(): Promise<void> {
     log.info('SSO disabled — SAML env vars not set (local/dev mode)');
   }
 
+  // Pino-based HTTP request logging (structured JSON for Log Analytics)
+  // Includes correlation ID for request tracing across log lines.
+  //
+  // Registered BEFORE every router: mounted earlier than this, the auth routes
+  // were the only ones absent from the request log — exactly the endpoints one
+  // needs when diagnosing a login problem.
+  //
+  // `path` and `ip` are captured up front rather than read inside the `finish`
+  // handler: a mounted router rewrites `req.url` while it runs, so reading
+  // `req.path` on finish logged `/healthz` for a request to `/api/healthz`.
+  // The query string is deliberately left out (it carries the `redirect` param
+  // and the SAMLRequest).
+  app.use((req, res, next) => {
+    const start = Date.now();
+    const correlationId = req.correlationId ?? '';
+    const path = req.path;
+    const method = req.method;
+    const userAgent = req.headers['user-agent'] ?? '';
+    const ip = req.ip;
+    res.on('finish', () => {
+      log.info({
+        correlationId,
+        method,
+        path,
+        status: res.statusCode,
+        duration: `${Date.now() - start}ms`,
+        userAgent,
+        ip,
+      }, 'HTTP request');
+    });
+    next();
+  });
+
   // Mount auth routes BEFORE the main API router so they can bypass
   // the ensureAuthenticated middleware.
   app.use('/api/auth', createAuthRouter({
     samlEnabled: config.saml.enabled,
     samlStrategy: samlStrategy ?? undefined,
   }));
-
-  // Pino-based HTTP request logging (structured JSON for Log Analytics)
-  // Includes correlation ID for request tracing across log lines.
-  app.use((req, res, next) => {
-    const start = Date.now();
-    const correlationId = req.correlationId ?? '';
-    res.on('finish', () => {
-      log.info({
-        correlationId,
-        method: req.method,
-        path: req.path,
-        status: res.statusCode,
-        duration: `${Date.now() - start}ms`,
-        userAgent: req.headers['user-agent'] ?? '',
-        ip: req.ip,
-      }, 'HTTP request');
-    });
-    next();
-  });
 
   app.use('/api', router);
 
