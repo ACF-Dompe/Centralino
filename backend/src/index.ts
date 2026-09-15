@@ -53,19 +53,21 @@ async function main(): Promise<void> {
   });
 
   // ── Session & Passport (SSO SAML) ───────────────────────────────────────
+  // ONE store, shared by the Express middleware and the WebSocket upgrade
+  // verifier below: both must read the same sessions, and a second store would
+  // open a second connection pool against the same database for no benefit.
+  const wsSessionStore = createSessionStore();
   const sessionMiddleware = createSessionMiddleware(
-    config.databaseUrl,
+    wsSessionStore,
     config.sessionSecret,
   );
   app.use(sessionMiddleware);
 
   // ── WebSocket session verifier ───────────────────────────────────────────
-  // Uses the same PostgreSQL session store as the Express middleware to
-  // authenticate WebSocket upgrade requests. The verifier reads the session
-  // cookie, unsigns it (express-session signs all cookies with 's:' prefix),
-  // looks up the session in PostgreSQL via store.get(), and checks for a
-  // passport-authenticated user in the session data.
-  const wsSessionStore = createSessionStore(config.databaseUrl);
+  // Authenticates WebSocket upgrade requests against that same store. The
+  // verifier reads the session cookie, unsigns it (express-session signs all
+  // cookies with 's:' prefix), looks up the session in PostgreSQL via
+  // store.get(), and checks for a passport-authenticated user in the data.
   app.use(passport.initialize());
   app.use(passport.session());
 

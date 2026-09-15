@@ -25,7 +25,7 @@
 
 ## Testing
 
-- **Backend tests:** Vitest, 21 files. Run: `make test-backend`.
+- **Backend tests:** Vitest, 22 files. Run: `make test-backend`.
 - **Frontend tests:** Vitest + React Testing Library, 11 files. Run: `make test-frontend`.
 - **E2E tests:** Playwright, 22 tests (17 SSO mock + 5 calendar). CI-only.
 - **Coverage:** Aim for >80% on new code. Run `npx vitest run --coverage` per workspace.
@@ -73,6 +73,7 @@
 - **Secrets:** Never hardcoded. Key Vault references in production (`@Microsoft.KeyVault(...)`).
 - **Runtime:** Non-root users in all containers.
 - **Session:** Signed cookies via `SESSION_SECRET`, stored in PostgreSQL via `connect-pg-simple`.
+- **DB connections:** Build every pool through `createDbPool()` in `db/index.ts` — it is the only place that resolves TLS and the Entra token. Never hand a connection string to a library that builds its own pool (`conString`, `connectionString`, …): with Entra auth the URL has no password and Azure PostgreSQL refuses unencrypted connections. See `COMPLIANCE.md` §5.9.
 - **SAML:** The AuthnRequest must NOT constrain the authentication method. `SAML_DISABLE_REQUESTED_AUTHN_CONTEXT` defaults to `true` and must stay true against Entra ID — requesting `PasswordProtectedTransport` breaks every passwordless sign-in with `AADSTS75011`. See `COMPLIANCE.md` §5.8.
 - **Break-glass:** Emergency local login, off by default, documented as accepted deviation D1 in `COMPLIANCE.md`. Passwords are scrypt-hashed via `node:crypto` (no bcrypt/argon2 dependency). Accounts are created only through `backend/src/scripts/breakglass.ts` — never add an HTTP endpoint for managing them. Every attempt must stay logged at `warn` level: a Log Analytics alert depends on it.
 

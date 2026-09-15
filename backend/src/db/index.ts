@@ -123,15 +123,25 @@ async function getEntraToken(): Promise<string> {
 }
 
 /**
- * Create the pg.Pool.
+ * Create a pg.Pool against DATABASE_URL, with TLS and authentication resolved
+ * the same way for every caller.
+ *
+ * This is exported because it is the SINGLE place that knows how to reach the
+ * database. Anything that needs its own pool — the session store, for one —
+ * must go through here rather than handing a connection string to a library:
+ * with Entra authentication the URL carries no password, and ACA's PostgreSQL
+ * rejects unencrypted connections, so a bare `conString` produces
+ * "no pg_hba.conf entry ... no encryption" and then an auth failure.
  *
  * Authentication:
  *   - DATABASE_URL contains a password → static string (local dev).
  *   - DATABASE_URL has NO password → `password` is set to the async token
  *     getter FUNCTION (not its result). `pg` calls it per new connection, so
  *     the pool never has to be closed and recreated to pick up a fresh token.
+ *
+ * @param overrides - per-caller pool tuning (e.g. a smaller `max`).
  */
-function createPool(): pg.Pool {
+export function createDbPool(overrides: Partial<pg.PoolConfig> = {}): pg.Pool {
   const conn = parseDatabaseUrl(config.databaseUrl);
 
   if (!conn.password) {
@@ -153,6 +163,7 @@ function createPool(): pg.Pool {
     // When SSL is on, the server certificate is validated against the system
     // trust store unless DB_SSL_REJECT_UNAUTHORIZED=false (local self-signed).
     ssl: config.db.sslEnabled ? { rejectUnauthorized: config.db.sslRejectUnauthorized } : false,
+    ...overrides,
   });
 
   // An error on an IDLE client must never take down the process.
@@ -214,7 +225,7 @@ function buildClient(): DbClient {
 
 export async function getDb(): Promise<DbClient> {
   if (!_client) {
-    _pool = createPool();
+    _pool = createDbPool();
     _client = buildClient();
 
     // Run migrations on startup — controlled by SKIP_MIGRATIONS env var.
