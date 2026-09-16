@@ -25,7 +25,7 @@
 
 ## Testing
 
-- **Backend tests:** Vitest, 23 files. Run: `make test-backend`.
+- **Backend tests:** Vitest, 25 files. Run: `make test-backend`.
 - **Frontend tests:** Vitest + React Testing Library, 11 files. Run: `make test-frontend`.
 - **E2E tests:** Playwright, 22 tests (17 SSO mock + 5 calendar). CI-only.
 - **Coverage:** Aim for >80% on new code. Run `npx vitest run --coverage` per workspace.
@@ -72,6 +72,7 @@
 - **Docker images:** Trivy scan on every push (via `docker-security.yml`).
 - **Secrets:** Never hardcoded. Key Vault references in production (`@Microsoft.KeyVault(...)`).
 - **Runtime:** Non-root users in all containers.
+- **WLC SSH:** Host key verification is opt-in via `WLC_SSH_VERIFY_HOST_KEY` and **off by default** — accepted deviation D2 in `COMPLIANCE.md` (five controllers, one expected key). When on it fails closed without `WLC_SSH_HOST_KEY`. Do not silence the warning logged on the first unverified connection: it is what keeps the state visible.
 - **Session:** Signed cookies via `SESSION_SECRET`, stored in PostgreSQL via `connect-pg-simple`.
 - **DB connections:** Build every pool through `createDbPool()` in `db/index.ts` — it is the only place that resolves TLS and the Entra token. Never hand a connection string to a library that builds its own pool (`conString`, `connectionString`, …): with Entra auth the URL has no password and Azure PostgreSQL refuses unencrypted connections. See `COMPLIANCE.md` §5.9.
 - **SAML:** The AuthnRequest must NOT constrain the authentication method. `SAML_DISABLE_REQUESTED_AUTHN_CONTEXT` defaults to `true` and must stay true against Entra ID — requesting `PasswordProtectedTransport` breaks every passwordless sign-in with `AADSTS75011`. See `COMPLIANCE.md` §5.8.

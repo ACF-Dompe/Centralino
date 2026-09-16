@@ -33,7 +33,7 @@ Tutti i **P0** (4/4) e **P1‑P2** (11/11) sono stati risolti nel codice. In que
 | **4** | Provisioning app‑owned (RG/KV/ACA env) | ✅ **FIXED** | Modello **consume‑only**: la pipeline non crea più alcuna risorsa (rimossi DB‑bootstrap, `containerapp job create`, `acr repository update`). `provision.sh` è ora un **preflight read‑only**; `provision-infra.yml` è "Azure Platform Preflight". Nomi risorse **parametrizzati** via secret GitHub. Le risorse (RG/KV/ACA env/Container App/UAMI/DB/ruolo Entra/ACR/AGW) sono pre‑provisionate dalla piattaforma. `setup-oidc.sh` non assegna più RBAC sul Key Vault (compito infra) né hardcoda il nome KV; resta solo la creazione dell'App Registration OIDC, la cui ownership è da confermare con l'architetto (§4.1). |
 | **5.1** | Segreti WLC/SMTP esposti via GET API | ✅ **FIXED** | `GET /config/wlc` → `password: undefined` | `GET /config/email` → `password: undefined` | `GET /config/sms` → `apiKey: undefined` |
 | **5.2** | `targetPassword` in audit log `sync_logs` | ✅ **FIXED** | `const safePayload = { ...cfg, targetPassword: '***' }` prima del log. |
-| **5.3** | Default TLS insicuri (`rejectUnauthorized: false`) | ✅ **FIXED** | `WLC_TLS_REJECT_UNAUTHORIZED` default `true` in produzione, `false` in dev. `hostVerifier` SSH attivo solo se `WLC_SSH_HOST_KEY` è impostata. |
+| **5.3** | Default TLS insicuri (`rejectUnauthorized: false`) | ✅ **FIXED** | `WLC_TLS_REJECT_UNAUTHORIZED` default `true` in produzione, `false` in dev. La verifica dell host key SSH è ora un flag esplicito (`WLC_SSH_VERIFY_HOST_KEY`) — vedi deviazione **D2**. |
 | **5.4** | WebSocket `/ws` non autenticato | ✅ **FIXED** | Path: `/api/ws` + `sessionVerifier.verifySession()` sull'upgrade → 401 se non autenticato. |
 | **5.5** | SAML hardening | ✅ **FIXED** | `@node-saml/passport-saml` ✅ `wantAssertionsSigned: true` ✅ `wantAuthnResponseSigned: true` ✅ `validateInResponseTo: ValidateInResponseTo.ifPresent` ✅ `audience: params.issuer` ✅ `isLocalUrl()` su redirect ✅ `disableRequestedAuthnContext: true` ✅ (vedi 5.8) |
 | **5.8** | AuthnRequest vincolava il metodo di autenticazione (`AADSTS75011`) | ✅ **FIXED** | `@node-saml/node-saml` 5.1.0 inserisce per default `RequestedAuthnContext = PasswordProtectedTransport` con `Comparison="exact"` (`lib/saml.js:86-88,100,187-199`). Entra ID onora il vincolo, quindi **ogni** accesso passwordless (CBA, Windows Hello, FIDO2 → `amr = X509, MultiFactor, X509Device`) veniva rifiutato con `AADSTS75011`. Il metodo di autenticazione è una decisione di Conditional Access / Authentication Strength del tenant, non del service provider: `disableRequestedAuthnContext: true` (default, override con `SAML_DISABLE_REQUESTED_AUTHN_CONTEXT`) rimuove l'elemento dall'AuthnRequest. Pinnato anche in `deploy-azure.yml` perché un override manuale non sopravviva a un deploy. Verificato sull'XML generato, non solo sull'opzione. |
@@ -44,6 +44,8 @@ Tutti i **P0** (4/4) e **P1‑P2** (11/11) sono stati risolti nel codice. In que
 | **5.11** | Strategy SAML assente → `Unknown authentication strategy "saml"` | ✅ **FIXED** | Con un `SAML_CERT` inutilizzabile `createSamlStrategy` restituisce null, quindi passport non riceve la strategy — ma le route SSO venivano montate comunque. Era una lacuna della validazione del certificato (§7.1): il commento diceva che il chiamante disabilita l SSO sul null, e il chiamante non lo faceva. `createAuthRouter` distingue ora tre stati (SSO usabile / configurato ma rotto / non configurato): nello stato rotto le route SSO danno 501 con la causa probabile e il rimando ai log di startup, e `/me` risponde **401 e non 404** — un 404 significa per il frontend "SSO inesistente" e gli farebbe saltare la schermata di accesso, e con essa il link di emergenza. Gli endpoint break-glass restano raggiungibili. Test: `samlCallback.test.ts`. |
 | **5.12** | `Invalid document signature`: firma a livello Response assente | ✅ **FIXED (config IdP)** | Entra firma l `<Assertion>` ma non il `<samlp:Response>` con la Signing Option di default ("Sign SAML assertion"); l app pretende entrambe. Verificato decodificando l assertion reale da un HAR catturato: RSA-SHA256, certificato valido, `<Signature>` presente solo dentro l Assertion. **Rimedio preferito lato IdP:** Signing Option = "Sign SAML response and assertion", così la copertura della firma resta su tutto il documento e il default stretto dell app non cambia. Aggiunto `SAML_WANT_AUTHN_RESPONSE_SIGNED` (default `true`) per i tenant dove quell impostazione non è modificabile: la firma dell Assertion resta incondizionata. Test: `saml.test.ts`. |
 | **5.13** | `InResponseTo is not valid`: cache degli ID AuthnRequest in memoria | ✅ **FIXED** | node-saml registra l ID di ogni AuthnRequest e verifica l `InResponseTo` della risposta (protezione anti-replay). Lo store di default è la memoria di processo e la sua stessa documentazione dichiara che "will NOT be sufficient" quando richiesta e risposta possono essere gestite da processi diversi: su Container Apps è il caso normale (un riavvio fra il redirect di login e il POST dell IdP basta; con più di una replica diventa sistematico). Inoltre node-saml consuma l ID anche dal percorso di errore, quindi ogni tentativo fallito ne brucia uno. Implementato un `CacheProvider` su PostgreSQL (`auth/samlRequestCache.ts`, tabella `saml_request_ids`): la verifica sopravvive ai riavvii e funziona fra repliche, la scadenza è applicata in SQL, il pool è creato lazy per non legare la costruzione della strategy al DB. La protezione anti-replay non è indebolita: è solo affidabile. Test: `samlRequestCache.test.ts`. |
+| **3.5** | Dati anagrafici (sedi) mai popolati in produzione | ✅ **FIXED** | La migrazione crea le tabelle vuote; le 5 sedi con host WLC/SSID/indirizzi stanno in `db/seed.ts` e non esiste API per crearle, mentre in produzione `SEED_ENABLED=false`. Risultato: subito dopo il primo login SSO riuscito l app mostrava "Nessuna sede configurata" senza via d uscita — lacuna della **procedura** di deploy, non del codice. Aggiunto entrypoint CLI `node backend/dist/db/seed.js` (stessa auth a token Entra della migrazione, idempotente per `code`), documentato come passo obbligatorio in guida §6.1 + checklist go-live + troubleshooting §12. Evita il toggle di `SEED_ENABLED` a runtime, che se lasciato attivo sovrascrive nome/città/indirizzo delle sedi a ogni riavvio. |
+| **3.4-bis** | Il seed inseriva ancora il provider SMS pubblico `textbelt` | ✅ **FIXED** | Il default era stato rimosso dalla DDL (§3.4) ma il seed continuava a scriverlo; con il seed eseguito per la prima volta in produzione sarebbe finito a database. Ora inserisce `NULL`: la feature SMS resta dormiente. |
 
 ---
 
@@ -134,6 +136,30 @@ Tutti i **P0** (4/4) e **P1‑P2** (11/11) sono stati risolti nel codice. In que
 
 ---
 
+### D2 — Verifica dell host key SSH verso i WLC disattivata
+
+| Campo | Valore |
+|---|---|
+| **Cosa** | `WLC_SSH_VERIFY_HOST_KEY` (default **`false`**): il client SSH non verifica l host key dei controller. Prima il comportamento era fail-closed in produzione (nessuna connessione senza `WLC_SSH_HOST_KEY`). |
+| **Perché** | I cinque WLC hanno cinque host key diverse, mentre `WLC_SSH_HOST_KEY` è un valore **singolo** confrontato con tutti ([wlcSsh.ts](backend/src/services/wlcSsh.ts)). Con la verifica attiva funzionerebbe **una sola sede** e le altre quattro fallirebbero closed — la funzionalità sarebbe inutilizzabile su 4 sedi su 5. |
+| **Deviazione** | La sessione SSH non è autenticata, quindi è esposta a MITM sul percorso verso il controller. Su quella sessione passano la **password admin del WLC** e le **credenziali degli ospiti**. |
+| **Rischio residuo** | Chi si interpone fra backend e WLC (rete interna `172.18.0.0/16`) può intercettare la password admin del controller e le credenziali generate. Ridotto dal fatto che il percorso è una rete interna gestita e l egress è ristretto, **non eliminato**. |
+
+**Controlli e mitigazioni:**
+
+- egress del backend limitato a `172.18.0.0/16` (guida §8), quindi il percorso non attraversa reti non gestite;
+- lo stato è **visibile**: il backend logga un `warn` la prima volta che apre una connessione non verificata, una sola volta per processo (il sync ogni 30s non inonda i log);
+- quando la verifica viene attivata è **fail-closed**: senza `WLC_SSH_HOST_KEY` rifiuta di connettersi anziché procedere in chiaro;
+- il flag è per-ambiente, quindi si può attivare su un ambiente di prova senza toccare il codice.
+
+**Prerequisito per chiudere la deviazione:** host key **per sede**
+(`WLC_SSH_HOST_KEY_<CODE>`, come già avviene per le password con
+`wlcPasswordForSede`), più la raccolta delle 5 fingerprint dai controller.
+Finché quello non c è, attivare la verifica non è praticabile. Test:
+`wlcSshHostKey.test.ts`.
+
+---
+
 ## Backlog di Remediation Aggiornato
 
 ### Ancora aperti (richiedono azione esterna / coordinamento)
@@ -143,6 +169,7 @@ Tutti i **P0** (4/4) e **P1‑P2** (11/11) sono stati risolti nel codice. In que
 | P0 | Creare principal Entra su PostgreSQL mappato alla UAMI backend (`pgaadauth_create_principal`) | 3.3 | 🏗️ Infrastruttura (manuale una tantum) |
 | P1 | Adottare risorse di piattaforma (RG condiviso, KV di piattaforma, ACA environment esistente). Unica creazione app = UAMI | 4 | 🏗️ Architetturale (coordinamento team infra) |
 | P1 | Allineare naming/hostname a `<appname>.dompe.com` / zona `dompe.com` | 4 | 🏗️ Architetturale |
+| **P1** | **Host key SSH per sede (`WLC_SSH_HOST_KEY_<CODE>`) + raccolta delle 5 fingerprint** — prerequisito per riattivare la verifica e chiudere la deviazione D2 | D2 | 🔧 Codice + 🏗️ Infra (raccolta chiavi) |
 | **P0** | **Convertire `deploy-azure.yml` e `scripts/provision.sh` alla sintassi secret di ACA (`keyvaultref:`/`secretref:`)** — finché non è fatto, un deploy via pipeline rompe di nuovo l SSO e riporta `SESSION_SECRET` a un valore pubblico | 7.1 | 🔧 Codice (pipeline) |
 
 ### Risolti nel codice (ultimo commit `df641852`)
@@ -182,7 +209,7 @@ Tutti i **P0** (4/4) e **P1‑P2** (11/11) sono stati risolti nel codice. In que
 
 | Metrica | Valore |
 |---|---|
-| **Test unitari** | 486 conteggiati staticamente (169 frontend + 317 backend), di cui **86 nuovi** per i fix 5.8/5.9/5.10/7.1/9.1 e la deviazione D1 — da riconfermare con `make test` |
+| **Test unitari** | 516 conteggiati staticamente (169 frontend + 347 backend), di cui **132 nuovi** in questa sessione — da riconfermare con `make test` |
 | **Test E2E** | 22/22 — CI verde |
 | **TypeScript** | 0 errori (frontend + backend) |
 | **Vulnerabilità CRITICAL/HIGH** | 0 |

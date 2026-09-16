@@ -1,6 +1,13 @@
 /**
- * Seed data: populates the database with default config rows,
- * 5 sedi (locations), and email/sms default configs on first run.
+ * Reference data: the 5 Dompe sedi with their WLC connection defaults, plus
+ * the dormant SMS config row.
+ *
+ * Despite living under the "seed" name this is master data, NOT demo data: the
+ * sedi are the real locations, no guests are created, and the application is
+ * unusable without them (the sede selector is the first screen after sign-in,
+ * and there is no API to create a sede). A production database therefore needs
+ * this to have run once — see the CLI entrypoint below, which is the supported
+ * way to do it rather than toggling SEED_ENABLED on a running app.
  *
  * CREDENTIAL NOTICE:
  *   REAL credentials (WLC admin passwords, SMTP passwords) were previously
@@ -9,6 +16,8 @@
  *   See: https://github.com/{owner}/centralino/security/advisories
  */
 import type { DbClient } from './index.js';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 
 interface SedeSeed {
   code: string;
@@ -128,8 +137,57 @@ export async function runSeed(client: DbClient): Promise<void> {
   const smsCount = await client.query(`SELECT COUNT(*) as c FROM sms_config`);
   if (Number((smsCount.rows[0] as { c: number }).c) === 0) {
     await client.query(
+      // No gateway_type: the SMS feature is dormant and naming a public
+      // provider here would plant it in the database (compliance 3.4).
       `INSERT INTO sms_config (id, gateway_type, api_key, sender_id, webhook_url)
-       VALUES (1, 'textbelt', '', 'DompeGuest', '')`,
+       VALUES (1, NULL, '', 'DompeGuest', '')`,
     );
+  }
+}
+
+// ── CLI entrypoint ─────────────────────────────────────────────────────────
+// Populate the reference data of an existing database:
+//
+//   node backend/dist/db/seed.js
+//
+// This is the supported way to provision a production database. The
+// alternative — flipping SEED_ENABLED on a running app — needs two revisions,
+// and leaving it on makes every restart overwrite each sede's name, city and
+// address with the values hardcoded above, silently undoing later edits.
+//
+// Idempotent: sedi are matched by `code`, so re-running updates instead of
+// duplicating. Exits 0 on success, 1 on failure.
+//
+// Authentication mirrors the migration CLI: the password from DATABASE_URL when
+// present, otherwise an Entra ID token via DefaultAzureCredential.
+
+async function main(): Promise<void> {
+  console.log('Seed CLI — connecting to database...');
+  // The client is created INSIDE the try so that connection/token-acquisition
+  // failures also produce a clean message and exit code 1.
+  let client: DbClient | null = null;
+  try {
+    const { createMigrationClient } = await import('./migrate.js');
+    client = await createMigrationClient();
+    await runSeed(client);
+    console.log('✅ Reference data seeded successfully');
+    await client.close();
+    process.exit(0);
+  } catch (err) {
+    console.error('❌ Seed failed:', (err as Error).message);
+    if (client) {
+      await client.close().catch(() => { /* ignore close errors */ });
+    }
+    process.exit(1);
+  }
+}
+
+// Detect direct execution (not import). Mirrors db/migrate.ts.
+const __filename = fileURLToPath(import.meta.url);
+const entryArg = process.argv[1];
+if (entryArg) {
+  const resolvedEntry = path.resolve(entryArg);
+  if (resolvedEntry === __filename || resolvedEntry.endsWith(path.sep + 'seed.js')) {
+    main();
   }
 }

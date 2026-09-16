@@ -298,6 +298,8 @@ the design rationale is in [backend/README.md](backend/README.md).
 | `WLC_DEFAULT_SSID` | `Dompe Guest` | Default SSID |
 | `WLC_HTTP_TIMEOUT_MS` | `10000` | HTTPS request timeout |
 | `WLC_SSH_TIMEOUT_MS` | `10000` | SSH connection timeout |
+| `WLC_SSH_VERIFY_HOST_KEY` | `false` | Verify the WLC SSH host key — off by design, see COMPLIANCE.md |
+| `WLC_SSH_HOST_KEY` | — | Expected host key; used only when verification is on |
 | `SAML_ENTRY_POINT` | — | Entra ID SSO endpoint (see §SSO) |
 | `SAML_ISSUER` | — | SAML Entity ID (see §SSO) |
 | `SAML_CALLBACK_URL` | — | SAML ACS URL (see §SSO) |

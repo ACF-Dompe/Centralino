@@ -14,6 +14,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### SSO — `AADSTS75011` on every passwordless sign-in
 - **The AuthnRequest no longer constrains the authentication method.** `@node-saml/node-saml` 5.1.0 injects, by default, `RequestedAuthnContext = urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport` with `Comparison="exact"` into every AuthnRequest. Entra ID honours that constraint, so any user who signed in with certificate-based authentication, Windows Hello or FIDO2 (`amr = X509, MultiFactor, X509Device`) was rejected with `AADSTS75011` instead of being let through. Which method is acceptable is a Conditional Access / Authentication Strength decision inside the tenant, not a service-provider one — and a SAML enterprise application has no supported switch to make Entra ignore a `RequestedAuthnContext` it receives, so the fix belongs here. `createSamlStrategy` now sets `disableRequestedAuthnContext: true` by default (`backend/src/auth/saml.ts`), overridable with `SAML_DISABLE_REQUESTED_AUTHN_CONTEXT` for an IdP that demands an explicit context. The value is also pinned in `deploy-azure.yml` so a manual override cannot survive a deploy. New tests assert the generated AuthnRequest XML, not just the option flag.
 
+### Added
+
+#### Seed CLI, so a production database can get its reference data
+- The 5 sedi with their WLC hosts, SSIDs and addresses live in `db/seed.ts`, and there is no API to create a sede — so a database that never ran the seed leaves the app at *"Nessuna sede configurata"* right after sign-in, with no way forward. Production runs with `SEED_ENABLED=false`, and the deploy guide never covered populating it: a genuine gap in the procedure, found the first time an SSO login actually reached the app.
+- `node backend/dist/db/seed.js` now runs it as a one-off, mirroring the migration CLI (same Entra token authentication, exit 0/1, idempotent — sedi are matched by `code`). This replaces toggling `SEED_ENABLED` on a running app, which needs two revisions and, if left on, makes every restart overwrite each sede name, city and address with the hardcoded values, silently undoing later edits. Documented as a mandatory step in the deploy guide §6.1, added to the go-live checklist and to §12 troubleshooting.
+- The file header now states plainly that this is master data rather than demo data, since the name suggests otherwise.
+- `createMigrationClient()` reports a missing `DATABASE_URL` explicitly instead of letting `new URL()` fail with "Invalid URL" — this is shared by the migration, seed and breakglass CLIs.
+
+### Changed
+
+#### WLC SSH host key verification is now an explicit, off-by-default flag
+- Requested by the operator, and recorded as accepted deviation **D2** in `COMPLIANCE.md`. Previously the SSH client refused to connect in production unless `WLC_SSH_HOST_KEY` was set (fail-closed). That could never work here: the five controllers have five different host keys while `WLC_SSH_HOST_KEY` is a single value compared against all of them, so verification would let at most one sede connect and fail the other four closed.
+- `WLC_SSH_VERIFY_HOST_KEY` (default `false`) now gates it. With verification **on**, a missing expected key still fails closed — asking for verification and then connecting anyway would be worse than not asking.
+- **The disabled state is not silent**: the backend logs a warning the first time it opens an unverified connection, once per process so the 30-second background sync cannot bury it. The SSH session is unauthenticated and carries the WLC admin password and the guest credentials, so that state belongs in the logs.
+- Closing the deviation needs per-sede keys (`WLC_SSH_HOST_KEY_<CODE>`, mirroring `wlcPasswordForSede`) plus the five fingerprints; tracked as a P1 in the remediation backlog. Tests: `wlcSshHostKey.test.ts`.
+
+#### Seed no longer plants a public SMS provider
+- `sms_config` was seeded with `gateway_type = textbelt`. The DDL default had already been removed for compliance §3.4, but the seed still wrote it — and with the seed about to run in production for the first time, it would have landed there. It now inserts `NULL`; the SMS feature stays dormant.
+
+### Fixed
+
 #### `InResponseTo is not valid`: AuthnRequest IDs are now persisted
 - node-saml records the ID of each AuthnRequest and checks the response `InResponseTo` against it — real replay protection. Its default store is process memory, and its own documentation states it "will NOT be sufficient" when request and response can be handled by different processes. On Container Apps that is the normal case: a restart between the sign-in redirect and the IdP posting back is enough, and more than one replica makes it routine. The user then gets `InResponseTo is not valid` with no way to recover. node-saml also consumes the ID from its error path, so every failed attempt spends one.
 - **Fix:** a PostgreSQL-backed `CacheProvider` (`auth/samlRequestCache.ts`) over a new `saml_request_ids` table, so the check survives restarts and works across replicas. Expiry is enforced in SQL rather than by the prune, and the pool is created lazily so building a SAML strategy stays free of I/O. Replay protection is unchanged — it is now simply reliable. Tests: `samlRequestCache.test.ts`.

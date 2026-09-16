@@ -161,6 +161,11 @@ export async function runMigrations(client: DbClient): Promise<void> {
  *     the connection password. A single token is enough: the job is short-lived.
  */
 export async function createMigrationClient(): Promise<DbClient> {
+  // Guard before new URL(), whose "Invalid URL" says nothing useful. Shared by
+  // the migration, seed and breakglass CLIs.
+  if (!config.databaseUrl) {
+    throw new Error('DATABASE_URL is not set — point it at the guestportal database');
+  }
   const parsed = new URL(config.databaseUrl);
   const urlPassword = parsed.password ? decodeURIComponent(parsed.password) : null;
 

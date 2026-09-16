@@ -65,13 +65,29 @@ export const config = {
     httpTimeoutMs: readNumber('WLC_HTTP_TIMEOUT_MS', 10_000),
     sshTimeoutMs: readNumber('WLC_SSH_TIMEOUT_MS', 10_000),
     /**
-     * Expected SSH host key fingerprint for WLC connections.
-     * When set, the SSH client verifies the host key against this value
-     * (e.g. "ssh-rsa 2048 xx:xx:xx:..."). If empty, host key verification
-     * is skipped (local dev / demo mode). In production, always set this.
+     * Whether to verify the WLC SSH host key at all. Default: FALSE.
      *
-     * Fail-closed in production: if NODE_ENV=production and this is empty,
-     * the app will not make unverified SSH connections to the WLC.
+     * Deliberate operational choice, recorded in COMPLIANCE.md: the five
+     * controllers have five different host keys while the expected value
+     * below is a single one, so enabling verification would let at most one
+     * sede connect and fail the rest closed.
+     *
+     * SECURITY: with this off the SSH session is not authenticated, so it is
+     * exposed to MITM on the path to the controller — and that session carries
+     * the WLC admin password and the guest credentials. It is acceptable only
+     * because the path is an internal managed network. The app logs a warning
+     * the first time it opens an unverified connection, so the state is
+     * visible rather than silent.
+     *
+     * When turning it on, set WLC_SSH_HOST_KEY as well — verification then
+     * fails closed if it is missing.
+     */
+    sshVerifyHostKey: readString('WLC_SSH_VERIFY_HOST_KEY', 'false').toLowerCase() === 'true',
+    /**
+     * Expected SSH host key (base64 fingerprint or hex), used only when
+     * WLC_SSH_VERIFY_HOST_KEY is true. Single-valued today; per-sede keys
+     * (WLC_SSH_HOST_KEY_<CODE>) are the follow-up needed before verification
+     * can be enabled across all five controllers.
      */
     sshHostKey: readString('WLC_SSH_HOST_KEY', ''),
     /**

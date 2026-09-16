@@ -324,6 +324,30 @@ az containerapp job start --name job-guestportal-migrate-prod -g <RG_NAME>
 az containerapp job execution list --name job-guestportal-migrate-prod -g <RG_NAME> -o table
 ```
 
+### 6.1 Dati anagrafici — le 5 sedi (passo OBBLIGATORIO)
+
+La migrazione crea le tabelle **vuote**. Le 5 sedi (MIL, AQ, NA, TIR, SM) con
+host WLC, SSID e indirizzi sono dati anagrafici che stanno in `db/seed.ts`, e
+**non esiste alcuna API per crearle**: senza questo passo il primo schermo dopo
+il login SSO mostra *"Nessuna sede configurata"* e l applicazione è
+inutilizzabile.
+
+Eseguilo una volta, dal container backend (idempotente: le sedi sono cercate
+per `code`, quindi rieseguirlo aggiorna e non duplica):
+
+```bash
+az containerapp exec -n <ACA_BACKEND_NAME> -g <RG_NAME> --command "node backend/dist/db/seed.js"
+```
+
+Deve stampare `✅ Reference data seeded successfully`. Verifica dall app: dopo
+il login SSO compaiono le 5 sedi.
+
+> ⚠️ **Non usare `SEED_ENABLED=true` per farlo.** Funziona, ma richiede due
+> revisioni e, se resta attivo, il seed rigira a ogni riavvio **sovrascrivendo**
+> nome, città e indirizzo di ogni sede con i valori hardcoded — annullando in
+> silenzio qualunque correzione successiva. In produzione `SEED_ENABLED` resta
+> `false`.
+
 ---
 
 ## 7. Container App — creazione
@@ -510,6 +534,7 @@ Migrazioni idempotenti/additive → il rollback immagine non richiede rollback s
 | SSO KO / errore firma | `SAML_ENTRY_POINT/ISSUER/CALLBACK_URL` o `SAML-CERT` errati (§1.1) |
 | **`AADSTS75011: Authentication method 'X509, MultiFactor, X509Device' ... doesn't match requested authentication method 'Password, ProtectedTransport'`** | L'AuthnRequest chiede esplicitamente `PasswordProtectedTransport` con `Comparison="exact"` e l'utente si è autenticato passwordless (CBA, Windows Hello, FIDO2). **Non è un problema di configurazione Entra** e non esiste un'impostazione lato Enterprise Application per ignorare il vincolo: verificare che `SAML_DISABLE_REQUESTED_AUTHN_CONTEXT` **non** sia `false` sul backend (default `true`, §1.1) e che l'immagine sia ≥ la versione con il fix. Verifica sul campo: aprire `/api/auth/login`, prendere `SAMLRequest` dall'URL di redirect verso `login.microsoftonline.com`, poi URL-decode → base64-decode → inflate; l'XML **non** deve contenere `RequestedAuthnContext`. |
 | **`Invalid document signature`** dopo il login | Entra firma solo l Assertion, non il `<samlp:Response>`, mentre l app pretende entrambe. **Fix preferito, lato Entra:** Enterprise Application → Single sign-on → SAML Certificates → Edit → **Signing Option = "Sign SAML response and assertion"**. Alternativa applicativa se quell impostazione non è modificabile: `SAML_WANT_AUTHN_RESPONSE_SIGNED=false` (le claim restano protette, la firma dell Assertion è incondizionata). |
+| **"Nessuna sede configurata"** dopo il login SSO | La tabella `sedi` è vuota: il passo §6.1 non è stato eseguito. La migrazione crea le tabelle ma non i dati anagrafici, e non esiste API per creare una sede. Esegui `az containerapp exec ... --command "node backend/dist/db/seed.js"`. |
 | Il link "Accesso di emergenza" non compare | `BREAKGLASS_ENABLED≠true`, oppure l'IP del client è fuori da `BREAKGLASS_IP_ALLOWLIST` (§1.3.1). L'endpoint risponde `404` in entrambi i casi, di proposito. |
 | Login break-glass sempre rifiutato | Account inesistente, disabilitato, scaduto o bloccato: il messaggio all'utente è volutamente identico in tutti i casi. La causa reale è nel log, campo `reason` (§1.3.4). Sbloccare con `breakglass.js unlock <user>`. |
 | Break-glass KO con DB giù | Atteso: gli account stanno su PostgreSQL. Il break-glass copre un outage di Entra/SSO, non del database (§1.3). |
@@ -527,6 +552,7 @@ Migrazioni idempotenti/additive → il rollback immagine non richiede rollback s
 - [ ] DB `guestportal_prod` + principal Entra UAMI + grant (§4)
 - [ ] Immagini backend+frontend buildate e pushate (SHA + `:prod`) (§5)
 - [ ] Job migrazione creato ed eseguito (§6)
+- [ ] **Sedi popolate** con `node backend/dist/db/seed.js` — senza questo l app mostra "Nessuna sede configurata" (§6.1)
 - [ ] Container App backend+frontend create con **`--ingress external`** (UAMI, env/KV refs) (§7)
 - [ ] FQDN verificati **senza** `.internal.` e health 200 da VM nella VNet **prima** di toccare l'AGW (§7.3)
 - [ ] AGW: pool allineati ai FQDN effettivi + probe/settings/listener/route + DNS `guestportal.dompe.com` → IP privato (§8)

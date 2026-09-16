@@ -9,6 +9,12 @@ import { Client, type ConnectConfig } from 'ssh2';
 import { config } from '../config.js';
 import { log } from '../logger.js';
 
+/**
+ * Set once we have logged that host key verification is off, so the notice
+ * appears in the logs without the 30-second background sync flooding them.
+ */
+let warnedUnverified = false;
+
 export interface SshExecInput {
   host: string;
   port?: number;
@@ -38,17 +44,33 @@ const ERROR_PATTERNS = [
 
 export function execSsh(input: SshExecInput): Promise<SshExecResult> {
   return new Promise((resolve) => {
-    // Fail-closed in production: refuse to open an unverified SSH connection
-    // when no expected host key is configured. Without WLC_SSH_HOST_KEY the
-    // connection would be exposed to MITM, so we reject rather than connect.
-    if (config.nodeEnv === 'production' && !config.wlc.sshHostKey) {
-      log.error({ host: input.host }, 'Refusing unverified SSH connection: WLC_SSH_HOST_KEY not set in production');
+    // Host key verification is opt-in (WLC_SSH_VERIFY_HOST_KEY, default false).
+    //
+    // When it is ON we fail closed if no expected key is configured: connecting
+    // anyway would defeat the point of having asked for verification.
+    if (config.wlc.sshVerifyHostKey && !config.wlc.sshHostKey) {
+      log.error(
+        { host: input.host },
+        'Refusing SSH connection: WLC_SSH_VERIFY_HOST_KEY is true but WLC_SSH_HOST_KEY is not set',
+      );
       resolve({
         success: false,
         output: '',
-        error: 'SSH host key verification is required in production (set WLC_SSH_HOST_KEY).',
+        error: 'SSH host key verification is enabled but no expected key is configured (set WLC_SSH_HOST_KEY).',
       });
       return;
+    }
+
+    // When it is OFF, say so once. The session is unauthenticated and carries
+    // the WLC admin password and the guest credentials, so the state must be
+    // visible in the logs rather than silent — but only once, because the
+    // background sync would otherwise repeat it every 30s per sede.
+    if (!config.wlc.sshVerifyHostKey && !warnedUnverified) {
+      warnedUnverified = true;
+      log.warn(
+        { host: input.host, env: config.nodeEnv },
+        'SSH host key verification is DISABLED (WLC_SSH_VERIFY_HOST_KEY=false) — WLC sessions are not authenticated',
+      );
     }
 
     const conn = new Client();
@@ -63,7 +85,7 @@ export function execSsh(input: SshExecInput): Promise<SshExecResult> {
       // Host key verification: when WLC_SSH_HOST_KEY is set, the SSH client
       // verifies the remote host's public key fingerprint before connecting.
       // In production, always set this to prevent MITM attacks.
-      hostVerifier: config.wlc.sshHostKey
+      hostVerifier: config.wlc.sshVerifyHostKey && config.wlc.sshHostKey
         ? (key: Buffer, verified: (ok: boolean) => void) => {
             // ssh2's hostVerifier is async — call verified() with the result.
             // Compare the host key (base64 fingerprint or hex) against the expected value.
