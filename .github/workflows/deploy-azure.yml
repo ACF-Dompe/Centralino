@@ -46,6 +46,22 @@
 #   MAIL_GRAPH_CLIENT_ID            Graph API App Registration client ID (for email)
 #   MAIL_GRAPH_USER_ID              Graph API mailbox user ID/UPN (for email)
 # =============================================================================
+# ⚠️  KNOWN DEFECT — DO NOT RUN THIS PIPELINE AGAINST A WORKING DEPLOYMENT
+#     UNTIL IT IS FIXED. The Key Vault values below use the App Service
+#     syntax @Microsoft.KeyVault(SecretUri=...), which Azure Container Apps
+#     does NOT expand: the literal string is passed to the container. In
+#     production this made every SSO login fail with "idpCert is not in PEM
+#     format or in base64 format" and left SESSION_SECRET holding a value
+#     derivable from public information.
+#
+#     ACA needs two steps instead: declare app secrets with
+#       az containerapp secret set --secrets "<name>=keyvaultref:<uri>,identityref:<uami-id>"
+#     then point the env vars at them with <VAR>=secretref:<name>.
+#     See COMPLIANCE.md 7.1 and the deploy guide 3.1 for the procedure.
+#
+#     Running this workflow as-is would overwrite a hand-fixed deployment and
+#     break SSO again.
+#
 # ── ACA Environment Variables (set by pipeline via --set-env-vars) ───────────
 # The deploy step sets these on the backend ACA container app. Secrets that
 # should come from Key Vault use the @Microsoft.KeyVault(...) reference format.

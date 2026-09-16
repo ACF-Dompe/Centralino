@@ -219,6 +219,52 @@ az keyvault secret set --vault-name <KV_NAME> --name MAIL-GRAPH-CLIENT-SECRET --
 # opzionale: APPINSIGHTS-CONNECTION-STRING
 ```
 
+### 3.1 ⚠️ Binding dei secret: ACA **non** capisce `@Microsoft.KeyVault(...)`
+
+Quella sintassi è di **App Service / Functions**. In Container Apps impostare
+una env var a quella stringa passa il **testo letterale** al container. Ci è
+costato un incidente in produzione: `SAML_CERT` conteneva il testo della
+reference, quindi ogni login SSO finiva con `idpCert is not in PEM format or in
+base64 format`; e `SESSION_SECRET` conteneva anch esso la stringa, rendendo la
+chiave di firma dei cookie **derivabile da informazioni pubbliche**.
+
+In ACA il binding è in due passi. Primo, dichiara i secret dell app puntando al
+vault, con la UAMI che ha il ruolo `Key Vault Secrets User`:
+
+```bash
+BACKEND_UAMI_ID=$(az identity list --query "[?name=='uami-guestportal-backend-prod'].id | [0]" -o tsv)
+KVURL="https://<KV_NAME>.vault.azure.net/secrets"
+SECRETS=""
+for S in SESSION-SECRET SAML-CERT WLC-PASSWORD-MIL WLC-PASSWORD-AQ WLC-PASSWORD-NA WLC-PASSWORD-TIR WLC-PASSWORD-SM MAIL-GRAPH-CLIENT-SECRET; do
+  L=$(echo "$S" | tr 'A-Z' 'a-z')
+  SECRETS="$SECRETS $L=keyvaultref:$KVURL/$S,identityref:$BACKEND_UAMI_ID"
+done
+az containerapp secret set -n <ACA_BACKEND_NAME> -g <RG_NAME> --secrets $SECRETS
+```
+
+Secondo, punta le env var a quei secret con `secretref:` (§7.1).
+
+Note operative:
+
+- i nomi dei secret ACA sono **minuscoli** (lettere, cifre, `-`); il secret nel
+  Key Vault mantiene il suo nome `MAIUSCOLO-CON-TRATTINI`;
+- l URI **senza versione** fa sì che ACA riprenda automaticamente le rotazioni;
+- referenziare un secret **inesistente** in Key Vault fa fallire la nuova
+  revisione: verifica prima con
+  `az keyvault secret list --vault-name <KV_NAME> --query "[].name" -o tsv`;
+- vincola solo i secret che esistono davvero. Le feature opzionali
+  (`SAML_DECRYPTION_KEY`, `SAML_LOGOUT_URL`, `APPLICATIONINSIGHTS_CONNECTION_STRING`)
+  vanno lasciate fuori se i relativi secret non sono stati creati.
+
+Verifica finale — `az containerapp secret list` **non deve essere vuoto**, e
+questo comando deve stampare **niente** (ogni nome elencato è una variabile che
+arriva al container come testo letterale):
+
+```bash
+az containerapp secret list -n <ACA_BACKEND_NAME> -g <RG_NAME> -o table
+az containerapp show -n <ACA_BACKEND_NAME> -g <RG_NAME> --query "properties.template.containers[0].env[?starts_with(value, '@Microsoft.KeyVault')].name" -o tsv
+```
+
 ---
 
 ## 4. PostgreSQL — database e identità Entra
@@ -300,18 +346,18 @@ az containerapp create \
     SAML_ISSUER="https://guestportal.dompe.com/saml" \
     SAML_CALLBACK_URL="https://guestportal.dompe.com/api/auth/callback" \
     SAML_DISABLE_REQUESTED_AUTHN_CONTEXT=true \
-    SAML_CERT="@Microsoft.KeyVault(SecretUri=https://<KV_NAME>.vault.azure.net/secrets/SAML-CERT/)" \
-    SESSION_SECRET="@Microsoft.KeyVault(SecretUri=https://<KV_NAME>.vault.azure.net/secrets/SESSION-SECRET/)" \
-    WLC_PASSWORD_MIL="@Microsoft.KeyVault(SecretUri=https://<KV_NAME>.vault.azure.net/secrets/WLC-PASSWORD-MIL/)" \
-    WLC_PASSWORD_AQ="@Microsoft.KeyVault(SecretUri=https://<KV_NAME>.vault.azure.net/secrets/WLC-PASSWORD-AQ/)" \
-    WLC_PASSWORD_NA="@Microsoft.KeyVault(SecretUri=https://<KV_NAME>.vault.azure.net/secrets/WLC-PASSWORD-NA/)" \
-    WLC_PASSWORD_TIR="@Microsoft.KeyVault(SecretUri=https://<KV_NAME>.vault.azure.net/secrets/WLC-PASSWORD-TIR/)" \
-    WLC_PASSWORD_SM="@Microsoft.KeyVault(SecretUri=https://<KV_NAME>.vault.azure.net/secrets/WLC-PASSWORD-SM/)" \
+    SAML_CERT="secretref:saml-cert" \
+    SESSION_SECRET="secretref:session-secret" \
+    WLC_PASSWORD_MIL="secretref:wlc-password-mil" \
+    WLC_PASSWORD_AQ="secretref:wlc-password-aq" \
+    WLC_PASSWORD_NA="secretref:wlc-password-na" \
+    WLC_PASSWORD_TIR="secretref:wlc-password-tir" \
+    WLC_PASSWORD_SM="secretref:wlc-password-sm" \
     WLC_SSH_HOST_KEY="<fingerprint>" WLC_TLS_REJECT_UNAUTHORIZED=true \
     MAIL_GRAPH_ENABLED=true MAIL_GRAPH_TENANT_ID="<...>" \
     MAIL_GRAPH_CLIENT_ID="<...>" MAIL_GRAPH_USER_ID="<...>" \
     MAIL_GRAPH_FROM_ADDRESS="noreply@dompe.com" \
-    MAIL_GRAPH_CLIENT_SECRET="@Microsoft.KeyVault(SecretUri=https://<KV_NAME>.vault.azure.net/secrets/MAIL-GRAPH-CLIENT-SECRET/)"
+    MAIL_GRAPH_CLIENT_SECRET="secretref:mail-graph-client-secret"
 
 # BACKEND_BASE_URL (serve il default domain dell'ambiente)
 ACA_DOMAIN=$(az containerapp env show -n <ACA_ENV_NAME> -g <RG_NAME> --query properties.defaultDomain -o tsv)

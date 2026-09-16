@@ -36,12 +36,12 @@ import { createSamlStrategy } from '../auth/saml.js';
 
 const IDP = 'https://login.microsoftonline.com/tenant-id/saml2';
 
-/** node-saml only requires idpCert to be non-empty until a response is validated. */
+/** PEM-shaped placeholder: createSamlStrategy validates the shape up front. */
 const strategy = createSamlStrategy({
   entryPoint: IDP,
   issuer: 'https://guestportal.dompe.com/saml',
   callbackUrl: 'https://guestportal.dompe.com/api/auth/callback',
-  cert: 'placeholder-idp-certificate',
+  cert: `-----BEGIN CERTIFICATE-----\nMIIBmTCCAQICCQDL4zPGUJ5x1DANBgkqhkiG9w0BAQsFADAUMRIwEAYDVQQDDAls\nb2NhbGhvc3QwHhcNMjQwMTAxMDAwMDAwWhcNMzQwMTAxMDAwMDAwWjAUMRIwEAYD\n-----END CERTIFICATE-----`,
 });
 
 beforeAll(() => {

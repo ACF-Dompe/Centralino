@@ -17,6 +17,7 @@
  *   - disableRequestedAuthnContext: true — do not dictate the auth method
  */
 import { Strategy as SamlStrategy, ValidateInResponseTo } from '@node-saml/passport-saml';
+import { log } from '../logger.js';
 
 export type { SamlStrategy };
 
@@ -41,6 +42,69 @@ export interface SamlUser {
 }
 
 /**
+ * Check that `cert` is something node-saml can actually parse, and say so
+ * clearly at startup instead of at the first login.
+ *
+ * node-saml resolves `idpCert` lazily, when it validates a response — so a
+ * misconfigured certificate stays invisible until a user completes an SSO
+ * round-trip, and then surfaces as a bare
+ * "idpCert is not in PEM format or in base64 format" in the browser.
+ *
+ * Returns null when the value is usable, otherwise a human-readable reason.
+ */
+function describeInvalidCert(cert: string): string | null {
+  const trimmed = cert.trim();
+
+  if (trimmed.length === 0) {
+    return 'SAML_CERT is empty';
+  }
+
+  // The mistake we actually hit in production: Azure Container Apps does not
+  // understand the `@Microsoft.KeyVault(SecretUri=...)` syntax — that belongs
+  // to App Service / Functions. In ACA the literal string reaches the
+  // container, so name the problem explicitly rather than letting node-saml
+  // complain about the format.
+  if (trimmed.startsWith('@Microsoft.KeyVault')) {
+    return (
+      'SAML_CERT contains an unresolved App Service style Key Vault reference. ' +
+      'Container Apps does not expand @Microsoft.KeyVault(...): define an ACA ' +
+      'secret with `az containerapp secret set --secrets ' +
+      '"saml-cert=keyvaultref:<secret-uri>,identityref:<uami-id>"` and set ' +
+      'SAML_CERT=secretref:saml-cert'
+    );
+  }
+
+  if (trimmed.startsWith('secretref:')) {
+    return 'SAML_CERT still holds the literal "secretref:..." string — the ACA secret was not resolved';
+  }
+
+  if (trimmed.includes('BEGIN CERTIFICATE')) {
+    return null; // PEM
+  }
+
+  // Bare base64 DER is also accepted by node-saml. A DER certificate always
+  // starts with an ASN.1 SEQUENCE (0x30), which is a cheap sanity check that
+  // catches truncated or escaped values.
+  const body = trimmed.replace(/\s+/g, '');
+  if (/^[A-Za-z0-9+/=]+$/.test(body) && body.length > 100) {
+    try {
+      if (Buffer.from(body, 'base64')[0] === 0x30) {
+        return null;
+      }
+    } catch {
+      /* fall through to the generic message */
+    }
+    return 'SAML_CERT looks like base64 but does not decode to a DER certificate';
+  }
+
+  if (trimmed.includes('\\n')) {
+    return 'SAML_CERT contains literal "\\n" sequences instead of real newlines';
+  }
+
+  return 'SAML_CERT is neither PEM (-----BEGIN CERTIFICATE-----) nor base64 DER';
+}
+
+/**
  * Build the SAML strategy configuration.
  * Returns `null` when SAML env vars are missing (SSO disabled).
  */
@@ -60,6 +124,20 @@ export function createSamlStrategy(params: {
   disableRequestedAuthnContext?: boolean;
 }): SamlStrategy | null {
   if (!params.entryPoint || !params.issuer) {
+    return null;
+  }
+
+  // Refuse to build a strategy around a certificate we know cannot validate a
+  // response. Returning null (rather than throwing) keeps the process alive:
+  // the SSO routes then answer 501 and, crucially, the break-glass login still
+  // works — it exists precisely for when SSO is broken. The caller disables
+  // SSO based on this null, and the reason is unmistakable in startup logs.
+  const certProblem = describeInvalidCert(params.cert);
+  if (certProblem) {
+    log.error(
+      { reason: certProblem },
+      'SSO SAML disabled — the IdP certificate is unusable, so no SAML response could ever be validated',
+    );
     return null;
   }
 

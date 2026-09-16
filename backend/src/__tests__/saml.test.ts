@@ -7,17 +7,28 @@
  * user signing in with certificate-based auth, Windows Hello or FIDO2 is
  * rejected outright. The strategy must therefore omit the element by default.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { inflateRawSync } from 'node:zlib';
+
+const mockLog = vi.hoisted(() => ({
+  info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(),
+}));
+vi.mock('../logger.js', () => ({ log: mockLog }));
+
 import { createSamlStrategy } from '../auth/saml.js';
 
 /**
- * node-saml only asserts that `idpCert` is non-empty at construction time —
- * the value is parsed lazily when a response is validated, which these tests
- * never do. A placeholder is therefore enough, and avoids shipping a
- * throwaway keypair in the repository.
+ * PEM-shaped placeholder. node-saml parses `idpCert` lazily, when it validates
+ * a response — which these tests never do — but `createSamlStrategy` now checks
+ * the SHAPE up front, so the value has to look like a certificate. This avoids
+ * shipping a throwaway keypair in the repository.
  */
-const TEST_CERT = 'placeholder-idp-certificate-not-used-for-request-generation';
+const TEST_CERT = [
+  '-----BEGIN CERTIFICATE-----',
+  'MIIBmTCCAQICCQDL4zPGUJ5x1DANBgkqhkiG9w0BAQsFADAUMRIwEAYDVQQDDAls',
+  'b2NhbGhvc3QwHhcNMjQwMTAxMDAwMDAwWhcNMzQwMTAxMDAwMDAwWjAUMRIwEAYD',
+  '-----END CERTIFICATE-----',
+].join('\n');
 
 const BASE_PARAMS = {
   entryPoint: 'https://login.microsoftonline.com/tenant-id/saml2',
@@ -70,6 +81,71 @@ describe('createSamlStrategy', () => {
     const xml = await generateAuthnRequestXml(params);
     expect(xml).toContain('RequestedAuthnContext');
     expect(xml).toContain('PasswordProtectedTransport');
+  });
+
+  describe('certificate validation at startup', () => {
+    /**
+     * These cover the second production incident: `SAML_CERT` held the literal
+     * string `@Microsoft.KeyVault(SecretUri=...)`, because Container Apps does
+     * not expand that App Service syntax. node-saml parses the certificate
+     * lazily, so the only symptom was
+     * "idpCert is not in PEM format or in base64 format" in the browser after a
+     * full SSO round-trip. The strategy now refuses to build, and says why in
+     * the startup logs.
+     *
+     * It returns null rather than throwing on purpose: the process stays up, so
+     * the break-glass login — which exists for exactly this situation — keeps
+     * working.
+     */
+    it('refuses an unresolved App Service Key Vault reference, and names it', () => {
+      const strategy = createSamlStrategy({
+        ...BASE_PARAMS,
+        cert: '@Microsoft.KeyVault(SecretUri=https://kv.vault.azure.net/secrets/SAML-CERT/)',
+      });
+
+      expect(strategy).toBeNull();
+      const reason = String(mockLog.error.mock.calls.at(-1)?.[0]?.reason ?? '');
+      expect(reason).toContain('Container Apps does not expand');
+      expect(reason).toContain('secretref:saml-cert');
+    });
+
+    it('refuses an unresolved ACA secret reference', () => {
+      expect(createSamlStrategy({ ...BASE_PARAMS, cert: 'secretref:saml-cert' })).toBeNull();
+    });
+
+    it('refuses an empty or whitespace-only certificate', () => {
+      expect(createSamlStrategy({ ...BASE_PARAMS, cert: '' })).toBeNull();
+      expect(createSamlStrategy({ ...BASE_PARAMS, cert: '   \n  ' })).toBeNull();
+    });
+
+    it('refuses a value whose newlines were flattened to literal \\n', () => {
+      const strategy = createSamlStrategy({ ...BASE_PARAMS, cert: 'MIIBmTCC\\nAQICCQDL' });
+      expect(strategy).toBeNull();
+    });
+
+    it('refuses a placeholder that is neither PEM nor base64', () => {
+      expect(createSamlStrategy({ ...BASE_PARAMS, cert: 'not-a-certificate' })).toBeNull();
+    });
+
+    it('accepts a PEM certificate', () => {
+      expect(createSamlStrategy({ ...BASE_PARAMS, cert: TEST_CERT })).not.toBeNull();
+    });
+
+    it('accepts bare base64 DER, which node-saml also supports', () => {
+      // A DER certificate opens with an ASN.1 SEQUENCE (0x30).
+      const der = Buffer.concat([Buffer.from([0x30, 0x82]), Buffer.alloc(300, 7)]);
+      const strategy = createSamlStrategy({ ...BASE_PARAMS, cert: der.toString('base64') });
+      expect(strategy).not.toBeNull();
+    });
+
+    it('rejects base64 that does not decode to a DER certificate', () => {
+      const notDer = Buffer.alloc(300, 0x41).toString('base64');
+      expect(createSamlStrategy({ ...BASE_PARAMS, cert: notDer })).toBeNull();
+    });
+
+    it('tolerates a PEM with surrounding whitespace', () => {
+      expect(createSamlStrategy({ ...BASE_PARAMS, cert: `\n  ${TEST_CERT}\n\n` })).not.toBeNull();
+    });
   });
 
   it('keeps the existing hardening options', () => {
