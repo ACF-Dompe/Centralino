@@ -377,7 +377,7 @@ az containerapp create \
     WLC_PASSWORD_NA="secretref:wlc-password-na" \
     WLC_PASSWORD_TIR="secretref:wlc-password-tir" \
     WLC_PASSWORD_SM="secretref:wlc-password-sm" \
-    WLC_SSH_HOST_KEY="<fingerprint>" WLC_TLS_REJECT_UNAUTHORIZED=true \
+    WLC_SSH_VERIFY_HOST_KEY=false WLC_TLS_REJECT_UNAUTHORIZED=false \
     MAIL_GRAPH_ENABLED=true MAIL_GRAPH_TENANT_ID="<...>" \
     MAIL_GRAPH_CLIENT_ID="<...>" MAIL_GRAPH_USER_ID="<...>" \
     MAIL_GRAPH_FROM_ADDRESS="noreply@dompe.com" \
@@ -388,7 +388,12 @@ ACA_DOMAIN=$(az containerapp env show -n <ACA_ENV_NAME> -g <RG_NAME> --query pro
 az containerapp update -n ca-guestportal-backend-prod -g <RG_NAME> \
   --set-env-vars BACKEND_BASE_URL="http://ca-guestportal-backend-prod.${ACA_DOMAIN}"
 ```
-> ⚠️ `WLC_SSH_HOST_KEY` è unico nel codice ma i WLC sono 5: vedi §12 (follow‑up host‑key per sede). In prod, senza host key l'SSH è *fail‑closed*.
+> ⚠️ **Canale verso i WLC: verifiche disattivate per scelta operativa** — deviazioni **D2** e **D3** in `COMPLIANCE.md`.
+>
+> - `WLC_SSH_VERIFY_HOST_KEY=false`: i 5 controller hanno host key diverse mentre `WLC_SSH_HOST_KEY` è un valore singolo confrontato con tutti, quindi attivarla farebbe funzionare una sola sede e fallire *closed* le altre quattro.
+> - `WLC_TLS_REJECT_UNAUTHORIZED=false`: il Catalyst 9800 presenta un certificato self-signed, sempre rifiutato con la verifica attiva (`SELF_SIGNED_CERT_IN_CHAIN`).
+>
+> Conseguenza: il canale verso i controller **non è autenticato**, e su di esso passano la password admin del WLC e le credenziali degli ospiti. Accettabile perché il percorso è la rete interna `172.18.0.0/16` con egress ristretto (§8) — non perché sia innocuo. Il backend logga un avviso alla prima connessione SSH non verificata, così lo stato resta visibile.
 >
 > `SAML_DISABLE_REQUESTED_AUTHN_CONTEXT=true` è il default del codice: è esplicitato qui perché rimuoverlo o portarlo a `false` rompe tutti i login passwordless con `AADSTS75011` (§1.1, §12).
 >
@@ -540,7 +545,8 @@ Migrazioni idempotenti/additive → il rollback immagine non richiede rollback s
 | Break-glass KO con DB giù | Atteso: gli account stanno su PostgreSQL. Il break-glass copre un outage di Entra/SSO, non del database (§1.3). |
 | **404 "Azure Container App - Unavailable"** su ogni path (anche `/`), da VM o AGW | **App creata con `--ingress internal`**: in un ambiente internal è raggiungibile solo dalle altre Container App dello stesso ambiente. Correggere con `az containerapp ingress enable --type external` (§7.4) e riallineare i pool AGW al nuovo FQDN (senza `.internal.`). Sintomo diagnostico: l'app risponde 200 dall'interno del container (`az containerapp exec` → `wget http://127.0.0.1:3000/api/healthz`) ma 404 dall'esterno. |
 | 502 dall'AGW | pool/probe puntano a un FQDN errato o probe `/api/healthz`/`/healthz` KO (§8) |
-| WLC non risponde | egress `172.18.0.0/16` non abilitato (§8) o `WLC_SSH_HOST_KEY` non impostato (fail‑closed) |
+| WLC non risponde | egress `172.18.0.0/16` non abilitato (§8). Il messaggio di errore distingue ora i casi: *"Host irraggiungibile"* è rete, *"Connessione rifiutata"* è porta chiusa, *"Nome host non risolto"* è DNS. |
+| **`Certificato TLS del WLC rifiutato (SELF_SIGNED_CERT_IN_CHAIN)`** | Il controller **risponde**: a fallire è la verifica del certificato, non la rete. Il Catalyst 9800 presenta un certificato self-signed. Imposta `WLC_TLS_REJECT_UNAUTHORIZED=false` (deviazione D3) oppure installa un certificato attendibile sul controller. |
 | Mail non inviate | `MAIL_GRAPH_ENABLED≠true` o `Mail.Send`/consent/secret mancanti (§1.2) |
 
 ---

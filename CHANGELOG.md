@@ -24,6 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+#### WLC channel verification documented as a deliberate posture
+- `WLC_TLS_REJECT_UNAUTHORIZED=false` is now the documented production setting, recorded as accepted deviation **D3** in `COMPLIANCE.md`: a Catalyst 9800 presents a self-signed certificate, which verification always rejects. The **code default stays secure** (true in production) — the deviation lives in the environment, not in the codebase.
+- Deploy guide §7.1 now sets `WLC_SSH_VERIFY_HOST_KEY=false` and `WLC_TLS_REJECT_UNAUTHORIZED=false` explicitly, with a note stating the consequence: the channel to the controllers is unauthenticated and carries the WLC admin password and the guest credentials, acceptable only because the path is the restricted internal network. §12 gains a row for the self-signed certificate error.
+- D2 and D3 are cross-referenced: both remove *server* authentication on the same network path, so the risk is cumulative on one channel rather than spread over two.
+- Per-sede TLS pinning (`WLC_TLS_CA_<CODE>`) is tracked as the P1 that would close D3 while keeping verification on and without touching the controllers.
+- Note: the deploy pipeline does **not** set `WLC_TLS_REJECT_UNAUTHORIZED`, so a value set by hand survives future pipeline deploys.
+
 #### WLC connection failures no longer all claim the host is unreachable
 - Every request error — network **and** TLS — was reported as `Host irraggiungibile: <message>`. When the Catalyst 9800 presented its self-signed certificate and `WLC_TLS_REJECT_UNAUTHORIZED=true` refused it, the operator was told the host was unreachable and went looking at egress, routing and the container network. The controller had answered fine; only verification had failed.
 - `loginWebUi` now classifies the error and says what to do: a refused certificate names `WLC_TLS_REJECT_UNAUTHORIZED` and states explicitly that the controller responded; an expired certificate, a refused connection (port closed), an unresolvable hostname and a genuine timeout each get their own message. Only real unreachability is called unreachable. Classification prefers `err.code` and falls back to matching the message, since a wrapped socket error sometimes carries the token only in the text. The error `code` is now in the log line too.

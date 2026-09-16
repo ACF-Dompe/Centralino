@@ -33,7 +33,7 @@ Tutti i **P0** (4/4) e **P1‑P2** (11/11) sono stati risolti nel codice. In que
 | **4** | Provisioning app‑owned (RG/KV/ACA env) | ✅ **FIXED** | Modello **consume‑only**: la pipeline non crea più alcuna risorsa (rimossi DB‑bootstrap, `containerapp job create`, `acr repository update`). `provision.sh` è ora un **preflight read‑only**; `provision-infra.yml` è "Azure Platform Preflight". Nomi risorse **parametrizzati** via secret GitHub. Le risorse (RG/KV/ACA env/Container App/UAMI/DB/ruolo Entra/ACR/AGW) sono pre‑provisionate dalla piattaforma. `setup-oidc.sh` non assegna più RBAC sul Key Vault (compito infra) né hardcoda il nome KV; resta solo la creazione dell'App Registration OIDC, la cui ownership è da confermare con l'architetto (§4.1). |
 | **5.1** | Segreti WLC/SMTP esposti via GET API | ✅ **FIXED** | `GET /config/wlc` → `password: undefined` | `GET /config/email` → `password: undefined` | `GET /config/sms` → `apiKey: undefined` |
 | **5.2** | `targetPassword` in audit log `sync_logs` | ✅ **FIXED** | `const safePayload = { ...cfg, targetPassword: '***' }` prima del log. |
-| **5.3** | Default TLS insicuri (`rejectUnauthorized: false`) | ✅ **FIXED** | `WLC_TLS_REJECT_UNAUTHORIZED` default `true` in produzione, `false` in dev. La verifica dell host key SSH è ora un flag esplicito (`WLC_SSH_VERIFY_HOST_KEY`) — vedi deviazione **D2**. |
+| **5.3** | Default TLS insicuri (`rejectUnauthorized: false`) | 🔶 **PARZIALE** | Il **default del codice** resta sicuro: `WLC_TLS_REJECT_UNAUTHORIZED` vale `true` in produzione e `false` solo in dev. In produzione è però impostato esplicitamente a `false` per scelta operativa — vedi deviazione **D3** (certificato self-signed dei Catalyst). La verifica dell host key SSH è un flag esplicito, default off — deviazione **D2**. Entrambe riguardano lo stesso percorso di rete verso i WLC. |
 | **5.4** | WebSocket `/ws` non autenticato | ✅ **FIXED** | Path: `/api/ws` + `sessionVerifier.verifySession()` sull'upgrade → 401 se non autenticato. |
 | **5.5** | SAML hardening | ✅ **FIXED** | `@node-saml/passport-saml` ✅ `wantAssertionsSigned: true` ✅ `wantAuthnResponseSigned: true` ✅ `validateInResponseTo: ValidateInResponseTo.ifPresent` ✅ `audience: params.issuer` ✅ `isLocalUrl()` su redirect ✅ `disableRequestedAuthnContext: true` ✅ (vedi 5.8) |
 | **5.8** | AuthnRequest vincolava il metodo di autenticazione (`AADSTS75011`) | ✅ **FIXED** | `@node-saml/node-saml` 5.1.0 inserisce per default `RequestedAuthnContext = PasswordProtectedTransport` con `Comparison="exact"` (`lib/saml.js:86-88,100,187-199`). Entra ID onora il vincolo, quindi **ogni** accesso passwordless (CBA, Windows Hello, FIDO2 → `amr = X509, MultiFactor, X509Device`) veniva rifiutato con `AADSTS75011`. Il metodo di autenticazione è una decisione di Conditional Access / Authentication Strength del tenant, non del service provider: `disableRequestedAuthnContext: true` (default, override con `SAML_DISABLE_REQUESTED_AUTHN_CONTEXT`) rimuove l'elemento dall'AuthnRequest. Pinnato anche in `deploy-azure.yml` perché un override manuale non sopravviva a un deploy. Verificato sull'XML generato, non solo sull'opzione. |
@@ -161,6 +161,34 @@ Finché quello non c è, attivare la verifica non è praticabile. Test:
 
 ---
 
+### D3 — Verifica del certificato TLS dei WLC disattivata
+
+| Campo | Valore |
+|---|---|
+| **Cosa** | `WLC_TLS_REJECT_UNAUTHORIZED=false` in produzione: il client HTTPS verso i controller non verifica il certificato del server. |
+| **Perché** | Il Catalyst 9800 presenta un certificato **self-signed**, che con la verifica attiva viene sempre rifiutato (`SELF_SIGNED_CERT_IN_CHAIN`) rendendo impossibile il login WLC. Le alternative — installare un certificato attendibile sui 5 controller, oppure il pinning per sede (`WLC_TLS_CA_<CODE>`) — sono state valutate e rinviate su decisione del richiedente. |
+| **Deviazione** | Il canale HTTPS verso il WLC non è autenticato, quindi esposto a MITM. Su quel canale viaggia l'header `Authorization: Basic`, cioè **la password admin del WLC** (base64, non cifrata). |
+| **Rischio residuo** | Chi si interpone fra backend e controller può leggere la password admin del WLC e le credenziali degli ospiti, e impersonare il controller. Ridotto dal percorso su rete interna `172.18.0.0/16` con egress ristretto, **non eliminato**. |
+
+Va letta insieme a **D2** (host key SSH): entrambe rimuovono l'autenticazione
+del *server* sullo stesso percorso di rete, quindi il rischio è cumulativo sullo
+stesso canale, non su due canali distinti.
+
+**Controlli e mitigazioni:**
+
+- egress del backend limitato a `172.18.0.0/16` (guida §8): il percorso non attraversa reti non gestite;
+- la password admin del WLC non è mai nel database (Key Vault per sede, §2), quindi un'intercettazione non dà accesso persistente alla configurazione dell'app;
+- gli errori TLS sono ora classificati e non più confusi con problemi di rete (§9.2), così un cambio di stato del certificato è diagnosticabile;
+- il flag è per-ambiente: si può riattivare la verifica su un ambiente di prova senza modifiche di codice.
+
+**Prerequisito per chiudere la deviazione:** pinning per sede
+(`WLC_TLS_CA_<CODE>` con il certificato di ciascun controller, recuperabile con
+`openssl s_client -connect <host>:443 -showcerts`) oppure certificati emessi da
+una CA aziendale installati sui 5 WLC. Il pinning mantiene la verifica attiva e
+rileva il MITM **senza** toccare i controller, ed è la via più economica.
+
+---
+
 ## Backlog di Remediation Aggiornato
 
 ### Ancora aperti (richiedono azione esterna / coordinamento)
@@ -171,6 +199,7 @@ Finché quello non c è, attivare la verifica non è praticabile. Test:
 | P1 | Adottare risorse di piattaforma (RG condiviso, KV di piattaforma, ACA environment esistente). Unica creazione app = UAMI | 4 | 🏗️ Architetturale (coordinamento team infra) |
 | P1 | Allineare naming/hostname a `<appname>.dompe.com` / zona `dompe.com` | 4 | 🏗️ Architetturale |
 | **P1** | **Host key SSH per sede (`WLC_SSH_HOST_KEY_<CODE>`) + raccolta delle 5 fingerprint** — prerequisito per riattivare la verifica e chiudere la deviazione D2 | D2 | 🔧 Codice + 🏗️ Infra (raccolta chiavi) |
+| **P1** | **Pinning TLS per sede (`WLC_TLS_CA_<CODE>`)** — mantiene la verifica attiva e rileva il MITM senza toccare i controller; prerequisito per chiudere D3 | D3 | 🔧 Codice + 🏗️ Infra (raccolta certificati) |
 | **P0** | **Convertire `deploy-azure.yml` e `scripts/provision.sh` alla sintassi secret di ACA (`keyvaultref:`/`secretref:`)** — finché non è fatto, un deploy via pipeline rompe di nuovo l SSO e riporta `SESSION_SECRET` a un valore pubblico | 7.1 | 🔧 Codice (pipeline) |
 
 ### Risolti nel codice (ultimo commit `df641852`)
