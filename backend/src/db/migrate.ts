@@ -93,6 +93,19 @@ CREATE TABLE IF NOT EXISTS breakglass_users (
   updated_at      TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
+-- Outstanding SAML AuthnRequest IDs, for InResponseTo replay validation.
+-- Persisted rather than held in memory: node-saml default in-memory cache
+-- cannot survive a container restart between the login redirect and the IdP
+-- posting back, and cannot work across replicas at all (its own docs say so).
+-- Rows are tiny and short-lived: one per login attempt, pruned past the
+-- request-ID expiration window.
+CREATE TABLE IF NOT EXISTS saml_request_ids (
+  id              VARCHAR(255) PRIMARY KEY,
+  value           TEXT NOT NULL,
+  created_at      TIMESTAMP NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_saml_request_ids_created_at ON saml_request_ids(created_at);
+
 CREATE TABLE IF NOT EXISTS sync_logs (
   id              SERIAL PRIMARY KEY,
   timestamp       TIMESTAMP NOT NULL DEFAULT NOW(),

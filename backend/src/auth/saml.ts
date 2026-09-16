@@ -19,7 +19,16 @@
  *   - disableRequestedAuthnContext: true — do not dictate the auth method
  */
 import { Strategy as SamlStrategy, ValidateInResponseTo } from '@node-saml/passport-saml';
+import type { CacheProvider } from '@node-saml/node-saml';
 import { log } from '../logger.js';
+import { createSamlRequestCache } from './samlRequestCache.js';
+
+/**
+ * How long an outstanding AuthnRequest ID stays valid for InResponseTo
+ * validation. Generous enough for a slow interactive sign-in (MFA prompts,
+ * certificate selection) without keeping stale IDs around.
+ */
+const REQUEST_ID_TTL_MS = 1_800_000;
 
 export type { SamlStrategy };
 
@@ -129,6 +138,11 @@ export function createSamlStrategy(params: {
    * See the note on `wantAuthnResponseSigned` in the strategy config below.
    */
   wantAuthnResponseSigned?: boolean;
+  /**
+   * Override the store for outstanding AuthnRequest IDs. Defaults to the
+   * PostgreSQL-backed cache; tests inject an in-memory one.
+   */
+  cacheProvider?: CacheProvider;
 }): SamlStrategy | null {
   if (!params.entryPoint || !params.issuer) {
     return null;
@@ -236,7 +250,19 @@ export function createSamlStrategy(params: {
       // the service provider. Omitting the element lets Entra apply them.
       disableRequestedAuthnContext: params.disableRequestedAuthnContext ?? true,
       // Cache request IDs for InResponseTo validation (30 minute TTL).
-      requestIdExpirationPeriodMs: 1_800_000,
+      requestIdExpirationPeriodMs: REQUEST_ID_TTL_MS,
+      // Persist those IDs instead of holding them in process memory.
+      //
+      // node-saml's default InMemoryCacheProvider documents its own limit: it
+      // "will NOT be sufficient" when the AuthnRequest and the response can be
+      // handled by different processes. In Container Apps that is the normal
+      // case — a restart between the sign-in redirect and the IdP posting back
+      // is enough, and more than one replica makes it routine. The symptom is
+      // `InResponseTo is not valid` with no way for the user to recover.
+      //
+      // The caller may inject its own provider; the default keeps the IDs in
+      // PostgreSQL, which the app already owns.
+      cacheProvider: params.cacheProvider ?? createSamlRequestCache(REQUEST_ID_TTL_MS),
     },
     verifyCallback,
     verifyCallback,

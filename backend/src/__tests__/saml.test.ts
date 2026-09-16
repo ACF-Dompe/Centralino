@@ -16,6 +16,33 @@ const mockLog = vi.hoisted(() => ({
 vi.mock('../logger.js', () => ({ log: mockLog }));
 
 import { createSamlStrategy } from '../auth/saml.js';
+import type { CacheProvider } from '@node-saml/node-saml';
+
+/**
+ * Minimal in-memory CacheProvider for the AuthnRequest IDs.
+ *
+ * The strategy's default store is PostgreSQL-backed and these tests must not
+ * reach a database. node-saml's own InMemoryCacheProvider is not exported from
+ * the package root, so this keeps the tests off a deep internal path.
+ */
+function createFakeCacheProvider(): CacheProvider {
+  const store = new Map<string, { value: string; createdAt: number }>();
+  return {
+    async saveAsync(key, value) {
+      if (store.has(key)) return null;
+      const item = { value, createdAt: Date.now() };
+      store.set(key, item);
+      return item;
+    },
+    async getAsync(key) {
+      return store.get(key)?.value ?? null;
+    },
+    async removeAsync(key) {
+      if (key === null) return null;
+      return store.delete(key) ? key : null;
+    },
+  };
+}
 
 /**
  * PEM-shaped placeholder. node-saml parses `idpCert` lazily, when it validates
@@ -35,6 +62,9 @@ const BASE_PARAMS = {
   issuer: 'https://guestportal.dompe.com/saml',
   callbackUrl: 'https://guestportal.dompe.com/api/auth/callback',
   cert: TEST_CERT,
+  // Keep the AuthnRequest-ID store in memory: the default one is backed by
+  // PostgreSQL, and these tests must not reach a database.
+  cacheProvider: createFakeCacheProvider(),
 };
 
 /**
