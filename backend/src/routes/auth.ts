@@ -330,17 +330,35 @@ export function createAuthRouter(opts: AuthRouterOptions): Router {
 
   registerBreakGlassRoutes(router, bg, throttle, allowlist);
 
-  if (!samlEnabled) {
-    // ── SSO disabled (local dev) ──────────────────────────────────────────
+  /**
+   * Three states, not two:
+   *
+   *   - SAML configured AND the strategy was built  → full SSO routes
+   *   - SAML configured but the strategy is MISSING → 501 on /login, and /me
+   *     answers 401 so the frontend still shows the SSO screen (with the
+   *     break-glass link) instead of concluding that SSO does not exist
+   *   - SAML not configured at all (local dev)      → /me answers 404, which
+   *     tells the frontend to skip the SSO screen entirely
+   *
+   * Mounting the SSO routes without a strategy is what produced
+   * `Unknown authentication strategy "saml"` in production: passport had never
+   * received the strategy because an unusable IdP certificate made
+   * `createSamlStrategy` return null. A missing strategy must degrade to a
+   * clear 501, never to that message.
+   */
+  const ssoUsable = samlEnabled && samlStrategy != null;
+
+  if (!ssoUsable) {
+    const unavailableError = samlEnabled
+      ? 'SSO is configured but unavailable: the SAML strategy could not be initialised (see the backend startup logs for the reason — an unusable SAML_CERT is the usual cause). Use the emergency login if it is enabled.'
+      : 'SSO (SAML) is not configured. Set SAML_ENTRY_POINT, SAML_ISSUER and SAML_CERT to enable.';
+
     router.get('/login', (_req: Request, res: Response) => {
-      res.status(501).json({
-        success: false,
-        error: 'SSO (SAML) is not configured. Set SAML_ENTRY_POINT, SAML_ISSUER and SAML_CERT to enable.',
-      });
+      res.status(501).json({ success: false, error: unavailableError });
     });
 
     router.post('/callback', (_req: Request, res: Response) => {
-      res.status(501).json({ success: false, error: 'SSO is not configured.' });
+      res.status(501).json({ success: false, error: unavailableError });
     });
 
     router.post('/logout', (req: Request, res: Response, next: NextFunction) => {
@@ -354,17 +372,27 @@ export function createAuthRouter(opts: AuthRouterOptions): Router {
     });
 
     router.post('/slo/callback', (_req: Request, res: Response) => {
-      res.status(501).json({ success: false, error: 'SSO is not configured.' });
+      res.status(501).json({ success: false, error: unavailableError });
     });
 
     router.get('/me', (req: Request, res: Response) => {
-      // A break-glass session can exist even with SAML switched off, so return
-      // it when present. Only with no session at all is this a 404 = "SSO not
-      // available", which tells the frontend to skip the SSO prompt.
+      // A break-glass session can exist in both of these states, so return it
+      // when present.
       if (req.isAuthenticated() && req.user) {
         return res.json({ success: true, data: toProfile(req.user as AppUser) });
       }
-      res.status(404).json({ success: false, error: 'SSO is not configured.' });
+
+      // With SAML configured but broken, answer 401 — "you are not signed in" —
+      // so the frontend keeps showing the SSO screen and its emergency-login
+      // link. A 404 here would tell it SSO does not exist and send every user
+      // straight past the sign-in step.
+      if (samlEnabled) {
+        return res.status(401).json({ success: false, error: unavailableError });
+      }
+
+      // SSO genuinely not configured (local dev): 404 tells the frontend to
+      // skip the SSO prompt altogether.
+      res.status(404).json({ success: false, error: unavailableError });
     });
 
     return router;

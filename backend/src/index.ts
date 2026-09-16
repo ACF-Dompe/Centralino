@@ -100,9 +100,17 @@ async function main(): Promise<void> {
     if (config.saml.logoutUrl) {
       log.info('SAML Single Logout (SLO) enabled');
     }
+  } else if (config.saml.enabled) {
+    // SAML is configured (SAML_ENTRY_POINT is set) but the strategy could not
+    // be built — an unusable IdP certificate is the realistic cause, and
+    // createSamlStrategy has already logged the precise reason.
+    log.error(
+      'SSO SAML is configured but the strategy could not be built — the SSO routes will answer 501. Break-glass login is unaffected.',
+    );
   } else {
     log.info('SSO disabled — SAML env vars not set (local/dev mode)');
   }
+
 
   // Pino-based HTTP request logging (structured JSON for Log Analytics)
   // Includes correlation ID for request tracing across log lines.
@@ -139,6 +147,8 @@ async function main(): Promise<void> {
 
   // Mount auth routes BEFORE the main API router so they can bypass
   // the ensureAuthenticated middleware.
+  // `samlEnabled` says SAML is CONFIGURED; the router decides on its own
+  // whether it is usable, based on whether the strategy was actually built.
   app.use('/api/auth', createAuthRouter({
     samlEnabled: config.saml.enabled,
     samlStrategy: samlStrategy ?? undefined,

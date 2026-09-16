@@ -117,6 +117,75 @@ describe('POST /api/auth/callback', () => {
   });
 });
 
+describe('SAML configured but the strategy could not be built', () => {
+  /**
+   * The third production symptom: an unusable `SAML_CERT` made
+   * `createSamlStrategy` return null, so passport never received the strategy —
+   * but the SSO routes were mounted anyway and answered
+   * `Unknown authentication strategy "saml"`, which says nothing about the
+   * cause. These tests pin the degraded behaviour.
+   */
+  function createBrokenApp(): express.Express {
+    const app = express();
+    app.use(express.json());
+    app.use(session({ secret: 's', name: 'guestportal.sid', resave: false, saveUninitialized: false }));
+    app.use(passport.initialize());
+    app.use(passport.session());
+    // samlEnabled: SAML *is* configured — but no strategy was built.
+    app.use('/api/auth', createAuthRouter({ samlEnabled: true, samlStrategy: undefined }));
+    return app;
+  }
+
+  it('answers /login with 501 rather than "Unknown authentication strategy"', async () => {
+    const res = await request(createBrokenApp()).get('/api/auth/login');
+
+    expect(res.status).toBe(501);
+    expect(JSON.stringify(res.body)).not.toContain('Unknown authentication strategy');
+    expect(res.body.error).toContain('SAML strategy could not be initialised');
+  });
+
+  it('points at the startup logs and at the emergency login', async () => {
+    const res = await request(createBrokenApp()).get('/api/auth/login');
+
+    expect(res.body.error).toContain('startup logs');
+    expect(res.body.error).toContain('SAML_CERT');
+    expect(res.body.error).toContain('emergency login');
+  });
+
+  it('answers /callback and /slo/callback with 501 too', async () => {
+    const app = createBrokenApp();
+    for (const path of ['/api/auth/callback', '/api/auth/slo/callback']) {
+      const res = await request(app).post(path).type('form').send({ SAMLResponse: 'x' });
+      expect(res.status).toBe(501);
+    }
+  });
+
+  it('answers /me with 401, not 404, so the SSO screen stays visible', async () => {
+    // A 404 means "SSO is not configured" to the frontend, which would then
+    // skip the sign-in screen — and with it the emergency-login link.
+    const res = await request(createBrokenApp()).get('/api/auth/me');
+    expect(res.status).toBe(401);
+  });
+
+  it('answers /me with 404 when SAML is genuinely not configured', async () => {
+    const app = express();
+    app.use(express.json());
+    app.use(session({ secret: 's', name: 'guestportal.sid', resave: false, saveUninitialized: false }));
+    app.use(passport.initialize());
+    app.use(passport.session());
+    app.use('/api/auth', createAuthRouter({ samlEnabled: false }));
+
+    const res = await request(app).get('/api/auth/me');
+    expect(res.status).toBe(404);
+  });
+
+  it('keeps the break-glass status endpoint reachable', async () => {
+    // The emergency path must survive exactly this situation.
+    const res = await request(createBrokenApp()).get('/api/auth/breakglass/status');
+    expect(res.status).toBe(200);
+  });
+});
+
 describe('POST /api/auth/slo/callback', () => {
   it('parses a urlencoded body too', async () => {
     const res = await request(createApp())
