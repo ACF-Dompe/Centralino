@@ -24,6 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+#### WLC connection failures no longer all claim the host is unreachable
+- Every request error — network **and** TLS — was reported as `Host irraggiungibile: <message>`. When the Catalyst 9800 presented its self-signed certificate and `WLC_TLS_REJECT_UNAUTHORIZED=true` refused it, the operator was told the host was unreachable and went looking at egress, routing and the container network. The controller had answered fine; only verification had failed.
+- `loginWebUi` now classifies the error and says what to do: a refused certificate names `WLC_TLS_REJECT_UNAUTHORIZED` and states explicitly that the controller responded; an expired certificate, a refused connection (port closed), an unresolvable hostname and a genuine timeout each get their own message. Only real unreachability is called unreachable. Classification prefers `err.code` and falls back to matching the message, since a wrapped socket error sometimes carries the token only in the text. The error `code` is now in the log line too.
+- 6 tests in `wlcWebui.test.ts`, including the exact production case.
+
 #### WLC SSH host key verification is now an explicit, off-by-default flag
 - Requested by the operator, and recorded as accepted deviation **D2** in `COMPLIANCE.md`. Previously the SSH client refused to connect in production unless `WLC_SSH_HOST_KEY` was set (fail-closed). That could never work here: the five controllers have five different host keys while `WLC_SSH_HOST_KEY` is a single value compared against all of them, so verification would let at most one sede connect and fail the other four closed.
 - `WLC_SSH_VERIFY_HOST_KEY` (default `false`) now gates it. With verification **on**, a missing expected key still fails closed — asking for verification and then connecting anyway would be worse than not asking.

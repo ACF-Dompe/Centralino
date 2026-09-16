@@ -137,12 +137,62 @@ describe('loginWebUi', () => {
     expect(result).toMatchObject({ success: false, status: 500 });
   });
 
-  it('returns isUnreachable on connection error', async () => {
+  it('reports a refused connection as such, not as unreachable', async () => {
+    // The old message called every request error "Host irraggiungibile",
+    // which sent operators looking at firewalls and routing even when the
+    // controller had answered. Each failure mode now names itself.
     mockError = new Error('ECONNREFUSED');
     const loginWebUi = await getLoginWebUi();
     const result = await loginWebUi(defaultInput);
     expect(result).toMatchObject({ success: false, isUnreachable: true });
+    expect((result as any).error).toContain('Connessione rifiutata');
+  });
+
+  it('reports a genuinely unreachable host as unreachable', async () => {
+    mockError = Object.assign(new Error('connect ETIMEDOUT'), { code: 'ETIMEDOUT' });
+    const loginWebUi = await getLoginWebUi();
+    const result = await loginWebUi(defaultInput);
     expect((result as any).error).toContain('irraggiungibile');
+    expect((result as any).error).toContain('egress');
+  });
+
+  it('reports a rejected self-signed certificate as a TLS problem', async () => {
+    // The real production case: a Catalyst 9800 presents a self-signed
+    // certificate, so the controller answers and only verification fails.
+    mockError = Object.assign(
+      new Error('self-signed certificate in certificate chain'),
+      { code: 'SELF_SIGNED_CERT_IN_CHAIN' },
+    );
+    const loginWebUi = await getLoginWebUi();
+    const result = await loginWebUi(defaultInput);
+
+    const error = (result as any).error as string;
+    expect(error).toContain('Certificato TLS');
+    expect(error).toContain('Il controller risponde');
+    expect(error).toContain('WLC_TLS_REJECT_UNAUTHORIZED');
+    // Must not blame the network.
+    expect(error).not.toContain('irraggiungibile');
+  });
+
+  it('classifies a TLS error even when only the message carries the code', async () => {
+    mockError = new Error('SELF_SIGNED_CERT_IN_CHAIN');
+    const loginWebUi = await getLoginWebUi();
+    const result = await loginWebUi(defaultInput);
+    expect((result as any).error).toContain('Certificato TLS');
+  });
+
+  it('reports an expired certificate distinctly', async () => {
+    mockError = Object.assign(new Error('certificate has expired'), { code: 'CERT_HAS_EXPIRED' });
+    const loginWebUi = await getLoginWebUi();
+    const result = await loginWebUi(defaultInput);
+    expect((result as any).error).toContain('scaduto');
+  });
+
+  it('reports an unresolvable hostname distinctly', async () => {
+    mockError = Object.assign(new Error('getaddrinfo ENOTFOUND wlc'), { code: 'ENOTFOUND' });
+    const loginWebUi = await getLoginWebUi();
+    const result = await loginWebUi(defaultInput);
+    expect((result as any).error).toContain('non risolto');
   });
 
   it('returns isUnreachable on timeout', async () => {
