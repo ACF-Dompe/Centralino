@@ -10,8 +10,10 @@
  * and the IdP sends a LogoutResponse to /api/auth/slo/callback.
  *
  * Hardening (guidelines §5.5):
- *   - wantAssertionsSigned: true — reject unsigned assertions
- *   - wantAuthnResponseSigned: true — reject unsigned authn responses
+ *   - wantAssertionsSigned: true — reject unsigned assertions (unconditional)
+ *   - wantAuthnResponseSigned: true — reject unsigned authn responses. Needs
+ *     Entra's Signing Option set to "Sign SAML response and assertion";
+ *     overridable with SAML_WANT_AUTHN_RESPONSE_SIGNED when it cannot be.
  *   - validateInResponseTo: true — prevent SAML response replay
  *   - audience: set to SAML_ISSUER — verify intended audience
  *   - disableRequestedAuthnContext: true — do not dictate the auth method
@@ -122,6 +124,11 @@ export function createSamlStrategy(params: {
    * See the `disableRequestedAuthnContext` note in the strategy config below.
    */
   disableRequestedAuthnContext?: boolean;
+  /**
+   * Require the `<Response>` element to be signed too. Defaults to `true`.
+   * See the note on `wantAuthnResponseSigned` in the strategy config below.
+   */
+  wantAuthnResponseSigned?: boolean;
 }): SamlStrategy | null {
   if (!params.entryPoint || !params.issuer) {
     return null;
@@ -195,7 +202,16 @@ export function createSamlStrategy(params: {
       // Reject unsigned SAML assertions — IdP must sign every assertion.
       wantAssertionsSigned: true,
       // Reject unsigned AuthnResponse messages.
-      wantAuthnResponseSigned: true,
+      //
+      // Entra ID's default Signing Option is 'Sign SAML assertion', which
+      // signs the <Assertion> but NOT the enclosing <Response>. Against that
+      // default this requirement rejects every login with
+      // "Invalid document signature". The right fix is on the IdP — set the
+      // Enterprise Application to 'Sign SAML response and assertion' — so the
+      // default here stays strict; the override exists for the case where that
+      // setting cannot be changed. The identity claims remain protected either
+      // way, because wantAssertionsSigned below is unconditional.
+      wantAuthnResponseSigned: params.wantAuthnResponseSigned ?? true,
       // Prevent SAML response replay attacks by validating InResponseTo.
       // 'ifPresent' validates InResponseTo when the IdP includes it (replay
       // protection for SP-initiated SSO) but does NOT reject unsolicited

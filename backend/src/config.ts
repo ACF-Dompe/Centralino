@@ -108,6 +108,20 @@ export const config = {
      */
     disableRequestedAuthnContext:
       readString('SAML_DISABLE_REQUESTED_AUTHN_CONTEXT', 'true').toLowerCase() === 'true',
+    /**
+     * Require the <Response> element itself to be signed, not only the
+     * <Assertion> inside it. Default: true.
+     *
+     * Entra IDs default "Signing Option" is **Sign SAML assertion**, which
+     * signs the assertion only — and then this requirement makes every login
+     * fail with "Invalid document signature". The preferred fix is on the IdP:
+     * set the Enterprise Application to "Sign SAML response and assertion",
+     * which keeps signature coverage over the whole document. Set this to
+     * false only when that setting cannot be changed; the identity claims stay
+     * protected either way, because wantAssertionsSigned remains true.
+     */
+    wantAuthnResponseSigned:
+      readString('SAML_WANT_AUTHN_RESPONSE_SIGNED', 'true').toLowerCase() === 'true',
     /** IdP Single Logout endpoint (defaults to entryPoint if not set). */
     logoutUrl: readString('SAML_LOGOUT_URL', ''),
     /**

@@ -154,4 +154,28 @@ describe('createSamlStrategy', () => {
     expect(options?.wantAuthnResponseSigned).toBe(true);
     expect(options?.audience).toBe(BASE_PARAMS.issuer);
   });
+
+  describe('wantAuthnResponseSigned', () => {
+    /**
+     * Entra ID signs the <Assertion> but not the enclosing <Response> unless
+     * the Enterprise Application Signing Option is changed. Against the
+     * default, requiring a signed response rejects every login with
+     * 'Invalid document signature'. The strict default stays; the override
+     * exists for tenants where that setting cannot be changed.
+     */
+    it('requires a signed response by default', () => {
+      expect(createSamlStrategy(BASE_PARAMS)?._saml?.options.wantAuthnResponseSigned).toBe(true);
+    });
+
+    it('can be relaxed without touching assertion signing', () => {
+      const options = createSamlStrategy({
+        ...BASE_PARAMS,
+        wantAuthnResponseSigned: false,
+      })?._saml?.options;
+
+      expect(options?.wantAuthnResponseSigned).toBe(false);
+      // The identity claims must stay protected either way.
+      expect(options?.wantAssertionsSigned).toBe(true);
+    });
+  });
 });

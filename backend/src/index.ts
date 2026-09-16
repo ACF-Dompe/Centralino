@@ -92,6 +92,7 @@ async function main(): Promise<void> {
     logoutUrl: config.saml.logoutUrl || undefined,
     logoutCallbackUrl: config.saml.logoutCallbackUrl || undefined,
     disableRequestedAuthnContext: config.saml.disableRequestedAuthnContext,
+    wantAuthnResponseSigned: config.saml.wantAuthnResponseSigned,
   });
 
   if (samlStrategy) {
