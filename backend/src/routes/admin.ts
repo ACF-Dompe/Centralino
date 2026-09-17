@@ -66,6 +66,7 @@ function toUserDto(u: AppUserRecord) {
     lastLoginAt: u.lastLoginAt?.toISOString() ?? null,
     profiledAt: u.profiledAt?.toISOString() ?? null,
     profiledBy: u.profiledBy,
+    autoAdmin: u.autoAdmin,
   };
 }
 
@@ -124,6 +125,19 @@ export function createAdminRouter(): Router {
 
     const role = body.role as Role | undefined;
     const status = body.status as UserStatus | undefined;
+
+    // A platform administrator by naming convention cannot be re-profiled: the
+    // rule is reapplied on every login and at every authorization lookup, so
+    // accepting the change would only be a lie that lasts until the next
+    // request. Granting sites is still allowed — it just has no effect while the
+    // account reaches every site anyway.
+    if (target.autoAdmin && (role !== undefined || status !== undefined)) {
+      return res.status(409).json({
+        success: false,
+        error: 'auto_admin_immutable',
+        message: 'Questo account è amministratore per convenzione sull\'indirizzo: ruolo e stato non sono modificabili.',
+      });
+    }
 
     // Changing your own sites is fine; changing your own role or status is how
     // an admin accidentally locks themselves out.

@@ -26,6 +26,8 @@ vi.mock('../../i18n', () => ({
         'admin.users.save': 'Salva',
         'admin.users.pendingBadge': 'Da profilare',
         'admin.users.you': 'Tu',
+        'admin.users.autoAdmin': 'Admin automatico',
+        'admin.users.autoAdminHelp': 'Amministratore per convenzione.',
         'admin.bg.cliOnly': 'Creazione e cambio password solo da CLI.',
         'admin.bg.disable': 'Disabilita',
         'admin.bg.enable': 'Abilita',
@@ -148,6 +150,38 @@ describe('AdminPanel', () => {
     expect(screen.getByTestId('admin-user-role-1')).toBeDisabled();
     expect(screen.getByTestId('admin-user-status-1')).toBeDisabled();
     expect(screen.getByText('Tu')).toBeInTheDocument();
+  });
+
+  /**
+   * A platform administrator by naming convention cannot be re-profiled: the
+   * rule is reapplied on every login, so accepting an edit would be a lie that
+   * lasts one request. The server refuses it too; locking the row here means
+   * the admin finds out before they click.
+   */
+  it('locks role and status for an administrator granted by convention', async () => {
+    mockAdminApi.listUsers.mockResolvedValue({
+      data: [{
+        ...users[0],
+        email: 'admin365-x@dompe.onmicrosoft.com',
+        role: 'admin' as const,
+        status: 'active' as const,
+        autoAdmin: true,
+      }],
+    });
+    render(<AdminPanel currentUserEmail="admin@dompe.com" onClose={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByTestId('admin-user-7')).toBeInTheDocument());
+    expect(screen.getByTestId('admin-user-auto-7')).toBeInTheDocument();
+    expect(screen.getByTestId('admin-user-role-7')).toBeDisabled();
+    expect(screen.getByTestId('admin-user-status-7')).toBeDisabled();
+  });
+
+  it('shows no such badge for an ordinary user', async () => {
+    render(<AdminPanel currentUserEmail="admin@dompe.com" onClose={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByTestId('admin-user-7')).toBeInTheDocument());
+    expect(screen.queryByTestId('admin-user-auto-7')).not.toBeInTheDocument();
+    expect(screen.getByTestId('admin-user-role-7')).not.toBeDisabled();
   });
 
   /** An admin reaches every site, so a per-site list would be misleading. */

@@ -12,6 +12,8 @@
 import { getDb } from '../db/index.js';
 import type { DbClient } from '../db/index.js';
 import type { Role, UserStatus } from '../auth/authorization.js';
+import { isPlatformAdminEmail } from '../auth/authorization.js';
+import { config } from '../config.js';
 import type { SamlUser } from '../auth/saml.js';
 
 export interface AppUserRecord {
@@ -30,6 +32,20 @@ export interface AppUserRecord {
   lastLoginAt: Date | null;
   profiledAt: Date | null;
   profiledBy: string | null;
+  /**
+   * True when the role comes from the mail-address convention rather than from
+   * somebody's decision. Such a row is not editable: a login would reapply the
+   * rule and undo the change.
+   */
+  autoAdmin: boolean;
+}
+
+/** Does the naming convention make this address a platform administrator? */
+export function isAutoAdmin(email: string | null | undefined): boolean {
+  return isPlatformAdminEmail(email, {
+    prefixes: config.rbac.autoAdminPrefixes,
+    domains: config.rbac.autoAdminDomains,
+  });
 }
 
 interface AppUserRow {
@@ -72,6 +88,7 @@ function rowToRecord(r: AppUserRow): AppUserRecord {
     lastLoginAt: toDate(r.last_login_at),
     profiledAt: toDate(r.profiled_at),
     profiledBy: r.profiled_by,
+    autoAdmin: isAutoAdmin(r.email),
   };
 }
 
@@ -116,6 +133,8 @@ export interface ProvisionResult {
   created: boolean;
   role: Role;
   status: UserStatus;
+  /** True when the role was granted by the address convention. */
+  autoAdmin: boolean;
 }
 
 /**
@@ -132,6 +151,13 @@ export interface ProvisionResult {
  *
  * `xmax = 0` is true only for a freshly inserted row, which distinguishes a
  * new user from a returning one without a second query.
+ *
+ * There is exactly one exception to (1), and it is deliberate: an address that
+ * matches the platform-administrator convention is promoted, on every login, by
+ * a separate statement below. Writing it into the directory rather than only
+ * deriving it at request time keeps the admin panel showing the truth and keeps
+ * `countActiveAdmins` counting these accounts — otherwise the last-administrator
+ * guard would believe there were none.
  */
 export async function upsertAppUserFromSaml(
   u: SamlUser,
@@ -186,7 +212,31 @@ export async function upsertAppUserFromSaml(
   );
 
   const row = (res.rows as Array<{ subject: string; role: Role; status: UserStatus; created: boolean }>)[0];
-  return { subject: row.subject, created: Boolean(row.created), role: row.role, status: row.status };
+  let { role, status } = row;
+
+  // The naming convention grants platform administrator. Applied after the
+  // upsert rather than inside it so the general rule — a login never changes a
+  // role — stays visible in one place, with this as its single exception.
+  if (isAutoAdmin(u.email)) {
+    if (role !== 'admin' || status !== 'active') {
+      await db.query(
+        `UPDATE app_users
+            SET role = 'admin', status = 'active', updated_at = NOW()
+          WHERE subject = $1`,
+        [subject],
+      );
+      role = 'admin';
+      status = 'active';
+    }
+  }
+
+  return {
+    subject: row.subject,
+    created: Boolean(row.created),
+    role,
+    status,
+    autoAdmin: isAutoAdmin(u.email),
+  };
 }
 
 export async function getAppUserBySubject(

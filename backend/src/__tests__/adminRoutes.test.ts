@@ -97,6 +97,7 @@ function directoryUser(overrides: Record<string, unknown> = {}) {
     lastLoginAt: null,
     profiledAt: null,
     profiledBy: null,
+    autoAdmin: false,
     ...overrides,
   };
 }
@@ -271,6 +272,40 @@ describe('users', () => {
     mockAppUsers.getAppUserById.mockResolvedValue(null);
     const res = await request(app).patch('/api/admin/users/404').send({ role: 'operator' });
     expect(res.status).toBe(404);
+  });
+
+  /**
+   * An administrator by naming convention cannot be re-profiled: the rule is
+   * reapplied at every login and at every authorization lookup, so accepting
+   * the change would be a lie that lasts one request.
+   */
+  it('refuses to change the role of an administrator granted by convention', async () => {
+    mockAppUsers.getAppUserById.mockResolvedValue(
+      directoryUser({ email: 'admin365-x@dompe.onmicrosoft.com', role: 'admin', status: 'active', autoAdmin: true }),
+    );
+
+    const res = await request(app).patch('/api/admin/users/7').send({ role: 'operator' });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('auto_admin_immutable');
+    expect(mockAppUsers.updateAppUserProfile).not.toHaveBeenCalled();
+  });
+
+  it('still lets an admin grant them sites', async () => {
+    mockAppUsers.getAppUserById.mockResolvedValue(
+      directoryUser({ email: 'admin365-x@dompe.onmicrosoft.com', role: 'admin', status: 'active', autoAdmin: true }),
+    );
+
+    const res = await request(app).patch('/api/admin/users/7').send({ sedeIds: [1] });
+
+    expect(res.status).toBe(200);
+    expect(mockAppUsers.replaceAppUserSedi).toHaveBeenCalledWith(7, [1]);
+  });
+
+  it('surfaces the flag so the panel can lock the row', async () => {
+    mockAppUsers.listAppUsers.mockResolvedValue([directoryUser({ autoAdmin: true })]);
+    const res = await request(app).get('/api/admin/users');
+    expect(res.body.data[0].autoAdmin).toBe(true);
   });
 });
 

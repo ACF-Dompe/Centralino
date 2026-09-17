@@ -15,13 +15,19 @@ import type { Request, Response } from 'express';
 
 const mockConfig = vi.hoisted(() => ({
   config: {
-    rbac: { cacheTtlSeconds: 15, enforcement: 'enforce' as 'enforce' | 'log-only' },
+    rbac: {
+      cacheTtlSeconds: 15,
+      enforcement: 'enforce' as 'enforce' | 'log-only',
+      autoAdminPrefixes: 'admin365-',
+      autoAdminDomains: 'dompe.onmicrosoft.com',
+    },
   },
 }));
 const mockLog = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }));
 const mockAppUsers = vi.hoisted(() => ({
   getAppUserBySubject: vi.fn(),
   samlSubject: vi.fn(),
+  isAutoAdmin: vi.fn(),
 }));
 const mockBreakGlass = vi.hoisted(() => ({ getBreakGlassAccount: vi.fn() }));
 
@@ -41,6 +47,7 @@ import {
   clearAuthProfileCache,
 } from '../middleware/authorize.js';
 import type { AuthProfile } from '../auth/authorization.js';
+import { isPlatformAdminEmail } from '../auth/authorization.js';
 
 const samlUser = {
   authMethod: 'saml' as const,
@@ -110,6 +117,7 @@ beforeEach(() => {
   mockConfig.config.rbac.cacheTtlSeconds = 15;
   mockConfig.config.rbac.enforcement = 'enforce';
   mockAppUsers.samlSubject.mockImplementation((u: { objectId?: string }) => u.objectId ?? null);
+  mockAppUsers.isAutoAdmin.mockReturnValue(false);
 });
 
 afterEach(() => {
@@ -479,5 +487,118 @@ describe('allowedSedeIds', () => {
 
   it('returns the granted ids', () => {
     expect(allowedSedeIds({ allSedi: false, sedeIds: [2, 4] } as unknown as AuthProfile)).toEqual([2, 4]);
+  });
+});
+
+/**
+ * The platform-administrator convention.
+ *
+ * It grants full privileges from a string in an address, so the tests pin both
+ * halves of the rule: the prefix AND the domain. The domain is what stops an
+ * Entra guest account from qualifying — a B2B invitee's UPN belongs to their own
+ * tenant, so without it an invited `admin365-x@attacker.com` would arrive as an
+ * administrator of this platform.
+ */
+describe('isPlatformAdminEmail', () => {
+  const opts = { prefixes: 'admin365-', domains: 'dompe.onmicrosoft.com' };
+
+  it('accepts the convention', () => {
+    expect(isPlatformAdminEmail('admin365-tommaso@dompe.onmicrosoft.com', opts)).toBe(true);
+    expect(isPlatformAdminEmail('admin365-x@dompe.onmicrosoft.com', opts)).toBe(true);
+  });
+
+  it('is case-insensitive', () => {
+    expect(isPlatformAdminEmail('Admin365-Tommaso@Dompe.OnMicrosoft.Com', opts)).toBe(true);
+  });
+
+  it('tolerates surrounding whitespace', () => {
+    expect(isPlatformAdminEmail('  admin365-x@dompe.onmicrosoft.com  ', opts)).toBe(true);
+  });
+
+  it('refuses the prefix on any other domain', () => {
+    expect(isPlatformAdminEmail('admin365-x@dompe.com', opts)).toBe(false);
+    expect(isPlatformAdminEmail('admin365-x@attacker.com', opts)).toBe(false);
+    // The sharp edge: an Entra guest brings their own tenant's domain.
+    expect(isPlatformAdminEmail('admin365-evil@outlook.com', opts)).toBe(false);
+  });
+
+  it('refuses a different prefix on the right domain', () => {
+    expect(isPlatformAdminEmail('admin-x@dompe.onmicrosoft.com', opts)).toBe(false);
+    expect(isPlatformAdminEmail('tommaso@dompe.onmicrosoft.com', opts)).toBe(false);
+  });
+
+  it('requires the prefix at the start, not anywhere in the address', () => {
+    expect(isPlatformAdminEmail('not-admin365-x@dompe.onmicrosoft.com', opts)).toBe(false);
+    expect(isPlatformAdminEmail('x.admin365-y@dompe.onmicrosoft.com', opts)).toBe(false);
+  });
+
+  /** `admin365-<something>`: a bare prefix is not an account anybody means. */
+  it('requires something after the prefix', () => {
+    expect(isPlatformAdminEmail('admin365-@dompe.onmicrosoft.com', opts)).toBe(false);
+  });
+
+  it('refuses a subdomain of the allowed domain', () => {
+    expect(isPlatformAdminEmail('admin365-x@evil.dompe.onmicrosoft.com', opts)).toBe(false);
+  });
+
+  /**
+   * Fail closed, and deliberately the opposite of how the other list-shaped
+   * settings behave: an empty domain list turns the rule off rather than
+   * opening it to every domain.
+   */
+  it('is disabled when no domain is configured', () => {
+    expect(isPlatformAdminEmail('admin365-x@dompe.onmicrosoft.com', { prefixes: 'admin365-', domains: '' })).toBe(false);
+  });
+
+  it('is disabled when no prefix is configured', () => {
+    expect(isPlatformAdminEmail('admin365-x@dompe.onmicrosoft.com', { prefixes: '', domains: 'dompe.onmicrosoft.com' })).toBe(false);
+  });
+
+  it('handles several prefixes and domains', () => {
+    const many = { prefixes: 'admin365-, svc-', domains: 'dompe.onmicrosoft.com, dompe.com' };
+    expect(isPlatformAdminEmail('svc-deploy@dompe.com', many)).toBe(true);
+    expect(isPlatformAdminEmail('admin365-x@dompe.com', many)).toBe(true);
+    expect(isPlatformAdminEmail('other@dompe.com', many)).toBe(false);
+  });
+
+  it('refuses anything that is not an address', () => {
+    for (const value of [null, undefined, '', 'not-an-address', '@dompe.onmicrosoft.com', 'admin365-x@']) {
+      expect(isPlatformAdminEmail(value, opts)).toBe(false);
+    }
+  });
+});
+
+describe('resolveAuthProfile with the platform-administrator convention', () => {
+  /**
+   * The rule is enforced here as well as at provisioning time, so a row edited
+   * straight in the database — or an accidental demotion — cannot lock a
+   * platform administrator out of the panel.
+   */
+  it('overrides a directory row that says otherwise', async () => {
+    mockAppUsers.isAutoAdmin.mockReturnValue(true);
+    mockAppUsers.getAppUserBySubject.mockResolvedValue(
+      directoryRow({ role: 'viewer', status: 'suspended', email: 'admin365-x@dompe.onmicrosoft.com' }),
+    );
+
+    const profile = await resolveAuthProfile(samlUser);
+
+    expect(profile).toMatchObject({ role: 'admin', status: 'active', allSedi: true });
+  });
+
+  it('leaves an ordinary user alone', async () => {
+    mockAppUsers.isAutoAdmin.mockReturnValue(false);
+    mockAppUsers.getAppUserBySubject.mockResolvedValue(directoryRow({ role: 'viewer', status: 'suspended' }));
+
+    const profile = await resolveAuthProfile(samlUser);
+
+    expect(profile).toMatchObject({ role: 'viewer', status: 'suspended' });
+  });
+
+  /** The convention says nothing about accounts that are not in the directory. */
+  it('does not conjure a profile for a user with no directory row', async () => {
+    mockAppUsers.isAutoAdmin.mockReturnValue(true);
+    mockAppUsers.getAppUserBySubject.mockResolvedValue(null);
+
+    expect(await resolveAuthProfile(samlUser)).toBeNull();
   });
 });

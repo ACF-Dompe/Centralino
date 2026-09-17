@@ -61,6 +61,13 @@ export interface AdminUser {
   lastLoginAt: string | null;
   profiledAt: string | null;
   profiledBy: string | null;
+  /**
+   * True when the role comes from the mail-address convention
+   * (`admin365-…@dompe.onmicrosoft.com`) rather than from somebody's decision.
+   * Role and status are not editable for such an account: a login reapplies the
+   * rule, so a change would last until the next request.
+   */
+  autoAdmin?: boolean;
 }
 
 /**

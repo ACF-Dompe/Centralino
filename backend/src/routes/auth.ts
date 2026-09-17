@@ -518,11 +518,16 @@ export function createAuthRouter(opts: AuthRouterOptions): Router {
               created: provisioned.created,
               role: provisioned.role,
               status: provisioned.status,
+              autoAdmin: provisioned.autoAdmin,
               correlationId: req.correlationId,
             },
-            provisioned.created
-              ? 'New SSO user created in pending state — an admin has to profile it before they can work'
-              : 'Existing SSO user, directory entry refreshed',
+            provisioned.autoAdmin
+              // Worth its own line at info: privileges granted by a naming
+              // convention should be visible in the log, not inferred.
+              ? 'SSO user granted platform administrator by the address convention'
+              : provisioned.created
+                ? 'New SSO user created in pending state — an admin has to profile it before they can work'
+                : 'Existing SSO user, directory entry refreshed',
           );
           finishRedirect();
         } catch (err) {

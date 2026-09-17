@@ -181,6 +181,9 @@ function UsersTab({ currentUserEmail }: { currentUserEmail: string }) {
           {users.map((u) => {
             const draft = draftFor(u);
             const isSelf = !!currentUserEmail && u.email?.toLowerCase() === currentUserEmail.toLowerCase();
+            // Role and status are fixed by the address convention: a login
+            // reapplies the rule, so editing them would last one request.
+            const locked = isSelf || u.autoAdmin === true;
             const dirty = JSON.stringify(draft) !== JSON.stringify({ role: u.role, status: u.status, sedeIds: u.sedeIds });
             return (
               <div key={u.id} data-testid={`admin-user-${u.id}`} className="rounded-lg border border-slate-200 p-4">
@@ -198,6 +201,15 @@ function UsersTab({ currentUserEmail }: { currentUserEmail: string }) {
                           {t('admin.users.you')}
                         </span>
                       )}
+                      {u.autoAdmin && (
+                        <span
+                          data-testid={`admin-user-auto-${u.id}`}
+                          className="rounded bg-navy/10 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-navy"
+                          title={t('admin.users.autoAdminHelp')}
+                        >
+                          {t('admin.users.autoAdmin')}
+                        </span>
+                      )}
                     </div>
                     <div className="mt-0.5 font-mono text-xs text-slate-500">{u.email ?? u.subject}</div>
                     <div className="mt-1 text-[11px] text-slate-400">
@@ -213,7 +225,7 @@ function UsersTab({ currentUserEmail }: { currentUserEmail: string }) {
                       data-testid={`admin-user-role-${u.id}`}
                       className="input py-1 text-xs"
                       value={draft.role}
-                      disabled={isSelf}
+                      disabled={locked}
                       onChange={(e) => setDraft(u, { role: e.target.value as Role })}
                     >
                       {ROLES.map((r) => <option key={r} value={r}>{t(`role.${r}`)}</option>)}
@@ -225,7 +237,7 @@ function UsersTab({ currentUserEmail }: { currentUserEmail: string }) {
                       data-testid={`admin-user-status-${u.id}`}
                       className="input py-1 text-xs"
                       value={draft.status}
-                      disabled={isSelf}
+                      disabled={locked}
                       onChange={(e) => setDraft(u, { status: e.target.value as UserStatus })}
                     >
                       {STATUSES.map((s) => <option key={s} value={s}>{t(`userStatus.${s}`)}</option>)}

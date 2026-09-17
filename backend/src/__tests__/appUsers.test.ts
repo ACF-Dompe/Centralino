@@ -156,6 +156,52 @@ describe('upsertAppUserFromSaml', () => {
     expect(db.calls.some((c) => c.sql.includes('UPDATE app_users'))).toBe(false);
   });
 
+  /**
+   * The one deliberate exception to "a login never changes a role": an address
+   * matching the platform-administrator convention is promoted on every login.
+   * It is written to the directory rather than only derived at request time so
+   * the admin panel shows the truth and `countActiveAdmins` counts these
+   * accounts — otherwise the last-administrator guard would believe there were
+   * none.
+   */
+  describe('platform-administrator convention', () => {
+    const autoAdmin = user({ email: 'admin365-tommaso@dompe.onmicrosoft.com' });
+
+    it('promotes a matching address', async () => {
+      const db = fakeDb([{ subject: 'oid-123', role: 'viewer', status: 'pending', created: true }]);
+      const result = await upsertAppUserFromSaml(autoAdmin, db);
+
+      const promote = db.calls.find((c) => c.sql.includes("SET role = 'admin'"));
+      expect(promote).toBeDefined();
+      expect(promote!.sql).toContain("status = 'active'");
+      expect(result).toMatchObject({ role: 'admin', status: 'active', autoAdmin: true });
+    });
+
+    it('does not promote an ordinary address', async () => {
+      const db = fakeDb([{ subject: 'oid-123', role: 'viewer', status: 'pending', created: true }]);
+      const result = await upsertAppUserFromSaml(user(), db);
+
+      expect(db.calls.some((c) => c.sql.includes("SET role = 'admin'"))).toBe(false);
+      expect(result).toMatchObject({ role: 'viewer', status: 'pending', autoAdmin: false });
+    });
+
+    it('does not promote the prefix on another domain', async () => {
+      const db = fakeDb([{ subject: 'oid-123', role: 'viewer', status: 'pending', created: true }]);
+      const result = await upsertAppUserFromSaml(user({ email: 'admin365-x@attacker.com' }), db);
+
+      expect(db.calls.some((c) => c.sql.includes("SET role = 'admin'"))).toBe(false);
+      expect(result.autoAdmin).toBe(false);
+    });
+
+    /** Nothing to write when the row already agrees. */
+    it('skips the promotion when the row is already admin and active', async () => {
+      const db = fakeDb([{ subject: 'oid-123', role: 'admin', status: 'active', created: false }]);
+      await upsertAppUserFromSaml(autoAdmin, db);
+
+      expect(db.calls.some((c) => c.sql.includes("SET role = 'admin'"))).toBe(false);
+    });
+  });
+
   it('refuses an assertion that identifies nobody', async () => {
     const db = fakeDb(returned);
     await expect(
@@ -187,6 +233,17 @@ describe('reads', () => {
   it('maps a row to the domain shape', async () => {
     const record = await getAppUserBySubject('oid-123', fakeDb([row]));
     expect(record).toMatchObject({ id: 7, role: 'operator', status: 'active', sedeIds: [1, 3] });
+  });
+
+  it('flags a row whose address matches the administrator convention', async () => {
+    const plain = await getAppUserBySubject('oid-123', fakeDb([row]));
+    expect(plain?.autoAdmin).toBe(false);
+
+    const auto = await getAppUserBySubject(
+      'oid-123',
+      fakeDb([{ ...row, email: 'admin365-x@dompe.onmicrosoft.com' }]),
+    );
+    expect(auto?.autoAdmin).toBe(true);
   });
 
   it('returns an empty grant list rather than null', async () => {

@@ -218,6 +218,27 @@ export const config = {
     enforcement: readString('RBAC_ENFORCEMENT', 'enforce').toLowerCase() === 'log-only'
       ? ('log-only' as const)
       : ('enforce' as const),
+
+    /**
+     * Platform administrators named by convention: `admin365-<anything>` on the
+     * tenant's own Microsoft domain. They hold full privileges without anybody
+     * profiling them, which is what lets an administrator reach a fresh
+     * deployment without going through the break-glass account.
+     *
+     * SECURITY: this ties full privileges to a string in an address, so the
+     * domain restriction is doing real work rather than being belt-and-braces.
+     * Without it an Entra guest (B2B) account would match — their UPN belongs to
+     * another tenant, so an invited `admin365-x@attacker.com` would arrive as a
+     * platform administrator. Pinning the domain to `dompe.onmicrosoft.com`
+     * confines the rule to addresses only the tenant itself can create.
+     *
+     * Both lists are comma-separated and matched case-insensitively. An empty
+     * domain list disables the rule outright rather than opening it to every
+     * domain: this is the one place where a blank value must not mean "no
+     * restriction".
+     */
+    autoAdminPrefixes: readString('RBAC_AUTO_ADMIN_PREFIXES', 'admin365-'),
+    autoAdminDomains: readString('RBAC_AUTO_ADMIN_DOMAINS', 'dompe.onmicrosoft.com'),
   },
 
   /**

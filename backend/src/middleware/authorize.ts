@@ -21,7 +21,7 @@ import {
   type AuthProfile,
   type Role,
 } from '../auth/authorization.js';
-import { getAppUserBySubject, samlSubject } from '../repositories/appUsers.js';
+import { getAppUserBySubject, samlSubject, isAutoAdmin } from '../repositories/appUsers.js';
 import { getBreakGlassAccount } from '../repositories/breakglass.js';
 
 interface CacheEntry {
@@ -80,14 +80,22 @@ export async function resolveAuthProfile(user: AppUser): Promise<AuthProfile | n
   if (isSamlUser(user)) {
     const record = await getAppUserBySubject(key);
     if (record) {
+      // The address convention wins over whatever the row says. Provisioning
+      // already wrote it, so the two normally agree; enforcing it here as well
+      // means an accidental demotion — or a row edited directly in the
+      // database — cannot lock a platform administrator out of the panel.
+      const auto = isAutoAdmin(record.email ?? user.email);
+      const role = auto ? 'admin' : record.role;
+      const status = auto ? 'active' : record.status;
+
       profile = {
         subject: record.subject,
         userId: record.id,
         source: 'app_user',
-        role: record.role,
-        status: record.status,
+        role,
+        status,
         sedeIds: record.sedeIds,
-        allSedi: record.role === 'admin',
+        allSedi: role === 'admin',
         displayName: record.displayName || user.displayName,
         email: record.email ?? user.email,
       };

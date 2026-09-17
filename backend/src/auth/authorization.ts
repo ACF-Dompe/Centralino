@@ -27,6 +27,55 @@ export function isUserStatus(value: unknown): value is UserStatus {
 }
 
 /**
+ * Does this mail address make its owner a platform administrator by itself?
+ *
+ * The convention is `admin365-<anything>@dompe.onmicrosoft.com`: the prefix and
+ * the domain are fixed, whatever sits between them is not. Such accounts hold
+ * full privileges without anybody profiling them, which is what lets an
+ * administrator reach a fresh deployment without the break-glass account.
+ *
+ * Two deliberate strictnesses, because this function grants administrator:
+ *
+ *   - The domain list is **required**. An empty one disables the rule instead of
+ *     matching every domain, which is the opposite of how the other list-shaped
+ *     settings in this file behave — and the right way round here, since the
+ *     domain is what stops an Entra guest account from qualifying. A B2B
+ *     invitee's UPN belongs to their own tenant, so without this an invited
+ *     `admin365-x@attacker.com` would arrive as a platform administrator.
+ *   - Something has to follow the prefix. A bare `admin365-@...` is not an
+ *     account anybody means to create, so it does not qualify.
+ *
+ * Kept a pure function so both the provisioning path (which writes the role into
+ * the directory, keeping the admin panel honest and `countActiveAdmins`
+ * counting) and the per-request lookup (which enforces it, so an accidental
+ * demotion cannot take effect) share one definition.
+ */
+export function isPlatformAdminEmail(
+  email: string | null | undefined,
+  opts: { prefixes: string; domains: string },
+): boolean {
+  const address = (email ?? '').trim().toLowerCase();
+  const at = address.lastIndexOf('@');
+  if (at <= 0 || at === address.length - 1) return false;
+
+  const localPart = address.slice(0, at);
+  const domain = address.slice(at + 1);
+
+  const domains = opts.domains
+    .split(',')
+    .map((d) => d.trim().toLowerCase().replace(/^@/, ''))
+    .filter((d) => d.length > 0);
+  // Fail closed: no configured domain means the rule is off.
+  if (!domains.includes(domain)) return false;
+
+  return opts.prefixes
+    .split(',')
+    .map((p) => p.trim().toLowerCase())
+    .filter((p) => p.length > 0)
+    .some((p) => localPart.startsWith(p) && localPart.length > p.length);
+}
+
+/**
  * Authorization resolved for a single request.
  *
  * `allSedi` exists so a break-glass session does not depend on rows in

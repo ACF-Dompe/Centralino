@@ -432,6 +432,20 @@ Authorization is resolved per request and is **not** stored in the session, so a
 change takes effect within `RBAC_CACHE_TTL_SECONDS` (15s by default) rather than
 at the user's next sign-in.
 
+### Administrators by convention
+
+An address of the form `admin365-<anything>@dompe.onmicrosoft.com` is a platform
+administrator without anybody profiling it. The role is written into the
+directory on every login *and* enforced at every authorization lookup, so it
+cannot be edited away — the admin panel shows such a row with an "Admin
+automatico" badge and its role and status locked.
+
+Both halves of the rule are required, and the domain is not decoration: it is
+what keeps an Entra guest (B2B) account from qualifying, since a guest's UPN
+belongs to their own tenant. Configured with `RBAC_AUTO_ADMIN_PREFIXES` and
+`RBAC_AUTO_ADMIN_DOMAINS`; an empty domain list disables the rule rather than
+widening it.
+
 Bootstrapping a fresh deployment: the migration creates `bk.guestportal` when
 `BREAKGLASS_SEED_PASSWORD` is set, and that account can profile the first
 administrators. Without exposing the emergency login to a network, the same can
