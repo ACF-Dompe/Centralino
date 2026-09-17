@@ -47,11 +47,12 @@ import {
   clearAuthProfileCache,
 } from '../middleware/authorize.js';
 import type { AuthProfile } from '../auth/authorization.js';
-import { isPlatformAdminEmail } from '../auth/authorization.js';
+import { isPlatformAdminAddress } from '../auth/authorization.js';
 
 const samlUser = {
   authMethod: 'saml' as const,
   nameID: 'mario.rossi@dompe.com',
+  upn: 'mario.rossi@dompe.com',
   email: 'mario.rossi@dompe.com',
   displayName: 'Mario Rossi',
   givenName: 'Mario',
@@ -499,46 +500,46 @@ describe('allowedSedeIds', () => {
  * tenant, so without it an invited `admin365-x@attacker.com` would arrive as an
  * administrator of this platform.
  */
-describe('isPlatformAdminEmail', () => {
+describe('isPlatformAdminAddress', () => {
   const opts = { prefixes: 'admin365-', domains: 'dompe.onmicrosoft.com' };
 
   it('accepts the convention', () => {
-    expect(isPlatformAdminEmail('admin365-tommaso@dompe.onmicrosoft.com', opts)).toBe(true);
-    expect(isPlatformAdminEmail('admin365-x@dompe.onmicrosoft.com', opts)).toBe(true);
+    expect(isPlatformAdminAddress('admin365-tommaso@dompe.onmicrosoft.com', opts)).toBe(true);
+    expect(isPlatformAdminAddress('admin365-x@dompe.onmicrosoft.com', opts)).toBe(true);
   });
 
   it('is case-insensitive', () => {
-    expect(isPlatformAdminEmail('Admin365-Tommaso@Dompe.OnMicrosoft.Com', opts)).toBe(true);
+    expect(isPlatformAdminAddress('Admin365-Tommaso@Dompe.OnMicrosoft.Com', opts)).toBe(true);
   });
 
   it('tolerates surrounding whitespace', () => {
-    expect(isPlatformAdminEmail('  admin365-x@dompe.onmicrosoft.com  ', opts)).toBe(true);
+    expect(isPlatformAdminAddress('  admin365-x@dompe.onmicrosoft.com  ', opts)).toBe(true);
   });
 
   it('refuses the prefix on any other domain', () => {
-    expect(isPlatformAdminEmail('admin365-x@dompe.com', opts)).toBe(false);
-    expect(isPlatformAdminEmail('admin365-x@attacker.com', opts)).toBe(false);
+    expect(isPlatformAdminAddress('admin365-x@dompe.com', opts)).toBe(false);
+    expect(isPlatformAdminAddress('admin365-x@attacker.com', opts)).toBe(false);
     // The sharp edge: an Entra guest brings their own tenant's domain.
-    expect(isPlatformAdminEmail('admin365-evil@outlook.com', opts)).toBe(false);
+    expect(isPlatformAdminAddress('admin365-evil@outlook.com', opts)).toBe(false);
   });
 
   it('refuses a different prefix on the right domain', () => {
-    expect(isPlatformAdminEmail('admin-x@dompe.onmicrosoft.com', opts)).toBe(false);
-    expect(isPlatformAdminEmail('tommaso@dompe.onmicrosoft.com', opts)).toBe(false);
+    expect(isPlatformAdminAddress('admin-x@dompe.onmicrosoft.com', opts)).toBe(false);
+    expect(isPlatformAdminAddress('tommaso@dompe.onmicrosoft.com', opts)).toBe(false);
   });
 
   it('requires the prefix at the start, not anywhere in the address', () => {
-    expect(isPlatformAdminEmail('not-admin365-x@dompe.onmicrosoft.com', opts)).toBe(false);
-    expect(isPlatformAdminEmail('x.admin365-y@dompe.onmicrosoft.com', opts)).toBe(false);
+    expect(isPlatformAdminAddress('not-admin365-x@dompe.onmicrosoft.com', opts)).toBe(false);
+    expect(isPlatformAdminAddress('x.admin365-y@dompe.onmicrosoft.com', opts)).toBe(false);
   });
 
   /** `admin365-<something>`: a bare prefix is not an account anybody means. */
   it('requires something after the prefix', () => {
-    expect(isPlatformAdminEmail('admin365-@dompe.onmicrosoft.com', opts)).toBe(false);
+    expect(isPlatformAdminAddress('admin365-@dompe.onmicrosoft.com', opts)).toBe(false);
   });
 
   it('refuses a subdomain of the allowed domain', () => {
-    expect(isPlatformAdminEmail('admin365-x@evil.dompe.onmicrosoft.com', opts)).toBe(false);
+    expect(isPlatformAdminAddress('admin365-x@evil.dompe.onmicrosoft.com', opts)).toBe(false);
   });
 
   /**
@@ -547,23 +548,23 @@ describe('isPlatformAdminEmail', () => {
    * opening it to every domain.
    */
   it('is disabled when no domain is configured', () => {
-    expect(isPlatformAdminEmail('admin365-x@dompe.onmicrosoft.com', { prefixes: 'admin365-', domains: '' })).toBe(false);
+    expect(isPlatformAdminAddress('admin365-x@dompe.onmicrosoft.com', { prefixes: 'admin365-', domains: '' })).toBe(false);
   });
 
   it('is disabled when no prefix is configured', () => {
-    expect(isPlatformAdminEmail('admin365-x@dompe.onmicrosoft.com', { prefixes: '', domains: 'dompe.onmicrosoft.com' })).toBe(false);
+    expect(isPlatformAdminAddress('admin365-x@dompe.onmicrosoft.com', { prefixes: '', domains: 'dompe.onmicrosoft.com' })).toBe(false);
   });
 
   it('handles several prefixes and domains', () => {
     const many = { prefixes: 'admin365-, svc-', domains: 'dompe.onmicrosoft.com, dompe.com' };
-    expect(isPlatformAdminEmail('svc-deploy@dompe.com', many)).toBe(true);
-    expect(isPlatformAdminEmail('admin365-x@dompe.com', many)).toBe(true);
-    expect(isPlatformAdminEmail('other@dompe.com', many)).toBe(false);
+    expect(isPlatformAdminAddress('svc-deploy@dompe.com', many)).toBe(true);
+    expect(isPlatformAdminAddress('admin365-x@dompe.com', many)).toBe(true);
+    expect(isPlatformAdminAddress('other@dompe.com', many)).toBe(false);
   });
 
   it('refuses anything that is not an address', () => {
     for (const value of [null, undefined, '', 'not-an-address', '@dompe.onmicrosoft.com', 'admin365-x@']) {
-      expect(isPlatformAdminEmail(value, opts)).toBe(false);
+      expect(isPlatformAdminAddress(value, opts)).toBe(false);
     }
   });
 });

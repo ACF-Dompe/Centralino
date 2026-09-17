@@ -27,7 +27,12 @@ export function isUserStatus(value: unknown): value is UserStatus {
 }
 
 /**
- * Does this mail address make its owner a platform administrator by itself?
+ * Does this address make its owner a platform administrator by itself?
+ *
+ * Fed the **UPN**, not the mail address. Administrative accounts routinely have
+ * no mailbox — `admin365-…@dompe.onmicrosoft.com` has none in this tenant — so
+ * a rule keyed on mail could not recognise the very accounts it exists for. The
+ * caller falls back to the mail address only when no claim carried a UPN.
  *
  * The convention is `admin365-<anything>@dompe.onmicrosoft.com`: the prefix and
  * the domain are fixed, whatever sits between them is not. Such accounts hold
@@ -50,16 +55,16 @@ export function isUserStatus(value: unknown): value is UserStatus {
  * counting) and the per-request lookup (which enforces it, so an accidental
  * demotion cannot take effect) share one definition.
  */
-export function isPlatformAdminEmail(
-  email: string | null | undefined,
+export function isPlatformAdminAddress(
+  address: string | null | undefined,
   opts: { prefixes: string; domains: string },
 ): boolean {
-  const address = (email ?? '').trim().toLowerCase();
-  const at = address.lastIndexOf('@');
-  if (at <= 0 || at === address.length - 1) return false;
+  const normalised = (address ?? '').trim().toLowerCase();
+  const at = normalised.lastIndexOf('@');
+  if (at <= 0 || at === normalised.length - 1) return false;
 
-  const localPart = address.slice(0, at);
-  const domain = address.slice(at + 1);
+  const localPart = normalised.slice(0, at);
+  const domain = normalised.slice(at + 1);
 
   const domains = opts.domains
     .split(',')

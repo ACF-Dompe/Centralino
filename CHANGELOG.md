@@ -24,6 +24,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### The register form could create a guest account lasting for ever
 - The free-form minutes box bypassed the one-week cap, which was only applied to the custom end-date branch, and `validateDurationMinutes` was imported by the guest route and never called. The box is gone (presets and an end date cover every case) and the endpoint validates the value it is handed.
 
+### Changed
+
+#### The platform-administrator convention is evaluated on the UPN, not the mail address
+- An administrative account normally has no mailbox. `admin365-bernasconi@dompe.onmicrosoft.com` signed in and landed `pending` like anybody else, because `isAutoAdmin` read the mail claim and that claim was empty — so the rule missed exactly the accounts it exists for, which is reaching a fresh deployment without the break-glass account.
+- `SamlUser` now carries a `upn`, extracted by `extractUpn` from the `upn` claim and, failing that, from the `name` claim when its value is address-shaped (the default Entra mapping, and the case in this tenant) or from an address-shaped NameID. A `name` claim remapped to a display name is skipped rather than mistaken for an address.
+- `isPlatformAdminEmail` is now `isPlatformAdminAddress`, and `isAutoAdmin(upn, email)` prefers the UPN, consulting the mail address only when no claim carried one. When a UPN is present it is authoritative: a mail alias cannot confer administrator on an account whose principal name does not qualify — deliberately stricter than an either-matches rule. The required-domain check, which is what stops a B2B guest, applies to both paths unchanged.
+- **The key is unchanged.** `app_users.subject` stays the immutable Entra objectId; the UPN is a new nullable, non-unique `upn` column. Keying on a UPN would drop role and site grants back to `pending` on a rename or a domain move, and a unique constraint would make provisioning fail closed for whoever inherits a reassigned address.
+- The convention is applied to the stored row rather than only to the current assertion, so a returning user keeps matching if a claim stops being released. The upsert likewise never erases a UPN already recorded.
+- The UPN is surfaced wherever an account is identified: `/api/auth/me`, the `appusers` CLI (`list` and `show`), and the pending-approval page — which asked the user to pass on "the address above" while showing a name, because an account without a mailbox had no address to show.
+- Tests: `samlUpn.test.ts` (9) plus UPN coverage in `appUsers.test.ts`.
+
 ### Added
 
 #### Application user directory with roles and per-site grants

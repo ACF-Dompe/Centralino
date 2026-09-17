@@ -130,7 +130,7 @@ function formatRow(u: AppUserRecord, sedeCodes: Map<number, string>): string {
   return [
     u.status.padEnd(10),
     u.role.padEnd(9),
-    (u.email ?? '-').padEnd(34),
+    (u.upn ?? u.email ?? '-').padEnd(38),
     sites.padEnd(16),
     last,
     u.displayName,
@@ -194,6 +194,7 @@ async function main(): Promise<void> {
         const codes = await sedeCodeMap(client);
         process.stdout.write(
           `subject:       ${user.subject}\n` +
+          `upn:           ${user.upn ?? '-'}\n` +
           `email:         ${user.email ?? '-'}\n` +
           `nome:          ${user.displayName}\n` +
           `objectId:      ${user.entraObjectId ?? '-'}\n` +

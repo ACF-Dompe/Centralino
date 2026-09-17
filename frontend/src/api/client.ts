@@ -64,6 +64,11 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
  */
 export interface SamlUser {
   nameID: string;
+  /**
+   * User principal name — the address an administrator recognises, and the
+   * only one an account without a mailbox has. Empty for break-glass.
+   */
+  upn?: string;
   email: string;
   displayName: string;
   givenName: string;

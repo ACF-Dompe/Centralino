@@ -106,6 +106,19 @@ CREATE TABLE IF NOT EXISTS app_users (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uq_app_users_entra_object_id ON app_users(entra_object_id) WHERE entra_object_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_app_users_email_lower ON app_users(LOWER(email));
+
+-- User principal name. Added after the table because the convention that
+-- grants platform administrator is evaluated on the UPN, not on the mail
+-- address: administrative accounts routinely have no mailbox, so the mail
+-- rule missed exactly the accounts it existed for.
+--
+-- Deliberately NOT unique and NOT the key. The key stays the immutable Entra
+-- objectId (see app_users.subject): a UPN changes on a rename or a domain
+-- move, and keying on it would drop role and site grants back to pending.
+-- A unique constraint would be worse still — reassigning an address to a new
+-- person would make provisioning fail closed for them.
+ALTER TABLE app_users ADD COLUMN IF NOT EXISTS upn VARCHAR(255);
+CREATE INDEX IF NOT EXISTS idx_app_users_upn_lower ON app_users(LOWER(upn));
 CREATE INDEX IF NOT EXISTS idx_app_users_status ON app_users(status);
 
 -- Sites a user may connect to. A join table rather than an int[] column so the

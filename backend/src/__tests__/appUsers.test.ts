@@ -16,6 +16,7 @@ import type { DbClient } from '../db/index.js';
 vi.mock('../db/index.js', () => ({ getDb: vi.fn() }));
 
 import {
+  isAutoAdmin,
   samlSubject,
   upsertAppUserFromSaml,
   getAppUserBySubject,
@@ -46,6 +47,7 @@ function user(overrides: Partial<SamlUser> = {}): SamlUser {
   return {
     authMethod: 'saml',
     nameID: 'mario.rossi@dompe.com',
+    upn: 'mario.rossi@dompe.com',
     email: 'Mario.Rossi@dompe.com',
     displayName: 'Mario Rossi',
     givenName: 'Mario',
@@ -331,5 +333,96 @@ describe('writes', () => {
     const db = fakeDb([{}]);
     expect(await deleteAppUser(7, db)).toBe(true);
     expect(db.calls[0].sql).toContain('DELETE FROM app_users');
+  });
+});
+
+describe('isAutoAdmin — evaluated on the UPN', () => {
+  /**
+   * The convention exists so an administrator can reach a fresh deployment
+   * without the break-glass account. Keyed on mail it could not do that:
+   * `admin365-bernasconi@dompe.onmicrosoft.com` has no mailbox in this tenant,
+   * so it signed in and landed `pending` like anybody else.
+   */
+  it('recognises an administrative account by its UPN', () => {
+    expect(isAutoAdmin('admin365-bernasconi@dompe.onmicrosoft.com', null)).toBe(true);
+  });
+
+  it('still recognises one by mail when no UPN is available', () => {
+    // A tenant that releases no UPN-shaped claim keeps the old behaviour
+    // rather than losing the convention entirely.
+    expect(isAutoAdmin(null, 'admin365-bernasconi@dompe.onmicrosoft.com')).toBe(true);
+    expect(isAutoAdmin('', 'admin365-bernasconi@dompe.onmicrosoft.com')).toBe(true);
+  });
+
+  it('lets the UPN override a matching mail address', () => {
+    // Deliberately stricter than an "either matches" rule: the UPN is the
+    // authoritative identity, so a mail alias cannot confer administrator on
+    // an account whose principal name does not qualify.
+    expect(
+      isAutoAdmin('mario.rossi@dompe.com', 'admin365-x@dompe.onmicrosoft.com'),
+    ).toBe(false);
+  });
+
+  it('refuses an ordinary account', () => {
+    expect(isAutoAdmin('mario.rossi@dompe.com', 'mario.rossi@dompe.com')).toBe(false);
+  });
+
+  it('refuses the right prefix on the wrong domain', () => {
+    // The domain check is what stops a B2B guest: an invitee's UPN belongs to
+    // their own tenant.
+    expect(isAutoAdmin('admin365-attacker@attacker.com', null)).toBe(false);
+  });
+
+  it('refuses a bare prefix with nothing after it', () => {
+    expect(isAutoAdmin('admin365-@dompe.onmicrosoft.com', null)).toBe(false);
+  });
+});
+
+describe('upsertAppUserFromSaml — UPN persistence', () => {
+  it('stores the UPN alongside the immutable key', async () => {
+    const db = fakeDb([{ subject: 'oid-123', upn: 'mario.rossi@dompe.com', email: null, role: 'viewer', status: 'pending', created: true }]);
+    await upsertAppUserFromSaml(user({ upn: 'mario.rossi@dompe.com' }), db);
+
+    const insert = db.calls.find((c) => c.sql.includes('INSERT INTO app_users'));
+    expect(insert?.sql).toContain('upn');
+    expect(insert?.params).toContain('mario.rossi@dompe.com');
+  });
+
+  it('keeps the stored UPN when an assertion arrives without one', async () => {
+    // COALESCE(NULLIF(EXCLUDED.upn, ''), app_users.upn): a claim that stops
+    // being released must not erase what profiling already relies on.
+    const db = fakeDb([{ subject: 'oid-123', upn: 'mario.rossi@dompe.com', email: null, role: 'viewer', status: 'pending', created: false }]);
+    await upsertAppUserFromSaml(user({ upn: '' }), db);
+
+    const insert = db.calls.find((c) => c.sql.includes('INSERT INTO app_users'));
+    expect(insert?.sql).toContain('COALESCE(NULLIF(EXCLUDED.upn');
+  });
+
+  it('applies the convention to the stored row, not only to this assertion', async () => {
+    // The row comes back with an administrative UPN while the assertion
+    // carried none: a returning user must keep matching.
+    const db = fakeDb([{
+      subject: 'oid-123',
+      upn: 'admin365-bernasconi@dompe.onmicrosoft.com',
+      email: null,
+      role: 'viewer',
+      status: 'pending',
+      created: false,
+    }]);
+    const result = await upsertAppUserFromSaml(user({ upn: '', email: '' }), db);
+
+    expect(result.autoAdmin).toBe(true);
+    expect(result.role).toBe('admin');
+    expect(result.status).toBe('active');
+    const promote = db.calls.find((c) => c.sql.includes("SET role = 'admin'"));
+    expect(promote).toBeDefined();
+  });
+
+  it('does not promote an ordinary returning user', async () => {
+    const db = fakeDb([{ subject: 'oid-123', upn: 'mario.rossi@dompe.com', email: null, role: 'viewer', status: 'pending', created: false }]);
+    const result = await upsertAppUserFromSaml(user(), db);
+
+    expect(result.autoAdmin).toBe(false);
+    expect(db.calls.find((c) => c.sql.includes("SET role = 'admin'"))).toBeUndefined();
   });
 });

@@ -25,7 +25,7 @@
 
 ## Testing
 
-- **Backend tests:** Vitest, 25 files. Run: `make test-backend`.
+- **Backend tests:** Vitest, 30 files. Run: `make test-backend`.
 - **Frontend tests:** Vitest + React Testing Library, 11 files. Run: `make test-frontend`.
 - **E2E tests:** Playwright, 22 tests (17 SSO mock + 5 calendar). CI-only.
 - **Coverage:** Aim for >80% on new code. Run `npx vitest run --coverage` per workspace.

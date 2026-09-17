@@ -68,6 +68,22 @@ az extension add --name containerapp --upgrade -y
 - **Reply URL (ACS):** `https://guestportal.dompe.com/api/auth/callback` → `SAML_CALLBACK_URL`
 - **Front-channel logout:** `https://guestportal.dompe.com/api/auth/slo/callback`
 - **Claims:** emailaddress, name, givenname, surname, objectidentifier; NameID = persistent (source `user.userPrincipalName`).
+- **UPN nelle claim (serve alla convenzione amministratori).** La convenzione
+  `RBAC_AUTO_ADMIN_PREFIXES` / `RBAC_AUTO_ADMIN_DOMAINS` (COMPLIANCE §5.14) si valuta sullo
+  **UPN**, non sull'indirizzo di posta: gli account amministrativi non hanno
+  casella (`admin365-…@dompe.onmicrosoft.com` non ce l'ha in questo tenant) e una
+  regola sulla mail li mancava tutti. L'app legge l'UPN, in ordine, da:
+  1. la claim `http://schemas.xmlsoap.org/ws/2005/05/identity/claims/upn`;
+  2. la claim `http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name`, se il
+     valore ha forma di indirizzo — **è il default di Entra** (`user.userprincipalname`)
+     e il caso di questo tenant, quindi di norma non serve aggiungere nulla;
+  3. il `NameID`, se ha forma di indirizzo.
+  Se il tenant ha rimappato `name` su un display name, aggiungi una claim
+  esplicita `upn` (Attributes & Claims → Add new claim, source `user.userprincipalname`),
+  altrimenti nessun account amministrativo verrà riconosciuto e resterà
+  *pending* come tutti gli altri. La chiave della tabella `app_users` resta
+  l'`objectidentifier`: l'UPN è una colonna indicizzata ma non identificante,
+  così un rename dell'utente non crea un secondo profilo.
 - Recupera `SAML_ENTRY_POINT` (SingleSignOnService dalla Federation Metadata) e il **certificato IdP (PEM)** → secret `SAML-CERT`.
 
 > **Nessuna configurazione Entra è richiesta per il metodo di autenticazione.**

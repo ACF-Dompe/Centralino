@@ -44,6 +44,14 @@ export interface SamlUser {
   nameID: string;
   nameIDFormat?: string;
   email: string;
+  /**
+   * User principal name. Empty when no claim carries an address-shaped value.
+   *
+   * This — not `email` — is what identifies a person to an administrator and
+   * what the platform-administrator convention is evaluated against: an
+   * administrative account normally has no mailbox. See `extractUpn`.
+   */
+  upn: string;
   displayName: string;
   givenName: string;
   surname: string;
@@ -65,6 +73,47 @@ export interface SamlUser {
  * Every candidate is a claim we do not control, so each one is trimmed and
  * skipped when empty; `nameID` is the last resort and is always present.
  */
+/** An address is usable as a UPN only if it has a local part and a domain. */
+function isAddressShaped(value: string): boolean {
+  const at = value.lastIndexOf('@');
+  return at > 0 && at < value.length - 1;
+}
+
+/**
+ * The user principal name, which is what identifies a person to an
+ * administrator and what the platform-administrator convention is evaluated
+ * against.
+ *
+ * It is deliberately NOT the mail address. Administrative accounts routinely
+ * have no mailbox — `admin365-…@dompe.onmicrosoft.com` has none in this tenant
+ * — so a convention keyed on mail cannot recognise exactly the accounts it
+ * exists for.
+ *
+ * Three sources, in order of how much they can be trusted to be a UPN:
+ *
+ *   1. the canonical `upn` claim;
+ *   2. the `name` claim, but only when it is address-shaped. Entra maps `name`
+ *      to `user.userprincipalname` by default, which is the case here; a tenant
+ *      that remapped it to a display name yields something without an `@` and
+ *      is skipped rather than mistaken for an address;
+ *   3. the NameID, again only when address-shaped — true with the
+ *      `emailAddress` identifier format, not with `persistent`.
+ */
+export function extractUpn(parts: {
+  upnClaim: string;
+  nameClaim: string;
+  nameID: string;
+}): string {
+  const candidates = [parts.upnClaim, parts.nameClaim, parts.nameID];
+  for (const candidate of candidates) {
+    const value = (candidate ?? '').trim();
+    if (value.length > 0 && isAddressShaped(value)) {
+      return value;
+    }
+  }
+  return '';
+}
+
 export function buildDisplayName(parts: {
   givenName: string;
   surname: string;
@@ -213,6 +262,17 @@ export function createSamlStrategy(params: {
         profile?.[
           'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress'
         ] ?? profile?.email ?? '',
+      upn: extractUpn({
+        upnClaim:
+          profile?.[
+            'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/upn'
+          ] ?? '',
+        nameClaim:
+          profile?.[
+            'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name'
+          ] ?? '',
+        nameID,
+      }),
       displayName: buildDisplayName({
         givenName,
         surname,

@@ -67,10 +67,16 @@ export default function PendingApproval({ user, onLogout }: Props) {
               <User className="h-4 w-4 text-slate-400" />
               <span className="font-medium">{user.displayName || user.nameID}</span>
             </div>
-            {user.email && (
+            {/* The UPN first: it is what an administrator looks an account up
+                by, and an administrative account has no mailbox at all — the
+                page used to ask the user to pass on "the address above" while
+                showing only a name. */}
+            {(user.upn || user.email) && (
               <div className="flex items-center gap-2 text-sm">
                 <Mail className="h-4 w-4 text-slate-400" />
-                <span className="font-mono text-slate-600">{user.email}</span>
+                <span data-testid="pending-account-address" className="font-mono text-slate-600">
+                  {user.upn || user.email}
+                </span>
               </div>
             )}
           </div>

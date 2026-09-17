@@ -102,6 +102,9 @@ const parseSamlBody = express.urlencoded({ extended: false, limit: '1mb' });
 function toProfile(user: AppUser, authz: AuthProfile | null, allSedeIds: number[]) {
   return {
     nameID: user.nameID,
+    // The UPN is what an administrator recognises, and the only address an
+    // account without a mailbox has. Break-glass sessions have none.
+    upn: isSamlUser(user) ? user.upn : '',
     email: user.email,
     displayName: user.displayName,
     givenName: user.givenName,

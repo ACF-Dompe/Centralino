@@ -12,7 +12,7 @@
 import { getDb } from '../db/index.js';
 import type { DbClient } from '../db/index.js';
 import type { Role, UserStatus } from '../auth/authorization.js';
-import { isPlatformAdminEmail } from '../auth/authorization.js';
+import { isPlatformAdminAddress } from '../auth/authorization.js';
 import { config } from '../config.js';
 import type { SamlUser } from '../auth/saml.js';
 
@@ -20,6 +20,8 @@ export interface AppUserRecord {
   id: number;
   subject: string;
   entraObjectId: string | null;
+  /** User principal name. The identifier an administrator recognises. */
+  upn: string | null;
   email: string | null;
   displayName: string;
   givenName: string | null;
@@ -40,18 +42,38 @@ export interface AppUserRecord {
   autoAdmin: boolean;
 }
 
-/** Does the naming convention make this address a platform administrator? */
-export function isAutoAdmin(email: string | null | undefined): boolean {
-  return isPlatformAdminEmail(email, {
+/**
+ * Does the naming convention make this account a platform administrator?
+ *
+ * Evaluated on the **UPN**, because administrative accounts routinely have no
+ * mailbox: `admin365-…@dompe.onmicrosoft.com` has none in this tenant, so a
+ * rule keyed on mail missed exactly the accounts the convention exists for.
+ *
+ * The mail address is still consulted, but only when no UPN is available — a
+ * tenant that releases no UPN-shaped claim would otherwise lose the convention
+ * altogether. That is not a weakening: both paths go through the same
+ * required-domain check, which is what stops a B2B guest from qualifying.
+ */
+export function isAutoAdmin(
+  upn: string | null | undefined,
+  email?: string | null,
+): boolean {
+  const opts = {
     prefixes: config.rbac.autoAdminPrefixes,
     domains: config.rbac.autoAdminDomains,
-  });
+  };
+  const principal = (upn ?? '').trim();
+  if (principal.length > 0) {
+    return isPlatformAdminAddress(principal, opts);
+  }
+  return isPlatformAdminAddress(email, opts);
 }
 
 interface AppUserRow {
   id: string | number;
   subject: string;
   entra_object_id: string | null;
+  upn: string | null;
   email: string | null;
   display_name: string;
   given_name: string | null;
@@ -76,6 +98,7 @@ function rowToRecord(r: AppUserRow): AppUserRecord {
     id: Number(r.id),
     subject: r.subject,
     entraObjectId: r.entra_object_id,
+    upn: r.upn,
     email: r.email,
     displayName: r.display_name,
     givenName: r.given_name,
@@ -88,7 +111,7 @@ function rowToRecord(r: AppUserRow): AppUserRecord {
     lastLoginAt: toDate(r.last_login_at),
     profiledAt: toDate(r.profiled_at),
     profiledBy: r.profiled_by,
-    autoAdmin: isAutoAdmin(r.email),
+    autoAdmin: isAutoAdmin(r.upn, r.email),
   };
 }
 
@@ -99,7 +122,7 @@ async function resolveDb(client?: DbClient): Promise<DbClient> {
 
 /** Columns every read returns, with the granted sites folded in. */
 const SELECT_USER = `
-  SELECT u.id, u.subject, u.entra_object_id, u.email, u.display_name,
+  SELECT u.id, u.subject, u.entra_object_id, u.upn, u.email, u.display_name,
          u.given_name, u.surname, u.role, u.status,
          u.created_at, u.updated_at, u.last_login_at, u.profiled_at, u.profiled_by,
          COALESCE(ARRAY_AGG(s.sede_id) FILTER (WHERE s.sede_id IS NOT NULL), '{}') AS sede_ids
@@ -190,20 +213,22 @@ export async function upsertAppUserFromSaml(
 
   const res = await db.query(
     `INSERT INTO app_users
-       (subject, entra_object_id, email, display_name, given_name, surname, role, status, last_login_at)
-     VALUES ($1, $2, $3, $4, $5, $6, 'viewer', 'pending', NOW())
+       (subject, entra_object_id, upn, email, display_name, given_name, surname, role, status, last_login_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, 'viewer', 'pending', NOW())
      ON CONFLICT (subject) DO UPDATE
-        SET email           = COALESCE(NULLIF(EXCLUDED.email, ''), app_users.email),
+        SET upn             = COALESCE(NULLIF(EXCLUDED.upn, ''), app_users.upn),
+            email           = COALESCE(NULLIF(EXCLUDED.email, ''), app_users.email),
             display_name    = COALESCE(NULLIF(EXCLUDED.display_name, ''), app_users.display_name),
             given_name      = COALESCE(EXCLUDED.given_name, app_users.given_name),
             surname         = COALESCE(EXCLUDED.surname, app_users.surname),
             entra_object_id = COALESCE(app_users.entra_object_id, EXCLUDED.entra_object_id),
             last_login_at   = NOW(),
             updated_at      = NOW()
-     RETURNING subject, role, status, (xmax = 0) AS created`,
+     RETURNING subject, upn, email, role, status, (xmax = 0) AS created`,
     [
       subject,
       objectId,
+      (u.upn ?? '').trim() || null,
       (u.email ?? '').trim() || null,
       (u.displayName ?? '').trim(),
       (u.givenName ?? '').trim() || null,
@@ -211,13 +236,25 @@ export async function upsertAppUserFromSaml(
     ],
   );
 
-  const row = (res.rows as Array<{ subject: string; role: Role; status: UserStatus; created: boolean }>)[0];
+  const row = (res.rows as Array<{
+    subject: string;
+    upn: string | null;
+    email: string | null;
+    role: Role;
+    status: UserStatus;
+    created: boolean;
+  }>)[0];
   let { role, status } = row;
+
+  // Evaluate the convention on what is now stored, not only on this assertion:
+  // a returning user whose UPN arrived on an earlier login must keep matching
+  // even if this particular assertion happened to omit the claim.
+  const autoAdmin = isAutoAdmin(row.upn, row.email);
 
   // The naming convention grants platform administrator. Applied after the
   // upsert rather than inside it so the general rule — a login never changes a
   // role — stays visible in one place, with this as its single exception.
-  if (isAutoAdmin(u.email)) {
+  if (autoAdmin) {
     if (role !== 'admin' || status !== 'active') {
       await db.query(
         `UPDATE app_users
@@ -235,7 +272,7 @@ export async function upsertAppUserFromSaml(
     created: Boolean(row.created),
     role,
     status,
-    autoAdmin: isAutoAdmin(u.email),
+    autoAdmin,
   };
 }
 
@@ -273,7 +310,11 @@ export async function listAppUsers(
   }
   if (filter?.search && filter.search.trim().length > 0) {
     params.push(`%${filter.search.trim().toLowerCase()}%`);
-    where.push(`(LOWER(u.email) LIKE $${params.length} OR LOWER(u.display_name) LIKE $${params.length})`);
+    where.push(
+      `(LOWER(u.upn) LIKE $${params.length}
+         OR LOWER(u.email) LIKE $${params.length}
+         OR LOWER(u.display_name) LIKE $${params.length})`,
+    );
   }
 
   const res = await db.query(
