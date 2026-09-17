@@ -72,62 +72,24 @@ const SEDI: SedeSeed[] = [
 ];
 
 export async function runSeed(client: DbClient): Promise<void> {
-  // --- Sedi + per-sede WLC configs ---
-  const orphan = await client.query(
-    `SELECT id FROM wlc_config WHERE sede_id IS NULL ORDER BY id ASC LIMIT 1`,
-  );
-  const legacyWlcId = orphan.rows.length > 0 ? Number((orphan.rows[0] as { id: number }).id) : null;
-
-  for (let i = 0; i < SEDI.length; i++) {
-    const s = SEDI[i];
+  // --- Sedi, with their WLC parameters ---
+  //
+  // INSERT ONLY. This used to UPDATE name, city and address for every known
+  // site on each run, which was harmless while those values only existed in
+  // source — but they are editable from the admin panel now, so re-applying
+  // them would quietly revert an administrator's change on the next restart.
+  // Correcting master data is an admin-panel job; the seed exists to make a
+  // fresh database usable.
+  for (const s of SEDI) {
     const existing = await client.query(`SELECT id FROM sedi WHERE code = ?`, [s.code]);
+    if (existing.rows.length > 0) continue;
 
-    if (existing.rows.length > 0) {
-      // Update existing sede with corrected data.
-      await client.query(
-        `UPDATE sedi SET name = ?, city = ?, address = ? WHERE code = ?`,
-        [s.name, s.city, s.address, s.code],
-      );
-      continue;
-    }
-
-    // --- Insert new sede ---
-    let wlcId: number;
-    if (i === 0 && legacyWlcId != null) {
-      await client.query(
-        `UPDATE wlc_config SET host = ?, port = 443, ssh_port = ?, username = ?, wlan_ssid = ?, authenticated = ?, sede_id = NULL WHERE id = ?`,
-        [s.wlc.host, s.wlc.sshPort, s.wlc.username, s.wlc.wlanSsid, false, legacyWlcId],
-      );
-      wlcId = legacyWlcId;
-    } else {
-      const wlcRes = await client.query(
-        `INSERT INTO wlc_config (host, port, ssh_port, username, wlan_ssid, authenticated)
-         VALUES (?, 443, ?, ?, ?, ?) RETURNING id`,
-        [s.wlc.host, s.wlc.sshPort, s.wlc.username, s.wlc.wlanSsid, false],
-      );
-      wlcId = Number((wlcRes.rows[0] as { id: number }).id);
-    }
-
-    const sedeRes = await client.query(
-      `INSERT INTO sedi (code, name, city, address, wlc_config_id) VALUES (?, ?, ?, ?, ?) RETURNING id`,
-      [s.code, s.name, s.city, s.address, wlcId],
+    await client.query(
+      `INSERT INTO sedi
+         (code, name, city, address, wlc_host, wlc_port, wlc_ssh_port, wlc_username, wlc_ssid, active)
+       VALUES (?, ?, ?, ?, ?, 443, ?, ?, ?, TRUE)`,
+      [s.code, s.name, s.city, s.address, s.wlc.host, s.wlc.sshPort, s.wlc.username, s.wlc.wlanSsid],
     );
-    const sedeId = Number((sedeRes.rows[0] as { id: number }).id);
-
-    await client.query(`UPDATE wlc_config SET sede_id = ? WHERE id = ?`, [sedeId, wlcId]);
-  }
-
-  // --- Backward-compat: bind orphaned wlc_config rows ---
-  const stillOrphan = await client.query(
-    `SELECT id FROM wlc_config WHERE sede_id IS NULL ORDER BY id ASC LIMIT 1`,
-  );
-  if (stillOrphan.rows.length > 0) {
-    const wlcId = Number((stillOrphan.rows[0] as { id: number }).id);
-    const firstSede = await client.query(`SELECT id FROM sedi ORDER BY id ASC LIMIT 1`);
-    if (firstSede.rows.length > 0) {
-      const firstSedeId = Number((firstSede.rows[0] as { id: number }).id);
-      await client.query(`UPDATE wlc_config SET sede_id = ? WHERE id = ?`, [firstSedeId, wlcId]);
-    }
   }
 
   // Email/SMTP config seed removed (§3): mail is Graph-only, sender is

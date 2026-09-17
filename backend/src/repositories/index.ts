@@ -3,7 +3,7 @@
  */
 import { getDb } from '../db/index.js';
 import { wlcPasswordForSede } from '../config.js';
-import type { Guest, WlcConfig, SmsConfig, SyncLog, GuestStatus, Sede } from '../types.js';
+import type { Guest, WlcConfig, SmsConfig, SyncLog, GuestStatus, Sede, AdminSede } from '../types.js';
 
 interface GuestRow {
   id: string;
@@ -144,7 +144,17 @@ export async function deleteGuest(id: string): Promise<boolean> {
   return res.rowCount > 0;
 }
 
-/* --------------------------- Sedi --------------------------- */
+/* --------------------------- Sedi (with their WLC) --------------------------- */
+
+/*
+ * The WLC parameters used to sit in a separate 1:1 `wlc_config` table linked
+ * from both sides, so the two links could disagree — which is why the old reads
+ * carried an OR-fallback and the uniqueness of the binding was only
+ * "best-effort". They now live on `sedi`, one row per site.
+ *
+ * The password is still never here: it comes from Key Vault as
+ * WLC_PASSWORD_<CODE> and is resolved per request.
+ */
 
 interface SedeRow {
   id: number;
@@ -154,6 +164,17 @@ interface SedeRow {
   address: string | null;
   wlc_config_id: number | null;
   created_at: string;
+  active: boolean;
+  wlc_host: string | null;
+  wlc_port: number;
+  wlc_ssh_port: number;
+  wlc_username: string;
+  wlc_ssid: string;
+  wlc_last_check_at: string | null;
+  wlc_last_check_ok: boolean | null;
+  wlc_last_check_error: string | null;
+  updated_at: string | null;
+  updated_by: string | null;
 }
 
 function rowToSede(r: SedeRow): Sede {
@@ -162,16 +183,82 @@ function rowToSede(r: SedeRow): Sede {
     code: String(r.code),
     name: String(r.name),
     city: String(r.city),
-    address: (r.address as string | null) ?? null,
+    address: r.address ?? null,
     wlcConfigId: r.wlc_config_id != null ? Number(r.wlc_config_id) : null,
     createdAt: String(r.created_at),
+    active: Boolean(r.active),
+    wlcHost: r.wlc_host ?? null,
+    wlcPort: Number(r.wlc_port),
+    wlcSshPort: Number(r.wlc_ssh_port),
+    wlcUsername: String(r.wlc_username),
+    wlcSsid: String(r.wlc_ssid),
   };
 }
 
-export async function listSedi(): Promise<Sede[]> {
+/** The env var and Key Vault secret a site's WLC password arrives in. */
+export function credentialNamesForSedeCode(code: string): {
+  envVar: string;
+  secretName: string;
+} {
+  const normalized = code.toUpperCase().replace(/[^A-Z0-9]/g, '_');
+  return {
+    envVar: `WLC_PASSWORD_${normalized}`,
+    secretName: `WLC-PASSWORD-${normalized.replace(/_/g, '-')}`,
+  };
+}
+
+function rowToAdminSede(r: SedeRow): AdminSede {
+  const sede = rowToSede(r);
+  const names = credentialNamesForSedeCode(sede.code);
+  return {
+    ...sede,
+    // Only ever whether a password is configured — never the value.
+    credentialConfigured: wlcPasswordForSede(sede.code).length > 0,
+    credentialEnvVar: names.envVar,
+    credentialSecretName: names.secretName,
+    wlcLastCheckAt: r.wlc_last_check_at ?? null,
+    wlcLastCheckOk: r.wlc_last_check_ok ?? null,
+    wlcLastCheckError: r.wlc_last_check_error ?? null,
+    updatedAt: r.updated_at ?? null,
+    updatedBy: r.updated_by ?? null,
+  };
+}
+
+/**
+ * List sites, optionally restricted to the ones a user may reach.
+ *
+ * `allowedIds` of null means no restriction; an EMPTY array means the user has
+ * been granted nothing and must therefore see nothing. Collapsing the two would
+ * turn "no sites" into "every site", which is the wrong way round to be wrong.
+ */
+export async function listSedi(opts?: {
+  activeOnly?: boolean;
+  allowedIds?: number[] | null;
+}): Promise<Sede[]> {
+  const db = await getDb();
+  const where: string[] = [];
+  const params: unknown[] = [];
+
+  if (opts?.activeOnly) where.push('active = TRUE');
+
+  if (opts?.allowedIds !== undefined && opts.allowedIds !== null) {
+    if (opts.allowedIds.length === 0) return [];
+    params.push(opts.allowedIds);
+    where.push(`id = ANY($${params.length}::int[])`);
+  }
+
+  const res = await db.query(
+    `SELECT * FROM sedi${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY id ASC`,
+    params,
+  );
+  return (res.rows as SedeRow[]).map(rowToSede);
+}
+
+/** Every site, with diagnostics. Admin panel only. */
+export async function listSediAdmin(): Promise<AdminSede[]> {
   const db = await getDb();
   const res = await db.query(`SELECT * FROM sedi ORDER BY id ASC`);
-  return (res.rows as SedeRow[]).map(rowToSede);
+  return (res.rows as SedeRow[]).map(rowToAdminSede);
 }
 
 export async function getSedeById(id: number): Promise<Sede | null> {
@@ -181,6 +268,13 @@ export async function getSedeById(id: number): Promise<Sede | null> {
   return rows.length > 0 ? rowToSede(rows[0]) : null;
 }
 
+export async function getAdminSedeById(id: number): Promise<AdminSede | null> {
+  const db = await getDb();
+  const res = await db.query(`SELECT * FROM sedi WHERE id = ?`, [id]);
+  const rows = res.rows as SedeRow[];
+  return rows.length > 0 ? rowToAdminSede(rows[0]) : null;
+}
+
 export async function getSedeByCode(code: string): Promise<Sede | null> {
   const db = await getDb();
   const res = await db.query(`SELECT * FROM sedi WHERE code = ?`, [code]);
@@ -188,141 +282,163 @@ export async function getSedeByCode(code: string): Promise<Sede | null> {
   return rows.length > 0 ? rowToSede(rows[0]) : null;
 }
 
+export interface NewSedeInput {
+  code: string;
+  name: string;
+  city: string;
+  address?: string | null;
+  wlcHost?: string | null;
+  wlcPort?: number;
+  wlcSshPort?: number;
+  wlcUsername?: string;
+  wlcSsid?: string;
+  active?: boolean;
+}
+
+/**
+ * Create a site.
+ *
+ * New sites start inactive unless told otherwise: their Key Vault secret does
+ * not exist yet, so letting operators pick them straight away would only offer
+ * a connection that cannot succeed.
+ */
+export async function createSede(input: NewSedeInput, actor: string): Promise<AdminSede> {
+  const db = await getDb();
+  const res = await db.query(
+    `INSERT INTO sedi
+       (code, name, city, address, wlc_host, wlc_port, wlc_ssh_port, wlc_username, wlc_ssid, active, updated_by, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+     RETURNING id`,
+    [
+      input.code,
+      input.name,
+      input.city,
+      input.address ?? null,
+      input.wlcHost ?? null,
+      input.wlcPort ?? 443,
+      input.wlcSshPort ?? 22,
+      input.wlcUsername ?? 'admin_guest',
+      input.wlcSsid ?? 'Dompe Guest',
+      input.active ?? false,
+      actor,
+    ],
+  );
+  const id = Number((res.rows as Array<{ id: number }>)[0].id);
+  return (await getAdminSedeById(id))!;
+}
+
+/**
+ * Update a site.
+ *
+ * `code` is not patchable: it is what resolves the Key Vault secret, so
+ * changing it would silently detach a site from its password.
+ */
+export async function updateSede(
+  id: number,
+  patch: Partial<Omit<NewSedeInput, 'code'>>,
+  actor: string,
+): Promise<AdminSede | null> {
+  const db = await getDb();
+  const map: Record<string, string> = {
+    name: 'name',
+    city: 'city',
+    address: 'address',
+    wlcHost: 'wlc_host',
+    wlcPort: 'wlc_port',
+    wlcSshPort: 'wlc_ssh_port',
+    wlcUsername: 'wlc_username',
+    wlcSsid: 'wlc_ssid',
+    active: 'active',
+  };
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  for (const [k, v] of Object.entries(patch)) {
+    const col = map[k];
+    if (!col || v === undefined) continue;
+    sets.push(`${col} = ?`);
+    params.push(v);
+  }
+  if (sets.length === 0) return getAdminSedeById(id);
+
+  sets.push('updated_by = ?');
+  params.push(actor);
+  sets.push('updated_at = NOW()');
+
+  params.push(id);
+  await db.query(`UPDATE sedi SET ${sets.join(', ')} WHERE id = ?`, params);
+  return getAdminSedeById(id);
+}
+
+export async function setSedeActive(id: number, active: boolean, actor: string): Promise<AdminSede | null> {
+  return updateSede(id, { active }, actor);
+}
+
+/** Record the outcome of a connectivity probe. Pure diagnostics. */
+export async function recordWlcCheck(id: number, ok: boolean, error: string | null): Promise<void> {
+  const db = await getDb();
+  await db.query(
+    `UPDATE sedi
+        SET wlc_last_check_at = NOW(), wlc_last_check_ok = ?, wlc_last_check_error = ?
+      WHERE id = ?`,
+    [ok, error, id],
+  );
+}
+
+export async function countGuestsBySede(id: number): Promise<number> {
+  const db = await getDb();
+  const res = await db.query(`SELECT COUNT(*)::int AS n FROM guests WHERE sede_id = ?`, [id]);
+  return Number((res.rows as Array<{ n: number }>)[0]?.n ?? 0);
+}
+
+/**
+ * Delete a site outright.
+ *
+ * Only safe while nothing references it: `guests.sede_id` carries no foreign
+ * key, so a delete would leave guests pointing at an id that no longer exists,
+ * and recreating the same code would hand that history to a different site.
+ * The caller checks `countGuestsBySede` first; switching `active` off is the
+ * normal way to retire a site.
+ */
+export async function deleteSede(id: number): Promise<boolean> {
+  const db = await getDb();
+  const res = await db.query(`DELETE FROM sedi WHERE id = ?`, [id]);
+  return res.rowCount > 0;
+}
+
 /* --------------------------- WLC config (per-sede) --------------------------- */
 
-interface WlcRow {
-  id: number;
-  host: string;
-  port: number;
-  ssh_port: number;
-  username: string;
-  wlan_ssid: string;
-  authenticated: number | boolean;
-  sede_id: number | null;
-}
+/**
+ * The WLC parameters for one site.
+ *
+ * There is deliberately no site-less variant. The old `getWlcConfig()` and
+ * `updateWlcConfig()` fell back to "the first row", which is how an action on
+ * one site could read — and write — another site's controller settings.
+ *
+ * `authenticated` is left false here: it describes an operator's session, and
+ * the route fills it in from there. Background jobs and guest pushes branch on
+ * `usable` instead.
+ */
+export async function getWlcConfigBySede(sedeId: number): Promise<WlcConfig | null> {
+  const db = await getDb();
+  const res = await db.query(`SELECT * FROM sedi WHERE id = ?`, [sedeId]);
+  const rows = res.rows as SedeRow[];
+  if (rows.length === 0) return null;
 
-// NOTE: the WLC password is NOT stored in the DB (§2). rowToWlc leaves it
-// empty; getWlcConfigBySede fills it from the environment (Key Vault) by sede.
-function rowToWlc(r: WlcRow): WlcConfig {
+  const sede = rowToSede(rows[0]);
+  const password = wlcPasswordForSede(sede.code);
+
   return {
-    id: Number(r.id),
-    host: String(r.host),
-    port: Number(r.port),
-    sshPort: Number(r.ssh_port),
-    username: String(r.username),
-    password: '',
-    wlanSsid: String(r.wlan_ssid),
-    authenticated: Boolean(r.authenticated),
-    sedeId: r.sede_id != null ? Number(r.sede_id) : null,
+    id: sede.id,
+    host: sede.wlcHost ?? '',
+    port: sede.wlcPort,
+    sshPort: sede.wlcSshPort,
+    username: sede.wlcUsername,
+    password,
+    wlanSsid: sede.wlcSsid,
+    authenticated: false,
+    usable: sede.active && !!sede.wlcHost && password.length > 0,
+    sedeId: sede.id,
   };
-}
-
-/** Resolve a sede's short code (used to look up its WLC password env var). */
-async function resolveSedeCode(sedeId: number | null): Promise<string | null> {
-  if (sedeId == null) return null;
-  const db = await getDb();
-  const res = await db.query(`SELECT code FROM sedi WHERE id = ?`, [sedeId]);
-  const rows = res.rows as Array<{ code: string }>;
-  return rows.length > 0 ? String(rows[0].code) : null;
-}
-
-/**
- * Pick the WLC config for a specific sede. Falls back to the legacy
- * singleton (id=1) if no sede_id is set, for backward compatibility.
- */
-export async function getWlcConfigBySede(sedeId: number | null): Promise<WlcConfig> {
-  const db = await getDb();
-  let res;
-  if (sedeId != null) {
-    res = await db.query(
-      `SELECT * FROM wlc_config WHERE sede_id = ? OR id = (SELECT wlc_config_id FROM sedi WHERE id = ?) ORDER BY (sede_id = ?) DESC LIMIT 1`,
-      [sedeId, sedeId, sedeId],
-    );
-    if (res.rows.length === 0) {
-      res = await db.query(`SELECT * FROM wlc_config WHERE sede_id = ? LIMIT 1`, [sedeId]);
-    }
-  } else {
-    res = await db.query(`SELECT * FROM wlc_config ORDER BY id ASC LIMIT 1`);
-  }
-  const r = (res.rows as WlcRow[])[0];
-  const base: WlcConfig = r
-    ? rowToWlc(r)
-    : {
-        id: 0, host: '172.18.106.100', port: 443, sshPort: 22,
-        username: 'admin_guest', password: '', wlanSsid: 'Dompe Guest',
-        authenticated: false, sedeId: null,
-      };
-  // Resolve the WLC password from the environment (Key Vault) by sede code —
-  // never from the DB (§2).
-  const code = await resolveSedeCode(sedeId ?? base.sedeId);
-  base.password = wlcPasswordForSede(code);
-  return base;
-}
-
-/**
- * Backward-compat: returns the first/legacy WLC config.
- * New code should use {@link getWlcConfigBySede}.
- */
-export async function getWlcConfig(): Promise<WlcConfig> {
-  return getWlcConfigBySede(null);
-}
-
-export async function updateWlcConfigBySede(sedeId: number, patch: Partial<WlcConfig>): Promise<WlcConfig | null> {
-  const db = await getDb();
-  // `password` is intentionally NOT in the map — the WLC password lives in
-  // Key Vault (env), never in the DB (§2).
-  const map: Record<string, string> = {
-    host: 'host',
-    port: 'port',
-    sshPort: 'ssh_port',
-    username: 'username',
-    wlanSsid: 'wlan_ssid',
-    authenticated: 'authenticated',
-  };
-  const sets: string[] = [];
-  const params: unknown[] = [];
-  for (const [k, v] of Object.entries(patch)) {
-    const col = map[k];
-    if (!col) continue;
-    sets.push(`${col} = ?`);
-    params.push(v);
-  }
-  if (sets.length > 0) {
-    await db.query(
-      `UPDATE wlc_config SET ${sets.join(', ')}
-       WHERE sede_id = ? OR id = (SELECT wlc_config_id FROM sedi WHERE id = ?)`,
-      [...params, sedeId, sedeId],
-    );
-  }
-  return getWlcConfigBySede(sedeId);
-}
-
-/**
- * Backward-compat: updates the first/legacy WLC config.
- */
-export async function updateWlcConfig(patch: Partial<WlcConfig>): Promise<WlcConfig> {
-  const db = await getDb();
-  // `password` intentionally omitted — WLC password is env/Key Vault only (§2).
-  const map: Record<string, string> = {
-    host: 'host',
-    port: 'port',
-    sshPort: 'ssh_port',
-    username: 'username',
-    wlanSsid: 'wlan_ssid',
-    authenticated: 'authenticated',
-  };
-  const sets: string[] = [];
-  const params: unknown[] = [];
-  for (const [k, v] of Object.entries(patch)) {
-    const col = map[k];
-    if (!col) continue;
-    sets.push(`${col} = ?`);
-    params.push(v);
-  }
-  if (sets.length > 0) {
-    await db.query(`UPDATE wlc_config SET ${sets.join(', ')} WHERE id = (SELECT id FROM wlc_config ORDER BY id ASC LIMIT 1)`, params);
-  }
-  return getWlcConfig();
 }
 
 /* --------------------------- SMS / Logs --------------------------- */

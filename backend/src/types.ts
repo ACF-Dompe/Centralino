@@ -11,6 +11,35 @@ export interface Sede {
   address: string | null;
   wlcConfigId: number | null;
   createdAt: string;
+  /** In service. A site switched off disappears from the selector and the sync. */
+  active: boolean;
+  /**
+   * WLC parameters, folded in from the old 1:1 `wlc_config` table.
+   * Null host means the site exists but its controller is not configured yet.
+   */
+  wlcHost: string | null;
+  wlcPort: number;
+  wlcSshPort: number;
+  wlcUsername: string;
+  wlcSsid: string;
+}
+
+/**
+ * A site as the admin panel sees it, with the diagnostics an operator never
+ * needs. The WLC password is absent here as everywhere else: only whether one
+ * is configured, and the names to ask the platform team for.
+ */
+export interface AdminSede extends Sede {
+  credentialConfigured: boolean;
+  /** Environment variable the password arrives in, e.g. WLC_PASSWORD_MIL. */
+  credentialEnvVar: string;
+  /** Key Vault secret behind it, e.g. WLC-PASSWORD-MIL. */
+  credentialSecretName: string;
+  wlcLastCheckAt: string | null;
+  wlcLastCheckOk: boolean | null;
+  wlcLastCheckError: string | null;
+  updatedAt: string | null;
+  updatedBy: string | null;
 }
 
 export interface Guest {
@@ -45,8 +74,23 @@ export interface WlcConfig {
   username: string;
   password: string;
   wlanSsid: string;
+  /**
+   * Whether THIS operator's session is bound to the controller. Session state,
+   * filled in by the route — not a property of the controller and never read
+   * from the database.
+   *
+   * It used to be a column, shared by every operator and written by a button in
+   * the header, which is how pressing "Disconnetti" on one site could switch off
+   * provisioning for another.
+   */
   authenticated: boolean;
-  sedeId: number | null;
+  /**
+   * Whether the server can actually talk to this controller: the site is in
+   * service, a host is configured, and a password is present in the
+   * environment. This is what background jobs and guest pushes branch on.
+   */
+  usable: boolean;
+  sedeId: number;
 }
 
 export interface SmsConfig {

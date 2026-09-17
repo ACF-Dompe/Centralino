@@ -12,7 +12,7 @@
 - **Module system:** ESM (`"type": "module"` in package.json).
 - **Node.js version:** 22 LTS (matches the Dockerfiles and CI).
 - **Makefile:** Use `make` targets for common tasks (`make test`, `make typecheck-backend`, `make docker-scan`, etc.). Never use raw npx/npm commands when a Makefile target exists.
-- **Commands:** `make test` runs all unit tests, `make typecheck` checks both workspaces, `make install` installs deps, `make breakglass ARGS="..."` manages emergency accounts.
+- **Commands:** `make test` runs all unit tests, `make typecheck` checks both workspaces, `make install` installs deps, `make breakglass ARGS="..."` manages emergency accounts, `make appusers ARGS="..."` profiles application users.
 
 ## Code Style
 
@@ -77,7 +77,8 @@
 - **Session:** Signed cookies via `SESSION_SECRET`, stored in PostgreSQL via `connect-pg-simple`.
 - **DB connections:** Build every pool through `createDbPool()` in `db/index.ts` — it is the only place that resolves TLS and the Entra token. Never hand a connection string to a library that builds its own pool (`conString`, `connectionString`, …): with Entra auth the URL has no password and Azure PostgreSQL refuses unencrypted connections. See `COMPLIANCE.md` §5.9.
 - **SAML:** The AuthnRequest must NOT constrain the authentication method. `SAML_DISABLE_REQUESTED_AUTHN_CONTEXT` defaults to `true` and must stay true against Entra ID — requesting `PasswordProtectedTransport` breaks every passwordless sign-in with `AADSTS75011`. See `COMPLIANCE.md` §5.8.
-- **Break-glass:** Emergency local login, off by default, documented as accepted deviation D1 in `COMPLIANCE.md`. Passwords are scrypt-hashed via `node:crypto` (no bcrypt/argon2 dependency). Accounts are created only through `backend/src/scripts/breakglass.ts` — never add an HTTP endpoint for managing them. Every attempt must stay logged at `warn` level: a Log Analytics alert depends on it.
+- **Break-glass:** Emergency local login, off by default, documented as accepted deviation D1 in `COMPLIANCE.md`. Passwords are scrypt-hashed via `node:crypto` (no bcrypt/argon2 dependency). **Creating an account and rotating its password stay in `backend/src/scripts/breakglass.ts` — never add an HTTP endpoint that can do either.** The admin panel exposes read, enable, disable and unlock only (`/api/admin/breakglass`, behind `requireRole('admin')`), with a guard that refuses to disable the last usable account. Every attempt and every administrative action must stay logged at `warn` level: a Log Analytics alert depends on it.
+- **Authorization:** Roles and site grants live in `app_users` and are resolved **per request** by `middleware/authorize.ts`, never read back from the session — a session lasts a day, and a suspended user has to lose access in seconds. Every failure path is closed: an unknown user is 403, a failed lookup is 503, never a default profile. A new SSO user is provisioned blocked; only an admin can profile them (`make appusers ARGS="..."` is the way in when nobody can yet).
 
 ## Documentation
 

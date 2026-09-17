@@ -15,6 +15,10 @@ import { v4 as uuid } from 'uuid';
 
 import { config } from './config.js';
 import { router } from './routes/index.js';
+import { createAdminRouter } from './routes/admin.js';
+import { ensureAuthenticated } from './middleware/ensureAuth.js';
+import { loadAuthorization, requireRole, resolveAuthProfile } from './middleware/authorize.js';
+import type { AppUser } from './auth/user.js';
 import { createAuthRouter } from './routes/auth.js';
 import { createSamlStrategy } from './auth/saml.js';
 import { createSessionMiddleware, createSessionStore } from './auth/session.js';
@@ -155,6 +159,16 @@ async function main(): Promise<void> {
     samlStrategy: samlStrategy ?? undefined,
   }));
 
+  // Administrative API, mounted before the general router so its own guards
+  // apply. Every route inside assumes an authenticated, active admin.
+  app.use(
+    '/api/admin',
+    ensureAuthenticated,
+    loadAuthorization,
+    requireRole('admin'),
+    createAdminRouter(),
+  );
+
   app.use('/api', router);
 
   // JSON error handler — returns structured JSON for API errors (body-parser
@@ -199,7 +213,7 @@ async function main(): Promise<void> {
       const rawCookie = req.headers.cookie ?? '';
       const match = rawCookie.match(/(?:^|;\s*)guestportal\.sid=([^;]+)/);
       if (!match) {
-        callback(false);
+        callback(null);
         return;
       }
 
@@ -213,17 +227,40 @@ async function main(): Promise<void> {
         : signedValue;
 
       if (!sid) {
-        callback(false); // Invalid cookie signature
+        callback(null); // Invalid cookie signature
         return;
       }
 
       wsSessionStore.get(sid, (err: Error | null, session?: SessionData | null) => {
         if (err || !session) {
-          callback(false);
+          callback(null);
           return;
         }
-        // Verify the session contains a passport-authenticated user
-        callback(!!session.passport?.user);
+        const user = session.passport?.user;
+        if (!user) {
+          callback(null);
+          return;
+        }
+
+        // A valid cookie is not enough. The socket outlives the request that
+        // opened it, so authorization is checked here too — otherwise a user
+        // suspended a minute ago keeps receiving events until they reconnect.
+        void (async () => {
+          try {
+            const profile = await resolveAuthProfile(user as AppUser);
+            if (!profile || profile.status !== 'active') {
+              callback(null);
+              return;
+            }
+            callback({
+              sedeId: session.sedeId ?? null,
+              allSedi: profile.allSedi,
+            });
+          } catch {
+            // Fail closed, as everywhere else in the authorization path.
+            callback(null);
+          }
+        })();
       });
     },
   });

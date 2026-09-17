@@ -46,7 +46,13 @@ async function tickTimers(): Promise<void> {
 
 async function syncSedeWlc(sedeId: number): Promise<void> {
   const cfg = await getWlcConfigBySede(sedeId);
-  if (!cfg.authenticated) return; // skip when in sandbox mode for this sede
+  if (!cfg) return; // site deleted between listing and syncing
+
+  // `usable` means the site is in service, has a host, and has a password in
+  // the environment. This used to test `authenticated`, a column any operator
+  // could flip from the header — and, because the write always landed on the
+  // first row, flipping it for one site silently stopped the sync for another.
+  if (!cfg.usable) return;
 
   const result = await execSsh({
     host: cfg.host,
@@ -166,7 +172,9 @@ async function syncSedeWlc(sedeId: number): Promise<void> {
 
 async function syncWithAllWlc(): Promise<void> {
   try {
-    const sedi = await listSedi();
+    // Only sites in service: a site switched off in the admin panel is one
+    // nobody wants the background job reaching out to.
+    const sedi = await listSedi({ activeOnly: true });
     for (const s of sedi) {
       await syncSedeWlc(s.id);
     }

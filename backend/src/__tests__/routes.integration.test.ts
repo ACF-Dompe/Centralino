@@ -21,9 +21,7 @@ const mockRepo = vi.hoisted(() => ({
   updateGuest: vi.fn(),
   deleteGuest: vi.fn(),
   getWlcConfigBySede: vi.fn(),
-  updateWlcConfigBySede: vi.fn(),
-  getWlcConfig: vi.fn(),
-  updateWlcConfig: vi.fn(),
+  recordWlcCheck: vi.fn(),
   getSmsConfig: vi.fn(),
   updateSmsConfig: vi.fn(),
   listSyncLogs: vi.fn(),
@@ -47,10 +45,71 @@ const mockLog = vi.hoisted(() => ({
   error: vi.fn(),
 }));
 
+/**
+ * Authorization state the tests drive.
+ *
+ * `authz` is what `loadAuthorization` would have resolved; `sessionSedeId` is
+ * the site the operator has connected to. Both are request state now, so the
+ * harness has to supply them — which is the point: routes take the site from
+ * the session, never from the query string.
+ */
+const mockAuthzState = vi.hoisted(() => ({
+  authz: {
+    subject: 'admin@dompe.com',
+    userId: 1,
+    source: 'app_user',
+    role: 'admin',
+    status: 'active',
+    sedeIds: [1],
+    allSedi: true,
+    displayName: 'Admin',
+    email: 'admin@dompe.com',
+  } as any,
+  sessionSedeId: 1 as number | null,
+  wlcConnected: true,
+}));
+
 // ── Module-level mocks ──────────────────────────────────────────────────
 vi.mock('../middleware/ensureAuth.js', () => ({
   ensureAuthenticated: vi.fn((_req: any, _res: any, next: any) => next()),
 }));
+
+/**
+ * Thin but faithful stand-ins for the guards. The real implementations, with
+ * their database lookup, caching and fail-closed behaviour, are covered by
+ * `authorize.test.ts`; what these tests check is that each route is wired to
+ * the right guard.
+ */
+vi.mock('../middleware/authorize.js', () => {
+  const canAccess = (p: any, sedeId: number | null) =>
+    p.allSedi || (sedeId != null && p.sedeIds.includes(sedeId));
+  return {
+    loadAuthorization: (req: any, _res: any, next: any) => {
+      req.authz = mockAuthzState.authz;
+      next();
+    },
+    requireRole: (...roles: string[]) => (req: any, res: any, next: any) =>
+      roles.includes(req.authz?.role)
+        ? next()
+        : res.status(403).json({ success: false, error: 'insufficient_role', requiredRoles: roles }),
+    requireSedeAccess: (extract?: (r: any) => number | null) => (req: any, res: any, next: any) => {
+      const pick = extract ?? ((r: any) => {
+        const raw = r.body?.sedeId ?? r.query?.sedeId ?? null;
+        return raw == null || raw === '' ? null : Number(raw);
+      });
+      const sedeId = pick(req);
+      if (sedeId == null) return res.status(400).json({ success: false, error: 'sede_required' });
+      if (!canAccess(req.authz, sedeId)) return res.status(403).json({ success: false, error: 'sede_forbidden' });
+      next();
+    },
+    ensureSedeAllowed: (req: any, res: any, sedeId: number | null) => {
+      if (canAccess(req.authz, sedeId)) return true;
+      res.status(403).json({ success: false, error: 'sede_forbidden' });
+      return false;
+    },
+    allowedSedeIds: (p: any) => (p.allSedi ? null : p.sedeIds),
+  };
+});
 
 vi.mock('../repositories/index.js', () => mockRepo);
 vi.mock('../services/wlcWebui.js', () => mockWlcWebui);
@@ -64,22 +123,51 @@ import { router } from '../routes/index.js';
 function createApp(): express.Express {
   const app = express();
   app.use(express.json());
+  // Minimal session stand-in: the routes read `sedeId` and `wlcConnected` from
+  // it and call `save`, which connect-pg-simple would make asynchronous.
+  app.use((req: any, _res, next) => {
+    req.session = {
+      sedeId: mockAuthzState.sessionSedeId ?? undefined,
+      wlcConnected: mockAuthzState.wlcConnected,
+      save: (cb: (err?: unknown) => void) => cb(),
+    };
+    next();
+  });
   app.use('/api', router);
   return app;
 }
 
 // ── Default mock values used across tests ───────────────────────────────
 const DEFAULT_WLC_CONFIG = {
+  id: 1,
   host: '192.168.1.1',
   port: 443,
   sshPort: 22,
   username: 'admin',
   password: 'admin',
-  authenticated: true,
+  // Session state, filled in by the route. Background work and guest pushes
+  // branch on `usable`.
+  authenticated: false,
+  usable: true,
   wlanSsid: 'Dompe Guest',
+  sedeId: 1,
 };
 
-const DEFAULT_SEDE = { id: 1, code: 'MIL', name: 'Sede Centrale' };
+const DEFAULT_SEDE = {
+  id: 1,
+  code: 'MIL',
+  name: 'Sede Centrale',
+  city: 'Milano',
+  address: null,
+  wlcConfigId: null,
+  createdAt: '2025-01-01T00:00:00Z',
+  active: true,
+  wlcHost: '192.168.1.1',
+  wlcPort: 443,
+  wlcSshPort: 22,
+  wlcUsername: 'admin',
+  wlcSsid: 'Dompe Guest',
+};
 
 describe('Routes Integration', () => {
   let app: express.Express;
@@ -90,11 +178,25 @@ describe('Routes Integration', () => {
     // WLC password now comes from Key Vault (env) per sede (§2).
     process.env.WLC_PASSWORD_MIL = 'test-wlc-pass';
 
+    // Back to a full admin on the default site before each test.
+    mockAuthzState.authz = {
+      subject: 'admin@dompe.com',
+      userId: 1,
+      source: 'app_user',
+      role: 'admin',
+      status: 'active',
+      sedeIds: [1],
+      allSedi: true,
+      displayName: 'Admin',
+      email: 'admin@dompe.com',
+    };
+    mockAuthzState.sessionSedeId = 1;
+    mockAuthzState.wlcConnected = true;
+
     // Seed default mocks so most tests don't need to repeat them
     mockRepo.listSedi.mockResolvedValue([DEFAULT_SEDE]);
     mockRepo.getSedeById.mockResolvedValue(DEFAULT_SEDE);
     mockRepo.getWlcConfigBySede.mockResolvedValue(DEFAULT_WLC_CONFIG);
-    mockRepo.getWlcConfig.mockResolvedValue(DEFAULT_WLC_CONFIG);
     mockRepo.listGuests.mockResolvedValue([]);
 
     app = createApp();
@@ -117,23 +219,62 @@ describe('Routes Integration', () => {
   //  Sedi
   // ═════════════════════════════════════════════════════════════════════
   describe('GET /api/sedi', () => {
-    it('returns sedi list from repository', async () => {
+    it('returns only sites in service', async () => {
       const res = await request(app).get('/api/sedi');
       expect(res.status).toBe(200);
       expect(res.body.data).toHaveLength(1);
       expect(res.body.data[0].name).toBe('Sede Centrale');
-      expect(mockRepo.listSedi).toHaveBeenCalledOnce();
+      expect(mockRepo.listSedi).toHaveBeenCalledWith(
+        expect.objectContaining({ activeOnly: true }),
+      );
+    });
+
+    /**
+     * Filtered server-side. A selector that merely hides a site is a courtesy;
+     * this is the part that actually keeps an operator out of it.
+     */
+    it('restricts the list to the sites the operator was granted', async () => {
+      mockAuthzState.authz = { ...mockAuthzState.authz, role: 'operator', allSedi: false, sedeIds: [2, 3] };
+      const res = await request(app).get('/api/sedi');
+      expect(res.status).toBe(200);
+      expect(mockRepo.listSedi).toHaveBeenCalledWith(
+        expect.objectContaining({ allowedIds: [2, 3] }),
+      );
+    });
+
+    it('passes no restriction for an admin', async () => {
+      await request(app).get('/api/sedi');
+      expect(mockRepo.listSedi).toHaveBeenCalledWith(
+        expect.objectContaining({ allowedIds: null }),
+      );
+    });
+
+    /**
+     * The controller address, ports and admin account are admin-only. An
+     * operator picks a site by name; exposing the infrastructure to everyone
+     * was the reason those fields sat on the login screen in the first place.
+     */
+    it('strips the controller parameters for a non-admin', async () => {
+      mockAuthzState.authz = { ...mockAuthzState.authz, role: 'operator', allSedi: false, sedeIds: [1] };
+      const res = await request(app).get('/api/sedi');
+      expect(res.body.data[0].wlcHost).toBeUndefined();
+      expect(res.body.data[0].wlcUsername).toBeUndefined();
+      // The SSID stays: it goes on the credentials the guest receives.
+      expect(res.body.data[0].wlcSsid).toBe('Dompe Guest');
+    });
+
+    it('keeps the controller parameters for an admin', async () => {
+      const res = await request(app).get('/api/sedi');
+      expect(res.body.data[0].wlcHost).toBe('192.168.1.1');
     });
   });
 
   describe('GET /api/sedi/:id', () => {
-    it('returns sede with WLC prefill data', async () => {
+    it('returns the sede', async () => {
       const res = await request(app).get('/api/sedi/1');
       expect(res.status).toBe(200);
       expect(res.body.data.name).toBe('Sede Centrale');
-      expect(res.body.data.wlcHost).toBe('192.168.1.1');
       expect(mockRepo.getSedeById).toHaveBeenCalledWith(1);
-      expect(mockRepo.getWlcConfigBySede).toHaveBeenCalledWith(1);
     });
 
     it('returns 400 for non-numeric id', async () => {
@@ -147,86 +288,118 @@ describe('Routes Integration', () => {
       const res = await request(app).get('/api/sedi/999');
       expect(res.status).toBe(404);
     });
+
+    it('refuses a sede the operator was not granted', async () => {
+      mockAuthzState.authz = { ...mockAuthzState.authz, role: 'operator', allSedi: false, sedeIds: [2] };
+      const res = await request(app).get('/api/sedi/1');
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe('sede_forbidden');
+    });
   });
 
   // ═════════════════════════════════════════════════════════════════════
   //  WLC Login — command injection surface
   // ═════════════════════════════════════════════════════════════════════
-  describe('POST /api/wlc/login (injection surface)', () => {
-    // The WLC password is NOT sent by the client anymore (§2) — it is resolved
-    // from Key Vault (env) by sede. The body carries only connection params.
-    const validBody = {
-      host: '192.168.1.1',
-      port: 443,
-      username: 'admin',
-      sedeId: 1,
-    };
+  describe('POST /api/wlc/login', () => {
+    /*
+     * The endpoint takes a site id and nothing else. It used to accept the
+     * host, port and admin username from the request body and write them
+     * straight back to the database, which made the login screen a way for any
+     * authenticated user to repoint a controller — and made the username an
+     * SSH command injection surface, since it flows into the guest CRUD
+     * commands. Both problems disappear by not accepting the values at all.
+     */
 
-    it('returns 400 when mandatory fields missing', async () => {
-      const res = await request(app).post('/api/wlc/login').send({ host: 'x' });
+    it('rejects a request without a sede', async () => {
+      const res = await request(app).post('/api/wlc/login').send({});
       expect(res.status).toBe(400);
-    });
-
-    it('rejects username with newline injection', async () => {
-      const res = await request(app)
-        .post('/api/wlc/login')
-        .send({ ...validBody, username: 'admin\nconfigure terminal' });
-      expect(res.status).toBe(400);
-      expect(res.body.error).toMatch(/newline/i);
       expect(mockWlcWebui.loginWebUi).not.toHaveBeenCalled();
     });
 
-    it('rejects username with semicolon injection', async () => {
-      const res = await request(app)
-        .post('/api/wlc/login')
-        .send({ ...validBody, username: 'admin;id' });
-      expect(res.status).toBe(400);
+    it('ignores controller parameters supplied by the client', async () => {
+      mockWlcWebui.loginWebUi.mockResolvedValue({ success: true });
+      const res = await request(app).post('/api/wlc/login').send({
+        sedeId: 1,
+        host: 'attacker.example.com',
+        port: 4443,
+        username: 'admin\nconfigure terminal',
+      });
+
+      expect(res.status).toBe(200);
+      expect(mockWlcWebui.loginWebUi).toHaveBeenCalledWith(
+        expect.objectContaining({ host: '192.168.1.1', port: 443, username: 'admin' }),
+      );
     });
 
-    it('rejects username with pipe injection', async () => {
-      const res = await request(app)
-        .post('/api/wlc/login')
-        .send({ ...validBody, username: 'admin|cat /etc/shadow' });
-      expect(res.status).toBe(400);
-    });
-
-    it('rejects username with backtick injection', async () => {
-      const res = await request(app)
-        .post('/api/wlc/login')
-        .send({ ...validBody, username: '`whoami`' });
-      expect(res.status).toBe(400);
-    });
-
-    it('rejects username with subshell injection', async () => {
-      const res = await request(app)
-        .post('/api/wlc/login')
-        .send({ ...validBody, username: '$(id)' });
-      expect(res.status).toBe(400);
-    });
-
-    it('calls loginWebUi and updates config on success', async () => {
+    it('connects using the stored site parameters and the Key Vault password', async () => {
       mockWlcWebui.loginWebUi.mockResolvedValue({ success: true, sessionId: 'abc-123' });
-      const res = await request(app).post('/api/wlc/login').send(validBody);
+      const res = await request(app).post('/api/wlc/login').send({ sedeId: 1 });
+
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
-      expect(mockWlcWebui.loginWebUi).toHaveBeenCalledOnce();
-      expect(mockRepo.updateWlcConfigBySede).toHaveBeenCalledWith(1, expect.objectContaining({
-        authenticated: true,
-      }));
+      expect(mockWlcWebui.loginWebUi).toHaveBeenCalledWith({
+        host: '192.168.1.1',
+        port: 443,
+        username: 'admin',
+        password: 'test-wlc-pass',
+      });
     });
 
-    it('saves config even when login fails (records auth:false)', async () => {
-      mockWlcWebui.loginWebUi.mockResolvedValue({ success: false, error: 'Wrong password' });
-      const res = await request(app).post('/api/wlc/login').send(validBody);
-      expect(res.status).toBe(200);
-      expect(mockRepo.updateWlcConfigBySede).toHaveBeenCalledWith(1, expect.objectContaining({
-        authenticated: false,
-      }));
+    it('records the probe result on the site', async () => {
+      mockWlcWebui.loginWebUi.mockResolvedValue({ success: false, error: 'timeout' });
+      await request(app).post('/api/wlc/login').send({ sedeId: 1 });
+      expect(mockRepo.recordWlcCheck).toHaveBeenCalledWith(1, false, 'timeout');
+    });
+
+    it('returns 404 for an unknown sede', async () => {
+      mockRepo.getSedeById.mockResolvedValue(null);
+      const res = await request(app).post('/api/wlc/login').send({ sedeId: 99 });
+      expect(res.status).toBe(404);
+    });
+
+    it('refuses a deactivated sede', async () => {
+      mockRepo.getSedeById.mockResolvedValue({ ...DEFAULT_SEDE, active: false });
+      const res = await request(app).post('/api/wlc/login').send({ sedeId: 1 });
+      expect(res.status).toBe(409);
+      expect(res.body.error).toBe('SEDE_INACTIVE');
+      expect(mockWlcWebui.loginWebUi).not.toHaveBeenCalled();
+    });
+
+    it('refuses a sede with no controller configured', async () => {
+      mockRepo.getSedeById.mockResolvedValue({ ...DEFAULT_SEDE, wlcHost: null });
+      const res = await request(app).post('/api/wlc/login').send({ sedeId: 1 });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('WLC_NOT_CONFIGURED');
+    });
+
+    /**
+     * A site can exist before its Key Vault secret does — creating that secret
+     * is a platform-team request. Saying so precisely is the difference between
+     * an admin filing a ticket and an operator retrying forever.
+     */
+    it('reports a missing Key Vault secret distinctly', async () => {
+      mockRepo.getSedeById.mockResolvedValue({ ...DEFAULT_SEDE, code: 'TOR' });
+      const res = await request(app).post('/api/wlc/login').send({ sedeId: 1 });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('CREDENTIAL_MISSING');
+      expect(mockWlcWebui.loginWebUi).not.toHaveBeenCalled();
+    });
+
+    it('refuses a sede the operator was not granted', async () => {
+      mockAuthzState.authz = { ...mockAuthzState.authz, role: 'operator', allSedi: false, sedeIds: [2] };
+      const res = await request(app).post('/api/wlc/login').send({ sedeId: 1 });
+      expect(res.status).toBe(403);
+      expect(mockWlcWebui.loginWebUi).not.toHaveBeenCalled();
+    });
+
+    it('refuses a viewer', async () => {
+      mockAuthzState.authz = { ...mockAuthzState.authz, role: 'viewer' };
+      const res = await request(app).post('/api/wlc/login').send({ sedeId: 1 });
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe('insufficient_role');
     });
   });
 
-  // ═════════════════════════════════════════════════════════════════════
-  //  WLC Create User — primary command injection surface
   // ═════════════════════════════════════════════════════════════════════
   describe('POST /api/wlc/create-user (injection surface)', () => {
     const validBody = {
@@ -508,13 +681,89 @@ describe('Routes Integration', () => {
       expect(res.body.data).toHaveLength(1);
     });
 
-    it('passes search, status, and sedeId query params', async () => {
+    it('passes search and status through, taking the sede from the session', async () => {
       await request(app).get('/api/guests?search=mario&status=active&sedeId=1');
       expect(mockRepo.listGuests).toHaveBeenCalledWith({
         search: 'mario',
         status: 'active',
         sedeId: 1,
       });
+    });
+
+    /**
+     * The client used to name the site in the query string and the server
+     * simply obeyed, so any authenticated user could read another site's guests
+     * by editing the URL. The session is authoritative now, and a mismatch is
+     * refused rather than quietly ignored — a silent override would hide the
+     * bug that produced it.
+     */
+    it('refuses a sedeId that differs from the session', async () => {
+      const res = await request(app).get('/api/guests?sedeId=2');
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe('sede_mismatch');
+      expect(mockRepo.listGuests).not.toHaveBeenCalled();
+    });
+
+    it('never reads another sede even when the query asks for it', async () => {
+      mockAuthzState.sessionSedeId = 3;
+      await request(app).get('/api/guests?sedeId=3');
+      expect(mockRepo.listGuests).toHaveBeenCalledWith(
+        expect.objectContaining({ sedeId: 3 }),
+      );
+    });
+
+    it('asks the operator to pick a sede first', async () => {
+      mockAuthzState.sessionSedeId = null;
+      const res = await request(app).get('/api/guests');
+      expect(res.status).toBe(409);
+      expect(res.body.error).toBe('NO_SEDE_SELECTED');
+      expect(mockRepo.listGuests).not.toHaveBeenCalled();
+    });
+  });
+
+  // ═════════════════════════════════════════════════════════════════════
+  //  Session
+  // ═════════════════════════════════════════════════════════════════════
+  describe('Session endpoints', () => {
+    it('GET /api/session/context returns user, sede and wlc', async () => {
+      const res = await request(app).get('/api/session/context');
+      expect(res.status).toBe(200);
+      expect(res.body.data.user.role).toBe('admin');
+      expect(res.body.data.sede.code).toBe('MIL');
+      expect(res.body.data.wlc.host).toBe('192.168.1.1');
+      // Session state, not the stored column.
+      expect(res.body.data.wlc.authenticated).toBe(true);
+    });
+
+    it('reports no sede when the session has not picked one', async () => {
+      mockAuthzState.sessionSedeId = null;
+      const res = await request(app).get('/api/session/context');
+      expect(res.status).toBe(200);
+      expect(res.body.data.sede).toBeNull();
+      expect(res.body.data.wlc).toBeNull();
+    });
+
+    /**
+     * Retiring a site while somebody is working on it drops them back to the
+     * selector instead of leaving them pointed at something out of service.
+     */
+    it('clears a sede that has been deactivated', async () => {
+      mockRepo.getSedeById.mockResolvedValue({ ...DEFAULT_SEDE, active: false });
+      const res = await request(app).get('/api/session/context');
+      expect(res.status).toBe(200);
+      expect(res.body.data.sede).toBeNull();
+      expect(res.body.data.notice).toBe('SEDE_INACTIVE');
+    });
+
+    it('never returns the WLC password', async () => {
+      const res = await request(app).get('/api/session/context');
+      expect(JSON.stringify(res.body)).not.toContain('admin_password');
+      expect(res.body.data.wlc.password).toBeUndefined();
+    });
+
+    it('DELETE /api/session/sede answers 204', async () => {
+      const res = await request(app).delete('/api/session/sede');
+      expect(res.status).toBe(204);
     });
   });
 
@@ -554,6 +803,35 @@ describe('Routes Integration', () => {
       const res = await request(app).post('/api/guests').send(body);
       expect(res.status).toBe(200);
       expect(res.body.data.oneTimePassword).toBeDefined();
+    });
+
+    // The register form used to carry a free-form minutes box with no upper
+    // bound, and the endpoint never checked the value it was handed.
+    it('rejects a duration beyond the one-week cap', async () => {
+      const res = await request(app)
+        .post('/api/guests')
+        .send({ ...validBody, durationMinutes: 999_999 });
+      expect(res.status).toBe(400);
+      expect(mockRepo.createGuest).not.toHaveBeenCalled();
+    });
+
+    it('rejects a non-integer duration', async () => {
+      const res = await request(app)
+        .post('/api/guests')
+        .send({ ...validBody, durationMinutes: 'quattro ore' });
+      expect(res.status).toBe(400);
+      expect(mockRepo.createGuest).not.toHaveBeenCalled();
+    });
+
+    it('accepts the longest duration the form can produce', async () => {
+      mockRepo.createGuest.mockResolvedValue({ id: 'g-week', name: 'Mario Rossi' });
+      mockWlcSsh.execSsh.mockResolvedValue({ success: true, output: '' });
+      mockEmail.sendCredentialEmail.mockResolvedValue({ ok: true, mode: 'graph' });
+
+      const res = await request(app)
+        .post('/api/guests')
+        .send({ ...validBody, durationMinutes: 7 * 24 * 60 });
+      expect(res.status).toBe(200);
     });
   });
 
@@ -636,18 +914,27 @@ describe('Routes Integration', () => {
   //  Config endpoints
   // ═════════════════════════════════════════════════════════════════════
   describe('Config endpoints', () => {
-    it('GET /api/config/wlc returns WLC config', async () => {
-      mockRepo.getWlcConfig.mockResolvedValue({ host: 'wlc.dompe.com' });
+    it('GET /api/config/wlc resolves the sede from the session', async () => {
       const res = await request(app).get('/api/config/wlc');
       expect(res.status).toBe(200);
-      expect(res.body.data.host).toBe('wlc.dompe.com');
+      expect(res.body.data.host).toBe('192.168.1.1');
+      expect(mockRepo.getWlcConfigBySede).toHaveBeenCalledWith(1);
     });
 
-    it('PUT /api/config/wlc updates and returns config', async () => {
-      mockRepo.updateWlcConfig.mockResolvedValue({ host: 'new-host' });
+    it('GET /api/config/wlc strips the password', async () => {
+      const res = await request(app).get('/api/config/wlc');
+      expect(res.body.data.password).toBeUndefined();
+    });
+
+    /**
+     * The writer is gone. It was the only caller of the site-less
+     * `updateWlcConfig`, which always wrote to the first row whatever site the
+     * operator was on — so disconnecting one site switched off provisioning for
+     * another. Site settings are edited through /api/admin/sedi now.
+     */
+    it('PUT /api/config/wlc no longer exists', async () => {
       const res = await request(app).put('/api/config/wlc').send({ host: 'new-host' });
-      expect(res.status).toBe(200);
-      expect(res.body.data.host).toBe('new-host');
+      expect(res.status).toBe(404);
     });
 
     // Email/SMTP config endpoints removed (§3): mail is Graph-only.
@@ -664,6 +951,70 @@ describe('Routes Integration', () => {
       expect(res.status).toBe(200);
       expect(res.body.data.provider).toBe('messagebird');
       expect(mockRepo.updateSmsConfig).toHaveBeenCalledOnce();
+    });
+
+    it('keeps the SMS config out of an operator\'s reach', async () => {
+      mockAuthzState.authz = { ...mockAuthzState.authz, role: 'operator' };
+      const res = await request(app).get('/api/config/sms');
+      expect(res.status).toBe(403);
+    });
+  });
+
+  // ═════════════════════════════════════════════════════════════════════
+  //  Role enforcement on the guest endpoints
+  // ═════════════════════════════════════════════════════════════════════
+  describe('Role enforcement', () => {
+    it('lets a viewer read guests', async () => {
+      mockAuthzState.authz = { ...mockAuthzState.authz, role: 'viewer' };
+      const res = await request(app).get('/api/guests');
+      expect(res.status).toBe(200);
+    });
+
+    it('stops a viewer creating a guest', async () => {
+      mockAuthzState.authz = { ...mockAuthzState.authz, role: 'viewer' };
+      const res = await request(app).post('/api/guests').send({
+        name: 'Mario', host: 'Anna', durationMinutes: 60, sedeId: 1,
+      });
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe('insufficient_role');
+      expect(mockRepo.createGuest).not.toHaveBeenCalled();
+    });
+
+    it('stops a viewer deleting a guest', async () => {
+      mockAuthzState.authz = { ...mockAuthzState.authz, role: 'viewer' };
+      mockRepo.getGuest.mockResolvedValue({ id: 'g-1', sedeId: 1, username: 'g.x' });
+      const res = await request(app).delete('/api/guests/g-1');
+      expect(res.status).toBe(403);
+      expect(mockRepo.deleteGuest).not.toHaveBeenCalled();
+    });
+
+    it('stops an operator creating a guest at a sede they were not granted', async () => {
+      mockAuthzState.authz = { ...mockAuthzState.authz, role: 'operator', allSedi: false, sedeIds: [2] };
+      const res = await request(app).post('/api/guests').send({
+        name: 'Mario', host: 'Anna', durationMinutes: 60, sedeId: 1,
+      });
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe('sede_forbidden');
+      expect(mockRepo.createGuest).not.toHaveBeenCalled();
+    });
+
+    /**
+     * The site is discovered after reading the guest, so this check lives in the
+     * handler rather than in a middleware that would have to fetch it twice.
+     */
+    it('stops an operator touching a guest belonging to another sede', async () => {
+      mockAuthzState.authz = { ...mockAuthzState.authz, role: 'operator', allSedi: false, sedeIds: [1] };
+      mockRepo.getGuest.mockResolvedValue({ id: 'g-9', sedeId: 7, username: 'g.other', email: 'x@y.z' });
+      const res = await request(app).delete('/api/guests/g-9');
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe('sede_forbidden');
+      expect(mockRepo.deleteGuest).not.toHaveBeenCalled();
+    });
+
+    it('keeps the raw WLC endpoints for admins only', async () => {
+      mockAuthzState.authz = { ...mockAuthzState.authz, role: 'operator' };
+      const res = await request(app).post('/api/wlc/create-user').send({});
+      expect(res.status).toBe(403);
     });
   });
 

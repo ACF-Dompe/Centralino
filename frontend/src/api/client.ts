@@ -2,16 +2,36 @@
  * Thin API client for the backend.
  * Base path is `/api` in dev (Vite proxy) and prod (same origin).
  */
-import type { Guest, WlcConfig, SmsConfig, SyncLog, GuestStatus, Sede } from '../types';
+import type {
+  Guest,
+  WlcConfig,
+  SmsConfig,
+  SyncLog,
+  GuestStatus,
+  Sede,
+  AdminSede,
+  Role,
+  UserStatus,
+  AdminUser,
+  BreakGlassAccount,
+  SessionContext,
+} from '../types';
 
 const BASE = '/api';
 
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  /**
+   * Application error code from the response body, when the backend sent one
+   * (`sede_forbidden`, `CREDENTIAL_MISSING`, …). Without it the only way to
+   * tell one refusal from another would be to pattern-match the message text.
+   */
+  code?: string;
+  constructor(status: number, message: string, code?: string) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -22,8 +42,19 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new ApiError(res.status, `${res.status} ${res.statusText}: ${text}`);
+    let code: string | undefined;
+    let message = `${res.status} ${res.statusText}: ${text}`;
+    try {
+      const body = JSON.parse(text) as { error?: string; message?: string };
+      if (typeof body.error === 'string') code = body.error;
+      if (typeof body.message === 'string' && body.message) message = body.message;
+    } catch {
+      // Not JSON — keep the raw text, which is the most informative thing left.
+    }
+    throw new ApiError(res.status, message, code);
   }
+  // 204 has no body; asking for JSON would throw.
+  if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }
 
@@ -39,6 +70,17 @@ export interface SamlUser {
   surname: string;
   objectId: string | null;
   authMethod?: 'saml' | 'breakglass';
+  /**
+   * Authorization, resolved server-side per request.
+   *
+   * Optional because an older backend — or a test mock — will not send it. The
+   * UI treats an absent value as "no restriction": hiding buttons is a courtesy
+   * to the operator, and the API is what actually enforces anything.
+   */
+  role?: Role | null;
+  status?: UserStatus;
+  /** Sites this user may connect to. Always a concrete list, never a wildcard. */
+  sedeIds?: number[];
 }
 
 export const api = {
@@ -74,12 +116,29 @@ export const api = {
       { method: 'POST', body: JSON.stringify(body) },
     ),
 
+  // Session
+  /**
+   * Everything needed to render the app: the user, their permissions, and the
+   * site they are on. Replaces the old three-call bootstrap, which inferred the
+   * current site from the WLC config table and could restore the wrong one.
+   */
+  getSessionContext: () => request<{ data: SessionContext }>('/session/context'),
+  /** Release the current site, keeping the session. Backs "Cambia sede". */
+  clearSessionSede: () => request<void>('/session/sede', { method: 'DELETE' }),
+
   // Sedi
   listSedi: () => request<{ data: Sede[] }>('/sedi'),
   getSede: (id: number) => request<{ data: Sede }>(`/sedi/${id}`),
 
   // WLC
-  wlcLogin: (body: { host: string; port: number; username: string; sedeId?: number }) =>
+  /**
+   * Connect this session to a site's controller.
+   *
+   * Only the site id travels. Host, port and username used to be sent from
+   * here and written straight to the database, which made the login screen a
+   * way to reconfigure any controller; they now come from the site record.
+   */
+  wlcLogin: (body: { sedeId: number }) =>
     request<{ success: boolean; status?: number; message?: string; error?: string; isUnreachable?: boolean; authMethod?: string }>(
       '/wlc/login',
       { method: 'POST', body: JSON.stringify(body) },
@@ -123,9 +182,10 @@ export const api = {
     ),
 
   // Configs
+  /** @deprecated Use getSessionContext(). */
   getWlcConfig: () => request<{ data: WlcConfig }>('/config/wlc'),
-  updateWlcConfig: (patch: Partial<WlcConfig>) =>
-    request<{ data: WlcConfig }>('/config/wlc', { method: 'PUT', body: JSON.stringify(patch) }),
+  // The WLC config PUT is gone: it always wrote to the first row whatever site
+  // the operator was on. Site settings are edited through adminApi now.
   // Email/SMTP config removed (§3): mail is Graph-only, no client config.
   getSmsConfig: () => request<{ data: SmsConfig }>('/config/sms'),
   updateSmsConfig: (patch: Partial<SmsConfig>) =>
@@ -134,4 +194,51 @@ export const api = {
   // Logs
   listSyncLogs: () => request<{ data: SyncLog[] }>('/sync-logs'),
   clearSyncLogs: () => request<{ success: boolean }>('/sync-logs', { method: 'DELETE' }),
+};
+
+/**
+ * Administrative API. Every call requires the admin role and will answer 403
+ * otherwise, so the panel that uses it is only rendered for admins.
+ */
+export const adminApi = {
+  // Users
+  listUsers: (filter?: { status?: UserStatus; search?: string }) => {
+    const params = new URLSearchParams();
+    if (filter?.status) params.set('status', filter.status);
+    if (filter?.search) params.set('search', filter.search);
+    const qs = params.toString();
+    return request<{ data: AdminUser[] }>(`/admin/users${qs ? `?${qs}` : ''}`);
+  },
+  patchUser: (id: number, patch: { role?: Role; status?: UserStatus; sedeIds?: number[] }) =>
+    request<{ data: AdminUser }>(`/admin/users/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  deleteUser: (id: number) =>
+    request<{ success: boolean }>(`/admin/users/${id}`, { method: 'DELETE' }),
+
+  // Sedi — the unfiltered list, unlike api.listSedi which honours the caller's grants
+  listSedi: () => request<{ data: AdminSede[] }>('/admin/sedi'),
+  createSede: (body: Partial<AdminSede> & { code: string; name: string; city: string }) =>
+    request<{ data: AdminSede }>('/admin/sedi', { method: 'POST', body: JSON.stringify(body) }),
+  updateSede: (id: number, body: Partial<AdminSede>) =>
+    request<{ data: AdminSede }>(`/admin/sedi/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  setSedeActive: (id: number, active: boolean, force = false) =>
+    request<{ data: AdminSede }>(`/admin/sedi/${id}/active`, {
+      method: 'PATCH',
+      body: JSON.stringify({ active, force }),
+    }),
+  testSede: (id: number) =>
+    request<{ success: boolean; error?: string; isUnreachable?: boolean; checkedAt: string }>(
+      `/admin/sedi/${id}/test`,
+      { method: 'POST' },
+    ),
+  deleteSede: (id: number) => request<void>(`/admin/sedi/${id}`, { method: 'DELETE' }),
+
+  // Break glass — read, enable, disable, unlock. Creating an account and
+  // rotating its password stay in the CLI (COMPLIANCE.md D1).
+  listBreakGlass: () => request<{ data: BreakGlassAccount[] }>('/admin/breakglass'),
+  enableBreakGlass: (username: string) =>
+    request<{ success: boolean }>(`/admin/breakglass/${encodeURIComponent(username)}/enable`, { method: 'POST' }),
+  disableBreakGlass: (username: string) =>
+    request<{ success: boolean }>(`/admin/breakglass/${encodeURIComponent(username)}/disable`, { method: 'POST' }),
+  unlockBreakGlass: (username: string) =>
+    request<{ success: boolean }>(`/admin/breakglass/${encodeURIComponent(username)}/unlock`, { method: 'POST' }),
 };

@@ -37,9 +37,10 @@ vi.mock('../components/Login', () => ({
 }));
 
 vi.mock('../components/Dashboard', () => ({
-  default: ({ onSsoLogout }: { onSsoLogout?: () => void }) => (
+  default: ({ onSsoLogout, sede }: { onSsoLogout?: () => void; sede?: { code: string } | null }) => (
     <div data-testid="dashboard-component">
       Dashboard
+      <span data-testid="dashboard-sede">{sede?.code ?? ''}</span>
       {onSsoLogout && (
         <button data-testid="mock-sso-logout-btn" onClick={onSsoLogout}>
           SSO Logout
@@ -53,20 +54,28 @@ vi.mock('../components/SsoLogin', () => ({
   default: () => <div data-testid="ssologin-component">SSO Login Screen</div>,
 }));
 
+vi.mock('../components/PendingApproval', () => ({
+  default: ({ user }: { user: { email: string } }) => (
+    <div data-testid="pending-approval">
+      <span data-testid="pending-email">{user.email}</span>
+    </div>
+  ),
+}));
+
 // ── Mock API ───────────────────────────────────────────────────────────────
 
 const mockGetMe = vi.fn();
-const mockGetWlcConfig = vi.fn();
+const mockGetSessionContext = vi.fn();
 const mockGetSede = vi.fn();
 const mockLogout = vi.fn();
 
 vi.mock('../api/client', () => ({
   api: {
     getMe: (...args: unknown[]) => mockGetMe(...args),
-    getWlcConfig: (...args: unknown[]) => mockGetWlcConfig(...args),
+    getSessionContext: (...args: unknown[]) => mockGetSessionContext(...args),
     getSede: (...args: unknown[]) => mockGetSede(...args),
     logout: (...args: unknown[]) => mockLogout(...args),
-    updateWlcConfig: vi.fn(),
+    clearSessionSede: vi.fn(),
   },
   ApiError: class ApiError extends Error {
     status: number;
@@ -112,8 +121,27 @@ const wlcConfig = {
   password: 'secret',
   wlanSsid: 'Dompe Guest',
   authenticated: true,
+  usable: true,
   sedeId: 1,
 };
+
+/** The bootstrap payload: user, permissions and current site in one call. */
+function context(overrides: Record<string, unknown> = {}) {
+  return {
+    data: {
+      user: {
+        displayName: ssoUser.displayName,
+        email: ssoUser.email,
+        role: 'admin',
+        status: 'active',
+        sedeIds: null,
+      },
+      sede,
+      wlc: wlcConfig,
+      ...overrides,
+    },
+  };
+}
 
 const sede = {
   id: 1,
@@ -179,12 +207,9 @@ describe('App', () => {
 
   // ── SSO Authenticated → no WLC → Login (WLC with user tag) ──────────────
 
-  it('shows Login with ssoUser when authenticated but no WLC config', async () => {
+  it('shows Login with ssoUser when authenticated but no site selected', async () => {
     mockGetMe.mockResolvedValue({ data: ssoUser });
-    // WLC returns not authenticated
-    mockGetWlcConfig.mockResolvedValue({
-      data: { ...wlcConfig, authenticated: false },
-    });
+    mockGetSessionContext.mockResolvedValue(context({ sede: null, wlc: null }));
     render(<App />);
 
     await waitFor(() => {
@@ -194,9 +219,9 @@ describe('App', () => {
     expect(screen.getByTestId('login-sso-user').textContent).toBe('has-user');
   });
 
-  it('shows Login with ssoUser when getWlcConfig fails', async () => {
+  it('shows Login with ssoUser when the session context cannot be read', async () => {
     mockGetMe.mockResolvedValue({ data: ssoUser });
-    mockGetWlcConfig.mockRejectedValue(new Error('No config'));
+    mockGetSessionContext.mockRejectedValue(new Error('No context'));
     render(<App />);
 
     await waitFor(() => {
@@ -207,9 +232,9 @@ describe('App', () => {
 
   // ── SSO Authenticated + WLC authenticated → Dashboard ───────────────────
 
-  it('shows Dashboard when SSO authenticated and WLC connected', async () => {
+  it('shows Dashboard when SSO authenticated and a site is selected', async () => {
     mockGetMe.mockResolvedValue({ data: ssoUser });
-    mockGetWlcConfig.mockResolvedValue({ data: wlcConfig });
+    mockGetSessionContext.mockResolvedValue(context());
     render(<App />);
 
     await waitFor(() => {
@@ -217,23 +242,65 @@ describe('App', () => {
     });
   });
 
-  it('shows Dashboard with sede when WLC has a valid sedeId', async () => {
+  /**
+   * The site is read from the session, not deduced from a configuration table.
+   * The bootstrap this replaced asked for "the WLC config", got the first row
+   * back whatever site the operator had chosen, and restored that one — so a
+   * browser refresh could silently move somebody to a different location.
+   */
+  it('restores the site the session is actually on, not the first one', async () => {
+    const aq = { ...sede, id: 2, code: 'AQ', name: "L'Aquila" };
     mockGetMe.mockResolvedValue({ data: ssoUser });
-    mockGetWlcConfig.mockResolvedValue({ data: wlcConfig });
-    mockGetSede.mockResolvedValue({ data: sede });
+    mockGetSessionContext.mockResolvedValue(
+      context({ sede: aq, wlc: { ...wlcConfig, sedeId: 2 } }),
+    );
     render(<App />);
 
     await waitFor(() => {
-      expect(screen.getByTestId('dashboard-component')).toBeInTheDocument();
+      expect(screen.getByTestId('dashboard-sede').textContent).toBe('AQ');
     });
-    // getSede should have been called with the correct id
-    expect(mockGetSede).toHaveBeenCalledWith(1);
+    // One call, and no per-site follow-up: the context already carries it.
+    expect(mockGetSede).not.toHaveBeenCalled();
   });
 
-  it('shows Dashboard even when getSede fails', async () => {
+  // ── Unprofiled and suspended users ──────────────────────────────────────
+
+  /**
+   * Anybody in the tenant can complete SSO, and the directory grants nothing
+   * until an admin profiles the new entry. Such a user must land on an
+   * explanation — not on a dashboard where everything fails, and not back on
+   * the sign-in page they just completed.
+   */
+  it('shows the pending screen for a user awaiting approval', async () => {
+    mockGetMe.mockResolvedValue({ data: { ...ssoUser, status: 'pending', role: null } });
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('pending-approval')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('dashboard-component')).not.toBeInTheDocument();
+    expect(screen.getByTestId('pending-email').textContent).toBe(ssoUser.email);
+    // Blocked before the session context is even asked for.
+    expect(mockGetSessionContext).not.toHaveBeenCalled();
+  });
+
+  it('shows the pending screen for a suspended user', async () => {
+    mockGetMe.mockResolvedValue({ data: { ...ssoUser, status: 'suspended', role: 'operator' } });
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('pending-approval')).toBeInTheDocument();
+    });
+  });
+
+  /**
+   * An older backend does not send `status`. Blocking on its absence would lock
+   * every such deployment out during a rollout, and the API refuses unprofiled
+   * users regardless of what the UI renders.
+   */
+  it('lets a session through when the backend sends no status', async () => {
     mockGetMe.mockResolvedValue({ data: ssoUser });
-    mockGetWlcConfig.mockResolvedValue({ data: wlcConfig });
-    mockGetSede.mockRejectedValue(new Error('Sede not found'));
+    mockGetSessionContext.mockResolvedValue(context());
     render(<App />);
 
     await waitFor(() => {
@@ -245,7 +312,7 @@ describe('App', () => {
 
   it('returns to SsoLogin after SSO logout', async () => {
     mockGetMe.mockResolvedValue({ data: ssoUser });
-    mockGetWlcConfig.mockResolvedValue({ data: wlcConfig });
+    mockGetSessionContext.mockResolvedValue(context());
     render(<App />);
 
     await waitFor(() => {
@@ -269,7 +336,7 @@ describe('App', () => {
   it('returns to SsoLogin even when logout API call fails', async () => {
     mockLogout.mockRejectedValue(new Error('Network error'));
     mockGetMe.mockResolvedValue({ data: ssoUser });
-    mockGetWlcConfig.mockResolvedValue({ data: wlcConfig });
+    mockGetSessionContext.mockResolvedValue(context());
     render(<App />);
 
     await waitFor(() => {
@@ -290,7 +357,7 @@ describe('App', () => {
   it('transitions to Dashboard when WLC auth succeeds from Login', async () => {
     // Start with SSO authenticated but no WLC (show Login)
     mockGetMe.mockResolvedValue({ data: ssoUser });
-    mockGetWlcConfig.mockResolvedValue({ data: { ...wlcConfig, authenticated: false } });
+    mockGetSessionContext.mockResolvedValue(context({ sede: null, wlc: null }));
     render(<App />);
 
     await waitFor(() => {
@@ -330,7 +397,7 @@ describe('App', () => {
   it('returns to Login when WLC is disconnected from Dashboard', async () => {
     // Start on Dashboard (SSO + WLC authenticated)
     mockGetMe.mockResolvedValue({ data: ssoUser });
-    mockGetWlcConfig.mockResolvedValue({ data: wlcConfig });
+    mockGetSessionContext.mockResolvedValue(context());
     render(<App />);
 
     await waitFor(() => {
@@ -338,7 +405,7 @@ describe('App', () => {
     });
 
     // We need to trigger onDisconnect — but Dashboard mock doesn't have a disconnect button
-    // The disconnect goes through: Dashboard.handleDisconnect → api.updateWlcConfig → onDisconnect()
+    // Changing sede goes through: Dashboard.handleChangeSede → api.clearSessionSede → onChangeSede()
     // Since we mocked Dashboard, we can't easily test this from the mock.
     // This is better tested via the e2e tests.
     // Just verify the Dashboard is shown.

@@ -24,7 +24,6 @@ vi.mock('../../i18n', () => ({
         'table.actions': 'Azioni',
         'table.copy': 'Copia',
         'table.activate': 'Attiva',
-        'table.badge': 'Invia Badge',
         'table.delete': 'Elimina',
         'table.resend': 'Re-invia Credenziali',
         'table.copied': 'Copiato!',
@@ -114,7 +113,6 @@ describe('GuestTable', () => {
   const handlers = {
     onActivate: vi.fn(),
     onDelete: vi.fn(),
-    onBadge: vi.fn(),
     onResend: vi.fn(),
   };
 
@@ -180,16 +178,12 @@ describe('GuestTable', () => {
     }
   });
 
-  it('calls onBadge when badge button is clicked', async () => {
-    const user = (await import('@testing-library/user-event')).default;
-    const userEv = user.setup();
+  // The badge-preview button used to sit next to the resend one and called the
+  // very same endpoint, through a modal that previewed a message it did not
+  // actually send. Resending is now a single action.
+  it('no longer renders a separate badge button', () => {
     render(<GuestTable guests={[guest1]} loading={false} {...handlers} />);
-
-    const badgeBtn = document.querySelector('[title="Invia Badge"]');
-    if (badgeBtn) {
-      await userEv.click(badgeBtn);
-      expect(handlers.onBadge).toHaveBeenCalledWith(guest1);
-    }
+    expect(document.querySelector('[title="Invia Badge"]')).toBeNull();
   });
 
   it('calls onDelete when delete button is clicked', async () => {

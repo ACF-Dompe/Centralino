@@ -232,6 +232,13 @@ describe('RegisterGuestModal', () => {
     });
   });
 
+  // The free-form minutes box was the only path that bypassed the one-week cap,
+  // and it fought over the same state as the preset chips.
+  it('offers no free-form minutes input', () => {
+    render(<RegisterGuestModal sede={sede} onClose={vi.fn()} onCreated={vi.fn()} />);
+    expect(screen.queryByTestId('duration-number-input')).not.toBeInTheDocument();
+  });
+
   it('switches to custom duration when custom button is clicked', async () => {
     const user = userEvent.setup();
     render(<RegisterGuestModal sede={sede} onClose={vi.fn()} onCreated={vi.fn()} />);

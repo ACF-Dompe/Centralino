@@ -253,7 +253,7 @@ export default function RegisterGuestModal({ sede, onClose, onCreated }: Props) 
               </button>
             </div>
 
-            {isCustom ? (
+            {isCustom && (
               <div className="mt-2 grid gap-2 sm:grid-cols-2">
                 <div>
                   <label className="text-[10px] font-semibold uppercase tracking-widest text-slate-500" htmlFor="rg-custom-end">{t('create.endAt')}</label>
@@ -281,16 +281,6 @@ export default function RegisterGuestModal({ sede, onClose, onCreated }: Props) 
                   </div>
                 </div>
               </div>
-            ) : (
-              <input
-                id="rg-duration"
-                type="number"
-                className="input mt-2"
-                data-testid="duration-number-input"
-                min={5}
-                value={duration}
-                onChange={(e) => setDuration(Number(e.target.value))}
-              />
             )}
           </div>
           <div className="sm:col-span-2">

@@ -16,7 +16,7 @@
 # =============================================================================
 
 .PHONY: help install dev build typecheck test test-backend test-frontend
-.PHONY: docker-scan lint breakglass
+.PHONY: docker-scan lint breakglass appusers
 
 # ── Help ─────────────────────────────────────────────────────────────────────
 
@@ -59,6 +59,9 @@ lint: ## Run ESLint (if configured)
 
 breakglass: ## Manage break-glass accounts (e.g. make breakglass ARGS="list")
 	@npm run breakglass -w backend -- $(ARGS)
+
+appusers: ## Profile application users (e.g. make appusers ARGS="list --status pending")
+	@npm run appusers -w backend -- $(ARGS)
 
 # ── Docker image scanning ──────────────────────────────────────────────────
 

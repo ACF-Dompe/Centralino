@@ -95,6 +95,12 @@ function makeSede(id: number): Sede {
     address: 'Via Roma 1',
     wlcConfigId: id,
     createdAt: '2026-01-01T00:00:00.000Z',
+    active: true,
+    wlcHost: '172.18.106.100',
+    wlcPort: 443,
+    wlcSshPort: 22,
+    wlcUsername: 'admin_guest',
+    wlcSsid: 'Dompe Guest',
   };
 }
 
@@ -107,7 +113,11 @@ function makeWlcConfig(overrides: Partial<WlcConfig> = {}): WlcConfig {
     username: 'admin_guest',
     password: 'secret',
     wlanSsid: 'Dompe Guest',
-    authenticated: true,
+    // Session state, and irrelevant to the sync: the background job branches on
+    // `usable` now, so flipping a flag from the header can no longer stop a
+    // different site from being synchronised.
+    authenticated: false,
+    usable: true,
     sedeId: 1,
     ...overrides,
   };
@@ -391,17 +401,33 @@ describe('startBackgroundServices / stopBackgroundServices', () => {
       );
     });
 
-    it('skips unauthenticated (sandbox) WLCs', async () => {
+    // A site is skipped when it is out of service, has no controller address,
+    // or has no password in the environment — all of which `usable` folds
+    // together. It deliberately no longer depends on a flag the UI can write:
+    // that flag always landed on the first row, so switching one site off in
+    // the header stopped the sync for a different one.
+    it('skips sites the server cannot reach', async () => {
       vi.mocked(listSedi).mockResolvedValue([makeSede(1)]);
       vi.mocked(getWlcConfigBySede).mockResolvedValue(
-        makeWlcConfig({ authenticated: false }),
+        makeWlcConfig({ usable: false }),
       );
 
       startBackgroundServices();
       await vi.advanceTimersByTimeAsync(30000);
 
-      // No SSH for unauthenticated WLC
       expect(vi.mocked(execSsh)).not.toHaveBeenCalled();
+    });
+
+    it('still syncs a site nobody is currently connected to', async () => {
+      vi.mocked(listSedi).mockResolvedValue([makeSede(1)]);
+      vi.mocked(getWlcConfigBySede).mockResolvedValue(
+        makeWlcConfig({ authenticated: false, usable: true }),
+      );
+
+      startBackgroundServices();
+      await vi.advanceTimersByTimeAsync(30000);
+
+      expect(vi.mocked(execSsh)).toHaveBeenCalled();
     });
 
     it('logs sync failure when SSH connection fails', async () => {

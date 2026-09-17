@@ -5,10 +5,10 @@ import { X, Power, Lock, Trash, Clock, Refresh, Search, Settings, Plus, User, Bu
 import { connectWs, type WsClient } from '../api/ws';
 import type { Guest, GuestStatus, Sede, WlcConfig } from '../types';
 import GuestTable from './GuestTable';
-import ConfigPanel from './ConfigPanel';
 import RegisterGuestModal from './RegisterGuestModal';
 import Toast, { type ToastMsg } from './Toast';
-import BadgeModal from './BadgeModal';
+import UserTag from './UserTag';
+import AdminPanel from './AdminPanel';
 
 import type { SamlUser } from '../api/client';
 
@@ -16,8 +16,7 @@ interface DashboardProps {
   config: WlcConfig;
   sede: Sede | null;
   ssoUser?: SamlUser;
-  onDisconnect: () => void;
-  onConfigUpdate: (c: WlcConfig) => void;
+  onChangeSede: () => void;
   onSsoLogout?: () => void;
 }
 
@@ -27,17 +26,24 @@ interface DashboardProps {
  */
 const POLL_INTERVAL_MS = 30_000;
 
-export default function Dashboard({ config, sede, ssoUser, onDisconnect, onConfigUpdate, onSsoLogout }: DashboardProps) {
+export default function Dashboard({ config, sede, ssoUser, onChangeSede, onSsoLogout }: DashboardProps) {
   const [, , t] = useLocale();
   /** True when the operator got in through the emergency login, not SSO. */
   const isBreakGlass = ssoUser?.authMethod === 'breakglass';
+  /**
+   * Absent role means an older backend or a test mock, so fall back to the
+   * permissive behaviour rather than presenting an empty console. Hiding
+   * controls is a convenience; the API is what refuses anything.
+   */
+  const role = ssoUser?.role ?? 'admin';
+  const canWrite = role === 'admin' || role === 'operator';
+  const isAdmin = role === 'admin';
   const [guests, setGuests] = useState<Guest[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<GuestStatus | 'all'>('all');
-  const [showConfig, setShowConfig] = useState(false);
+  const [showAdmin, setShowAdmin] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
-  const [showBadgeFor, setShowBadgeFor] = useState<Guest | null>(null);
   const [toast, setToast] = useState<ToastMsg | null>(null);
   const [lastSync, setLastSync] = useState<Date | null>(null);
   const [locked, setLocked] = useState(false);
@@ -158,8 +164,12 @@ export default function Dashboard({ config, sede, ssoUser, onDisconnect, onConfi
     const registered = guests.length;
     const online = guests.filter((g) => g.status === 'active').length;
     const pending = guests.filter((g) => g.status === 'pending').length;
-    const completed = guests.filter((g) => g.status === 'expired' || g.status === 'deactivated').length;
-    return { registered, online, pending, completed };
+    // Expired and revoked used to share one "Conclusi" card. They are different
+    // outcomes — one is the lifetime running out, the other an operator (or the
+    // WLC sync) pulling the account — so they now get a card each.
+    const expired = guests.filter((g) => g.status === 'expired').length;
+    const deactivated = guests.filter((g) => g.status === 'deactivated').length;
+    return { registered, online, pending, expired, deactivated };
   }, [guests]);
 
   async function handleSync() {
@@ -177,11 +187,22 @@ export default function Dashboard({ config, sede, ssoUser, onDisconnect, onConfi
     }
   }
 
-  async function handleDisconnect() {
+  /**
+   * "Cambia sede": forget which site this session is on and go back to the
+   * selector, keeping the application session alive. Signing out is what the
+   * Logout button is for.
+   *
+   * Nothing is closed towards the controller, and nothing needs to be: SSH
+   * connections are opened and closed per command, and the WebUI login is a
+   * one-shot POST. Only this operator's pointer is cleared — which is the whole
+   * difference from the button this replaced, whose write landed on a shared row
+   * and could stop provisioning for a site somebody else was working on.
+   */
+  async function handleChangeSede() {
     try {
-      await api.updateWlcConfig({ authenticated: false });
-    } catch { /* ignore */ }
-    onDisconnect();
+      await api.clearSessionSede();
+    } catch { /* best effort: the client state is what decides the screen */ }
+    onChangeSede();
   }
 
   async function activate(g: Guest) {
@@ -304,27 +325,7 @@ export default function Dashboard({ config, sede, ssoUser, onDisconnect, onConfi
                 )}
               </div>
             )}
-            {ssoUser && (
-              isBreakGlass ? (
-                <div
-                  data-testid="breakglass-user-tag"
-                  className="flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-800"
-                  title={t('breakglass.banner')}
-                >
-                  <Lock className="h-3.5 w-3.5" />
-                  <span className="font-medium">{ssoUser.displayName}</span>
-                  <span className="rounded bg-amber-200/70 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide">
-                    {t('breakglass.badge')}
-                  </span>
-                </div>
-              ) : (
-                <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs text-slate-600" title={ssoUser.email}>
-                  <User className="h-3.5 w-3.5" />
-                  <span className="font-medium text-slate-700">{ssoUser.displayName}</span>
-                  <span className="text-slate-500">{ssoUser.email}</span>
-                </div>
-              )
-            )}
+            {ssoUser && <UserTag user={ssoUser} isBreakGlass={isBreakGlass} />}
             <div className="text-xs text-slate-500">
               {t('header.lastSync')}: <span className="font-medium text-slate-700">{lastSync ? lastSync.toLocaleTimeString() : t('header.never')}</span>
             </div>
@@ -334,8 +335,8 @@ export default function Dashboard({ config, sede, ssoUser, onDisconnect, onConfi
             <button className="btn-ghost" onClick={() => setLocked(true)} title={t('header.lockConsole')}>
               <Lock className="h-4 w-4" />
             </button>
-            <button className="btn-ghost" onClick={handleDisconnect} title={t('header.disconnect')}>
-              <Power className="h-4 w-4" /> <span className="hidden sm:inline">{t('header.disconnect')}</span>
+            <button data-testid="change-sede-btn" className="btn-ghost" onClick={handleChangeSede} title={t('header.changeSede')}>
+              <Building className="h-4 w-4" /> <span className="hidden sm:inline">{t('header.changeSede')}</span>
             </button>
             {onSsoLogout && (
               <button
@@ -368,11 +369,12 @@ export default function Dashboard({ config, sede, ssoUser, onDisconnect, onConfi
       )}
 
       <main className="mx-auto max-w-7xl space-y-6 px-4 py-6">
-        <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+        <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-5">
           <StatCard label={t('stats.registered')} value={stats.registered} tone="navy" />
           <StatCard label={t('stats.online')} value={stats.online} tone="emerald" highlight={stats.online > 0} />
           <StatCard label={t('stats.pending')} value={stats.pending} tone="amber" />
-          <StatCard label={t('stats.completed')} value={stats.completed} tone="slate" />
+          <StatCard label={t('stats.expired')} value={stats.expired} tone="slate" />
+          <StatCard label={t('stats.deactivated')} value={stats.deactivated} tone="slate" />
         </div>
 
         <div className="card p-4">
@@ -402,12 +404,16 @@ export default function Dashboard({ config, sede, ssoUser, onDisconnect, onConfi
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <button data-testid="settings-button" className="btn-ghost" onClick={() => setShowConfig(true)}>
-                <Settings className="h-4 w-4" /> {t('toolbar.config')}
-              </button>
-              <button data-testid="register-guest-btn" className="btn-primary" onClick={() => setShowCreate(true)} disabled={!sede} title={sede ? '' : t('login.sede.heading')}>
-                <Plus className="h-4 w-4" /> {t('toolbar.register')}
-              </button>
+              {isAdmin && (
+                <button data-testid="settings-button" className="btn-ghost" onClick={() => setShowAdmin(true)}>
+                  <Settings className="h-4 w-4" /> {t('toolbar.admin')}
+                </button>
+              )}
+              {canWrite && (
+                <button data-testid="register-guest-btn" className="btn-primary" onClick={() => setShowCreate(true)} disabled={!sede} title={sede ? '' : t('login.sede.heading')}>
+                  <Plus className="h-4 w-4" /> {t('toolbar.register')}
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -417,16 +423,15 @@ export default function Dashboard({ config, sede, ssoUser, onDisconnect, onConfi
           loading={loading}
           onActivate={activate}
           onDelete={remove}
-          onBadge={(g) => setShowBadgeFor(g)}
-          onResend={resend}
+          onResend={canWrite ? resend : undefined}
+          readOnly={!canWrite}
         />
       </main>
 
-      {showConfig && (
-        <ConfigPanel
-          wlcConfig={config}
-          onClose={() => setShowConfig(false)}
-          onWlcConfigUpdate={(c) => onConfigUpdate(c)}
+      {showAdmin && isAdmin && (
+        <AdminPanel
+          currentUserEmail={ssoUser?.email ?? ''}
+          onClose={() => setShowAdmin(false)}
         />
       )}
       {showCreate && sede && (
@@ -435,9 +440,6 @@ export default function Dashboard({ config, sede, ssoUser, onDisconnect, onConfi
           onClose={() => setShowCreate(false)}
           onCreated={() => { setShowCreate(false); refresh(); }}
         />
-      )}
-      {showBadgeFor && (
-        <BadgeModal guest={showBadgeFor} ssid={config.wlanSsid} onClose={() => setShowBadgeFor(null)} />
       )}
       {locked && <LockOverlay onUnlock={() => setLocked(false)} />}
 

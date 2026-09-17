@@ -28,7 +28,7 @@ vi.mock('../logger.js', () => ({
 // This noop verifier allows all upgrades to pass.
 const allowAllVerifier: SessionVerifier = {
   verifySession(_req, callback) {
-    callback(true);
+    callback({ sedeId: null, allSedi: true });
   },
 };
 

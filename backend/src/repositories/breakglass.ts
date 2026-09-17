@@ -16,6 +16,8 @@ import type { DbClient } from '../db/index.js';
 export interface BreakGlassAccount {
   username: string;
   displayName: string;
+  /** Authorization role. Defaults to 'admin' — see the migration for why. */
+  role: string;
   /** scrypt hash — see auth/password.ts. Never leaves the backend. */
   passwordHash: string;
   enabled: boolean;
@@ -29,6 +31,7 @@ export interface BreakGlassAccount {
 interface BreakGlassRow {
   username: string;
   display_name: string;
+  role: string;
   password_hash: string;
   enabled: boolean;
   expires_at: string | Date | null;
@@ -47,6 +50,7 @@ function rowToAccount(r: BreakGlassRow): BreakGlassAccount {
   return {
     username: r.username,
     displayName: r.display_name,
+    role: r.role ?? 'admin',
     passwordHash: r.password_hash,
     enabled: r.enabled,
     expiresAt: toDate(r.expires_at),
@@ -80,7 +84,7 @@ export async function getBreakGlassAccount(
 ): Promise<BreakGlassAccount | null> {
   const db = await resolveDb(client);
   const res = await db.query(
-    `SELECT username, display_name, password_hash, enabled, expires_at,
+    `SELECT username, display_name, role, password_hash, enabled, expires_at,
             failed_attempts, locked_until, last_login_at, created_at
        FROM breakglass_users
       WHERE username = $1`,
@@ -94,7 +98,7 @@ export async function getBreakGlassAccount(
 export async function listBreakGlassAccounts(client?: DbClient): Promise<BreakGlassAccount[]> {
   const db = await resolveDb(client);
   const res = await db.query(
-    `SELECT username, display_name, password_hash, enabled, expires_at,
+    `SELECT username, display_name, role, password_hash, enabled, expires_at,
             failed_attempts, locked_until, last_login_at, created_at
        FROM breakglass_users
       ORDER BY username`,
@@ -162,17 +166,19 @@ export async function upsertBreakGlassAccount(
     displayName: string;
     passwordHash: string;
     expiresAt: Date | null;
+    role?: string;
   },
   client?: DbClient,
 ): Promise<void> {
   const db = await resolveDb(client);
   await db.query(
     `INSERT INTO breakglass_users
-       (username, display_name, password_hash, enabled, expires_at)
-     VALUES ($1, $2, $3, TRUE, $4)
+       (username, display_name, password_hash, role, enabled, expires_at)
+     VALUES ($1, $2, $3, $4, TRUE, $5)
      ON CONFLICT (username) DO UPDATE
         SET display_name    = EXCLUDED.display_name,
             password_hash   = EXCLUDED.password_hash,
+            role            = EXCLUDED.role,
             enabled         = TRUE,
             expires_at      = EXCLUDED.expires_at,
             failed_attempts = 0,
@@ -182,9 +188,113 @@ export async function upsertBreakGlassAccount(
       params.username.trim().toLowerCase(),
       params.displayName,
       params.passwordHash,
+      params.role ?? 'admin',
       params.expiresAt,
     ],
   );
+}
+
+/**
+ * Create the bootstrap account, and only if it is missing.
+ *
+ * Kept separate from `upsertBreakGlassAccount` on purpose. That one rotates the
+ * password, re-enables the account and clears the lockout — exactly right for a
+ * deliberate rotation from the CLI, and exactly wrong for something that runs
+ * on every migration: it would restore a password an operator had already
+ * rotated away, and switch an account back on that somebody had turned off.
+ *
+ * Returns true when a row was actually inserted.
+ */
+export async function insertBreakGlassAccountIfMissing(
+  params: {
+    username: string;
+    displayName: string;
+    passwordHash: string;
+    role?: string;
+    expiresAt: Date | null;
+  },
+  client?: DbClient,
+): Promise<boolean> {
+  const db = await resolveDb(client);
+  const res = await db.query(
+    `INSERT INTO breakglass_users
+       (username, display_name, password_hash, role, enabled, expires_at)
+     VALUES ($1, $2, $3, $4, TRUE, $5)
+     ON CONFLICT (username) DO NOTHING`,
+    [
+      params.username.trim().toLowerCase(),
+      params.displayName,
+      params.passwordHash,
+      params.role ?? 'admin',
+      params.expiresAt,
+    ],
+  );
+  return res.rowCount > 0;
+}
+
+/** What the admin panel is allowed to see about a break-glass account. */
+export interface BreakGlassAdminRow {
+  username: string;
+  displayName: string;
+  role: string;
+  enabled: boolean;
+  expiresAt: Date | null;
+  failedAttempts: number;
+  lockedUntil: Date | null;
+  lastLoginAt: Date | null;
+  createdAt: Date;
+}
+
+/**
+ * List accounts for the admin panel.
+ *
+ * A separate query from `listBreakGlassAccounts` rather than a mapping over it:
+ * that one selects `password_hash`, and a hash that is never fetched cannot be
+ * leaked into an HTTP response by a later careless edit.
+ */
+export async function listBreakGlassAccountsForAdmin(
+  client?: DbClient,
+): Promise<BreakGlassAdminRow[]> {
+  const db = await resolveDb(client);
+  const res = await db.query(
+    `SELECT username, display_name, role, enabled, expires_at,
+            failed_attempts, locked_until, last_login_at, created_at
+       FROM breakglass_users
+      ORDER BY username`,
+  );
+  return (res.rows as Omit<BreakGlassRow, 'password_hash'>[]).map((r) => ({
+    username: r.username,
+    displayName: r.display_name,
+    role: r.role ?? 'admin',
+    enabled: r.enabled,
+    expiresAt: toDate(r.expires_at),
+    failedAttempts: r.failed_attempts,
+    lockedUntil: toDate(r.locked_until),
+    lastLoginAt: toDate(r.last_login_at),
+    createdAt: toDate(r.created_at) ?? new Date(0),
+  }));
+}
+
+/**
+ * How many break-glass accounts would still be usable without `excludeUsername`.
+ *
+ * Guards the admin panel against disabling the last way back in when SSO is
+ * down — which is the entire point of these accounts.
+ */
+export async function countUsableBreakGlassAccounts(
+  excludeUsername?: string,
+  client?: DbClient,
+): Promise<number> {
+  const db = await resolveDb(client);
+  const res = await db.query(
+    `SELECT COUNT(*)::int AS n
+       FROM breakglass_users
+      WHERE enabled = TRUE
+        AND (expires_at IS NULL OR expires_at > NOW())
+        AND ($1::text IS NULL OR username <> $1)`,
+    [excludeUsername ? excludeUsername.trim().toLowerCase() : null],
+  );
+  return Number((res.rows as Array<{ n: number }>)[0]?.n ?? 0);
 }
 
 /** Enable or disable an account without deleting it (CLI only). */

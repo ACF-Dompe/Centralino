@@ -193,163 +193,151 @@ test.describe('SSO SAML login screen', () => {
     await expect(page.getByText(/@ 172\.18\.106\.100/i)).toBeVisible();
   });
 
-  test('changes WLC configuration from the Dashboard ConfigPanel after SSO auth', async ({
-    page,
-  }) => {
+  test('changes the WLC settings of a site from the administration panel', async ({ page }) => {
     await enterSsoHappyPath(page);
 
-    // Intercept PUT /api/config/wlc AFTER helper so it takes LIFO priority
-    await page.route('**/api/config/wlc', async (route) => {
+    let savedHost: string | null = null;
+
+    await page.route('**/api/admin/sedi/1', async (route) => {
       if (route.request().method() === 'PUT') {
+        savedHost = (route.request().postDataJSON() as { wlcHost?: string }).wlcHost ?? null;
         await route.fulfill({
           status: 200,
           contentType: 'application/json',
-          body: JSON.stringify({
-            data: {
-              id: 0,
-              host: '10.0.0.50',
-              port: 443,
-              sshPort: 22,
-              username: 'admin_guest',
-              password: '',
-              wlanSsid: 'Dompe Guest',
-              authenticated: true,
-              sedeId: 1,
-            },
-          }),
-        });
-      } else {
-        await route.fallback(); // GET → helper's handler
-      }
-    });
-
-    // Click the Settings button to open ConfigPanel
-    await page.getByTestId('settings-button').click();
-    await expect(page.getByRole('heading', { name: /Config|Impostazioni/i })).toBeVisible({
-      timeout: 10_000,
-    });
-
-    // Switch to the WLC section — use data-testid to scope to ConfigPanel nav
-    await page.getByTestId('config-panel-nav').getByRole('button', { name: /WLC|Controller/i }).click();
-
-    // Change the WLC host — scope to inputs inside ConfigPanel via data-testid
-    await page.getByTestId('config-panel').locator('input').filter({ hasValue: '172.18.106.100' }).first().fill('10.0.0.50');
-
-    // Click "Save All"
-    await page.getByRole('button', { name: /Salva|Save|Salva tutto/i }).click();
-
-    // Wait for save confirmation
-    await expect(page.getByText(/Salvat|Saved/i)).toBeVisible({ timeout: 5_000 });
-
-    // Close ConfigPanel
-    await page.getByTestId('config-panel-close').click();
-
-    // Verify the updated host appears in the Dashboard header badge
-    await expect(page.getByText(/@ 10\.0\.0\.50/i)).toBeVisible();
-
-    // SSO user tag still visible
-    await expect(page.getByText('Mario Rossi')).toBeVisible();
-  });
-
-  test('configures SMTP email settings from the ConfigPanel after SSO auth', async ({
-    page,
-  }) => {
-    await enterSsoHappyPath(page);
-
-    // Intercept GET + PUT /api/config/email and PUT /api/config/wlc AFTER helper
-    // so they take LIFO priority over the helper's handlers
-    await page.route('**/api/config/email', async (route) => {
-      if (route.request().method() === 'GET') {
-        await route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify({
-            data: {
-              id: 0,
-              smtpHost: 'smtp.example.com',
-              smtpPort: 587,
-              sender: 'noreply@example.com',
-              encryption: 'starttls',
-              requireAuth: true,
-              username: 'smtp-user',
-              password: 'smtp-pass',
-            },
-          }),
-        });
-      } else if (route.request().method() === 'PUT') {
-        await route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify({
-            data: {
-              id: 0,
-              smtpHost: 'smtp.new-host.com',
-              smtpPort: 465,
-              sender: 'noreply@new-host.com',
-              encryption: 'ssl',
-              requireAuth: true,
-              username: 'new-smtp-user',
-              password: 'new-smtp-pass',
-            },
-          }),
+          body: JSON.stringify({ data: { id: 1, code: 'MIL', wlcHost: savedHost } }),
         });
       } else {
         await route.fallback();
       }
     });
 
-    // Also need PUT /api/config/wlc (Save All saves both email and WLC)
-    await page.route('**/api/config/wlc', async (route) => {
-      if (route.request().method() === 'PUT') {
-        await route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify({
-            data: {
-              id: 0,
-              host: '172.18.106.100',
-              port: 443,
-              sshPort: 22,
-              username: 'admin_guest',
-              password: '',
-              wlanSsid: 'Dompe Guest',
-              authenticated: true,
-              sedeId: 1,
-            },
-          }),
-        });
-      } else {
-        await route.fallback(); // GET → helper's handler
-      }
+    await page.route('**/api/admin/sedi**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [{
+            id: 1, code: 'MIL', name: 'Dompe Milano HQ', city: 'Milano', address: null,
+            wlcConfigId: null, createdAt: '2026-01-01T00:00:00.000Z', active: true,
+            wlcHost: '172.18.106.100', wlcPort: 443, wlcSshPort: 22,
+            wlcUsername: 'admin_guest', wlcSsid: 'Dompe Guest',
+            credentialConfigured: true,
+            credentialEnvVar: 'WLC_PASSWORD_MIL',
+            credentialSecretName: 'WLC-PASSWORD-MIL',
+            wlcLastCheckAt: null, wlcLastCheckOk: null, wlcLastCheckError: null,
+            updatedAt: null, updatedBy: null,
+          }],
+        }),
+      });
     });
 
-    // Open ConfigPanel — defaults to email section
+    await page.route('**/api/admin/users**', async (route) => {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: [] }) });
+    });
+
     await page.getByTestId('settings-button').click();
-    await expect(page.getByRole('heading', { name: /Config|Impostazioni/i })).toBeVisible({
-      timeout: 10_000,
-    });
+    await expect(page.getByTestId('admin-panel')).toBeVisible({ timeout: 10_000 });
 
-    // The email section is active by default — wait for config to load
-    // The email heading confirms the email section rendered
-    await expect(page.getByRole('heading', { name: /SMTP|Email/i })).toBeVisible({
-      timeout: 5_000,
-    });
+    await page.getByTestId('admin-tab-sedi').click();
+    await expect(page.getByTestId('admin-sede-MIL')).toBeVisible({ timeout: 10_000 });
 
-    // Change SMTP port — scope to ConfigPanel via data-testid
-    await page.getByTestId('config-panel').locator('input[type="number"]').filter({ hasValue: '587' }).first().fill('465');
+    await page.locator('#wlc-host').fill('10.0.0.50');
+    await page.getByTestId('sede-save-btn').click();
 
-    // Click "Save All"
-    await page.getByRole('button', { name: /Salva|Save|Salva tutto/i }).click();
+    await expect.poll(() => savedHost, { timeout: 10_000 }).toBe('10.0.0.50');
 
-    // Wait for save confirmation
-    await expect(page.getByText(/Salvat|Saved/i)).toBeVisible({ timeout: 5_000 });
-
-    // Close ConfigPanel
-    await page.getByTestId('config-panel-close').click();
-
-    // Dashboard still works after saving
+    await page.getByTestId('admin-panel-close').click();
     await expect(page.getByText('Mario Rossi')).toBeVisible();
-    await expect(page.getByText(/@ 172\.18\.106\.100/i)).toBeVisible();
+  });
+
+  test('opens the administration panel after SSO auth', async ({ page }) => {
+    await enterSsoHappyPath(page);
+
+    // Registered after the helper so they take LIFO priority.
+    await page.route('**/api/admin/users**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [{
+            id: 7,
+            subject: 'oid-7',
+            email: 'nuovo.utente@dompe.com',
+            displayName: 'Nuovo Utente',
+            entraObjectId: 'oid-7',
+            role: 'viewer',
+            status: 'pending',
+            sedeIds: [],
+            createdAt: '2026-01-01T00:00:00.000Z',
+            lastLoginAt: null,
+            profiledAt: null,
+            profiledBy: null,
+          }],
+        }),
+      });
+    });
+
+    await page.route('**/api/admin/sedi**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [{
+            id: 1, code: 'MIL', name: 'Dompe Milano HQ', city: 'Milano', address: null,
+            wlcConfigId: null, createdAt: '2026-01-01T00:00:00.000Z', active: true,
+            wlcHost: '172.18.106.100', wlcPort: 443, wlcSshPort: 22,
+            wlcUsername: 'admin_guest', wlcSsid: 'Dompe Guest',
+            credentialConfigured: true,
+            credentialEnvVar: 'WLC_PASSWORD_MIL',
+            credentialSecretName: 'WLC-PASSWORD-MIL',
+            wlcLastCheckAt: null, wlcLastCheckOk: null, wlcLastCheckError: null,
+            updatedAt: null, updatedBy: null,
+          }],
+        }),
+      });
+    });
+
+    await page.route('**/api/admin/breakglass**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [{
+            username: 'bk.guestportal',
+            displayName: 'Break Glass Guest Portal',
+            role: 'admin',
+            enabled: true,
+            expiresAt: null,
+            lockedUntil: null,
+            failedAttempts: 0,
+            lastLoginAt: null,
+            state: 'enabled',
+          }],
+        }),
+      });
+    });
+
+    await page.getByTestId('settings-button').click();
+    await expect(page.getByTestId('admin-panel')).toBeVisible({ timeout: 10_000 });
+
+    // Users awaiting approval are the reason an admin opens this screen.
+    await expect(page.getByText('Nuovo Utente')).toBeVisible({ timeout: 10_000 });
+
+    // Site settings moved here from the login screen.
+    await page.getByTestId('admin-tab-sedi').click();
+    await expect(page.getByTestId('admin-sede-MIL')).toBeVisible({ timeout: 10_000 });
+
+    // The break-glass tab is read-mostly: creating an account and rotating its
+    // password stay in the CLI, because these credentials bypass Entra and MFA.
+    await page.getByTestId('admin-tab-breakglass').click();
+    await expect(page.getByTestId('admin-bg-cli-notice')).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator('input[type="password"]')).toHaveCount(0);
+
+    await page.getByTestId('admin-panel-close').click();
+    await expect(page.getByTestId('admin-panel')).not.toBeVisible();
+
+    // Dashboard still works afterwards.
+    await expect(page.getByText('Mario Rossi')).toBeVisible();
   });
 
   test('locks and unlocks the Dashboard via the LockOverlay screen', async ({
@@ -391,9 +379,9 @@ test.describe('SSO SAML login screen', () => {
     // The connected badge should NOT show @ host (Demo mode = offline)
     await expect(page.getByText(/@ 172\.18\.106\.100/i)).not.toBeVisible();
 
-    // SSO logout + WLC disconnect buttons should be present
+    // Logout + change-sede buttons should be present
     await expect(page.getByTestId('sso-logout-btn')).toBeVisible();
-    await expect(page.getByTitle(/Disconnetti|Disconnect/i)).toBeVisible();
+    await expect(page.getByTestId('change-sede-btn')).toBeVisible();
   });
 
   test('logs out from SSO and shows the SSO login screen again', async ({ page }) => {
@@ -820,12 +808,12 @@ test.describe('SSO SAML login screen', () => {
     await expect(page.getByText(/@ 172\.18\.106\.100/i)).toBeVisible();
   });
 
-  test('sends a badge email from the Dashboard guest table after SSO auth', async ({
+  test('re-sends credentials from the Dashboard guest table after SSO auth', async ({
     page,
   }) => {
     let badgeSent = false;
 
-    // Intercept guest API — return a guest with email so the badge button + send button work.
+    // Intercept guest API — return a guest with email so the resend button renders.
     // Must be registered BEFORE enterSsoHappyPath so Dashboard mount can load guests.
     await page.route('**/api/guests**', async (route) => {
       const method = route.request().method();
@@ -861,32 +849,6 @@ test.describe('SSO SAML login screen', () => {
 
     await enterSsoHappyPath(page);
 
-    // Intercept email config AFTER helper so it takes LIFO priority over
-    // setupSsoCommonRoutes's handler (which returns noreply@example.com).
-    // BadgeModal has not been opened yet — the API call happens on mount.
-    await page.route('**/api/config/email', async (route) => {
-      if (route.request().method() === 'GET') {
-        await route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify({
-            data: {
-              id: 0,
-              smtpHost: 'smtp.example.com',
-              smtpPort: 587,
-              sender: 'noreply@dompe.com',
-              encryption: 'starttls',
-              requireAuth: true,
-              username: 'smtp-user',
-              password: 'smtp-pass',
-            },
-          }),
-        });
-      } else {
-        await route.fallback();
-      }
-    });
-
     // Intercept the resend credentials API AFTER helper for LIFO priority
     await page.route('**/guests/*/resend-credentials', async (route) => {
       if (route.request().method() === 'POST') {
@@ -899,7 +861,7 @@ test.describe('SSO SAML login screen', () => {
             oneTimePassword: 'BadgePass456!',
             wlcUpdated: true,
             emailSent: true,
-            emailMode: 'smtp',
+            emailMode: 'graph',
           }),
         });
       } else {
@@ -910,35 +872,17 @@ test.describe('SSO SAML login screen', () => {
     // Guest table should show the guest
     await expect(page.getByText('Mario Badge Test')).toBeVisible({ timeout: 10_000 });
 
-    // Click the badge button (Send icon, title attrs)
-    await page.getByTitle(/Invia Badge|Send Badge/i).click();
+    // Re-sending is a single click: the password is regenerated and mailed
+    // straight away, with no preview of the message in between.
+    await page.getByTitle(/Re-invia Credenziali|Re-send Credentials/i).click();
 
-    // BadgeModal should appear with guest name in the heading
-    await expect(page.getByRole('heading', { name: /Mario Badge Test/i })).toBeVisible({
-      timeout: 5_000,
-    });
-
-    // The email config should have loaded — sender info visible
-    await expect(page.getByText('noreply@dompe.com')).toBeVisible({ timeout: 5_000 });
-
-    // Click the "Send Email" button
-    await page.getByRole('button', { name: /Invia Email|Send Email/i }).click();
-
-    // Resend API should have been called
     expect(badgeSent).toBe(true);
 
-    // Success message should appear (Italian: "Email inviata correttamente")
-    await expect(page.getByText(/inviata correttamente|sent successfully|inviata/i)).toBeVisible({
+    // No preview modal opens — only a toast reports the outcome.
+    await expect(page.getByTestId('badge-modal')).toHaveCount(0);
+    await expect(page.getByText(/Credenziali reinviate|Credentials re-sent/i)).toBeVisible({
       timeout: 5_000,
     });
-
-    // Close the BadgeModal
-    await page.getByTestId('badge-modal-close').click();
-
-    // BadgeModal should be closed (heading is unique to modal, not the table row)
-    await expect(
-      page.getByRole('heading', { name: /Mario Badge Test/i }),
-    ).not.toBeVisible();
 
     // SSO user tag still visible in Dashboard
     await expect(page.getByText('Mario Rossi')).toBeVisible();

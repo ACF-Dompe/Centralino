@@ -24,17 +24,17 @@ vi.mock('../../i18n', () => ({
         'header.never': 'mai',
         'header.syncNow': 'Sincronizza WLC',
         'header.lockConsole': 'Blocca Console',
-        'header.disconnect': 'Disconnetti',
+        'header.changeSede': 'Cambia sede',
         'stats.registered': 'Registrati',
         'stats.online': 'Connessi Ora',
         'stats.pending': 'In attesa',
-        'stats.completed': 'Conclusi',
+        'stats.expired': 'Scaduto',
+        'stats.deactivated': 'Revocato',
         'toolbar.search': 'Cerca...',
         'toolbar.statusAll': 'Tutti',
-        'toolbar.config': 'Configura Canali',
+        'toolbar.admin': 'Amministrazione',
         'toolbar.register': 'Registra Ospite',
         'table.activate': 'Attiva',
-        'table.badge': 'Invia Badge',
         'table.delete': 'Elimina',
         'table.resend': 'Re-invia Credenziali',
         'table.resendSuccess': 'Credenziali reinviate a {email}',
@@ -71,7 +71,7 @@ vi.mock('../../i18n', () => ({
 // ── Mock API ───────────────────────────────────────────────────────────────
 
 const mockListGuests = vi.fn();
-const mockUpdateWlcConfig = vi.fn();
+const mockClearSessionSede = vi.fn();
 const mockUpdateGuest = vi.fn();
 const mockDeleteGuest = vi.fn();
 const mockResendCredentials = vi.fn();
@@ -79,7 +79,7 @@ const mockResendCredentials = vi.fn();
 vi.mock('../../api/client', () => ({
   api: {
     listGuests: (...args: unknown[]) => mockListGuests(...args),
-    updateWlcConfig: (...args: unknown[]) => mockUpdateWlcConfig(...args),
+    clearSessionSede: (...args: unknown[]) => mockClearSessionSede(...args),
     updateGuest: (...args: unknown[]) => mockUpdateGuest(...args),
     deleteGuest: (...args: unknown[]) => mockDeleteGuest(...args),
     resendCredentials: (...args: unknown[]) => mockResendCredentials(...args),
@@ -119,7 +119,6 @@ vi.mock('../GuestTable', () => ({
     loading: boolean;
     onActivate: (g: unknown) => void;
     onDelete: (g: unknown) => void;
-    onBadge: (g: unknown) => void;
     onResend?: (g: unknown) => void;
   }) => (
     <div data-testid="guest-table">
@@ -127,7 +126,6 @@ vi.mock('../GuestTable', () => ({
       <span data-testid="loading-state">{props.loading ? 'loading' : 'loaded'}</span>
       <button data-testid="mock-activate" onClick={() => props.onActivate?.({ id: 'g-1' })}>Activate</button>
       <button data-testid="mock-delete" onClick={() => props.onDelete?.({ id: 'g-1' })}>Delete</button>
-      <button data-testid="mock-badge" onClick={() => props.onBadge?.({ id: 'g-1' })}>Badge</button>
       {props.onResend && (
         <button data-testid="mock-resend" onClick={() => props.onResend?.({ id: 'g-1' })}>Resend</button>
       )}
@@ -135,12 +133,11 @@ vi.mock('../GuestTable', () => ({
   ),
 }));
 
-vi.mock('../ConfigPanel', () => ({
-  default: (props: { onClose: () => void; onWlcConfigUpdate: (c: unknown) => void }) => (
-    <div data-testid="config-panel">
-      ConfigPanel
-      <button data-testid="mock-config-close" onClick={props.onClose}>Chiudi Config</button>
-      <button data-testid="mock-config-update" onClick={() => props.onWlcConfigUpdate({ host: 'updated' })}>Update Config</button>
+vi.mock('../AdminPanel', () => ({
+  default: (props: { onClose: () => void }) => (
+    <div data-testid="admin-panel">
+      AdminPanel
+      <button data-testid="admin-panel-close" onClick={props.onClose}>Chiudi</button>
     </div>
   ),
 }));
@@ -155,14 +152,6 @@ vi.mock('../RegisterGuestModal', () => ({
   ),
 }));
 
-vi.mock('../BadgeModal', () => ({
-  default: (props: { onClose: () => void }) => (
-    <div data-testid="badge-modal">
-      BadgeModal
-      <button data-testid="mock-badge-close" onClick={props.onClose}>Chiudi Badge</button>
-    </div>
-  ),
-}));
 
 vi.mock('../Toast', () => ({
   default: (props: { message: { kind: string; text: string }; onClose: () => void }) => (
@@ -224,8 +213,7 @@ const ssoUser = { nameID: 'user@dompe.com', email: 'user@dompe.com', displayName
 
 describe('Dashboard', () => {
   const handlers = {
-    onDisconnect: vi.fn(),
-    onConfigUpdate: vi.fn(),
+    onChangeSede: vi.fn(),
     onSsoLogout: vi.fn(),
   };
 
@@ -236,7 +224,7 @@ describe('Dashboard', () => {
     mockWsOnDisconnect = null;
     mockWsDisconnect = null;
     mockListGuests.mockResolvedValue({ data: guests });
-    mockUpdateWlcConfig.mockResolvedValue({ data: wlcConfig });
+    mockClearSessionSede.mockResolvedValue({ data: wlcConfig });
     mockUpdateGuest.mockResolvedValue({ data: {} });
     mockDeleteGuest.mockResolvedValue({ success: true });
     mockResendCredentials.mockResolvedValue({ emailSent: true });
@@ -285,7 +273,8 @@ describe('Dashboard', () => {
       expect(screen.getByText('Connessi Ora')).toBeInTheDocument();
       const pending = screen.getAllByText('In attesa');
       expect(pending.length).toBeGreaterThanOrEqual(1);
-      expect(screen.getByText('Conclusi')).toBeInTheDocument();
+      expect(screen.getByText('Scaduto')).toBeInTheDocument();
+      expect(screen.getByText('Revocato')).toBeInTheDocument();
     });
   });
 
@@ -358,9 +347,9 @@ describe('Dashboard', () => {
     });
   });
 
-  // ── ConfigPanel ─────────────────────────────────────────────────────────
+  // ── Administration panel ────────────────────────────────────────────────
 
-  it('opens ConfigPanel when settings button is clicked', async () => {
+  it('opens the administration panel when the settings button is clicked', async () => {
     const user = userEvent.setup();
     render(<Dashboard config={wlcConfig} sede={sede} {...handlers} />);
 
@@ -371,10 +360,10 @@ describe('Dashboard', () => {
     const settingsBtn = screen.getByTestId('settings-button');
     await user.click(settingsBtn);
 
-    expect(screen.getByTestId('config-panel')).toBeInTheDocument();
+    expect(screen.getByTestId('admin-panel')).toBeInTheDocument();
   });
 
-  it('closes ConfigPanel when close is triggered', async () => {
+  it('closes the administration panel when close is triggered', async () => {
     const user = userEvent.setup();
     render(<Dashboard config={wlcConfig} sede={sede} {...handlers} />);
 
@@ -382,27 +371,13 @@ describe('Dashboard', () => {
       expect(screen.getByTestId('guest-table')).toBeInTheDocument();
     });
 
-    // Open ConfigPanel
+    // Open the administration panel
     await user.click(screen.getByTestId('settings-button'));
-    expect(screen.getByTestId('config-panel')).toBeInTheDocument();
+    expect(screen.getByTestId('admin-panel')).toBeInTheDocument();
 
     // Close it
-    await user.click(screen.getByTestId('mock-config-close'));
-    expect(screen.queryByTestId('config-panel')).not.toBeInTheDocument();
-  });
-
-  it('calls onConfigUpdate when ConfigPanel updates WLC config', async () => {
-    const user = userEvent.setup();
-    render(<Dashboard config={wlcConfig} sede={sede} {...handlers} />);
-
-    await waitFor(() => {
-      expect(screen.getByTestId('guest-table')).toBeInTheDocument();
-    });
-
-    await user.click(screen.getByTestId('settings-button'));
-    await user.click(screen.getByTestId('mock-config-update'));
-
-    expect(handlers.onConfigUpdate).toHaveBeenCalledWith({ host: 'updated' });
+    await user.click(screen.getByTestId('admin-panel-close'));
+    expect(screen.queryByTestId('admin-panel')).not.toBeInTheDocument();
   });
 
   // ── RegisterGuestModal ──────────────────────────────────────────────────
@@ -447,37 +422,6 @@ describe('Dashboard', () => {
       const registerBtn = screen.getByTestId('register-guest-btn');
       expect(registerBtn).toBeDisabled();
     });
-  });
-
-  // ── BadgeModal ──────────────────────────────────────────────────────────
-
-  it('opens BadgeModal when badge action is triggered from GuestTable', async () => {
-    const user = userEvent.setup();
-    render(<Dashboard config={wlcConfig} sede={sede} {...handlers} />);
-
-    await waitFor(() => {
-      expect(screen.getByTestId('guest-table')).toBeInTheDocument();
-    });
-
-    // Click on badge button in GuestTable mock
-    await user.click(screen.getByTestId('mock-badge'));
-
-    expect(screen.getByTestId('badge-modal')).toBeInTheDocument();
-  });
-
-  it('closes BadgeModal when close is triggered', async () => {
-    const user = userEvent.setup();
-    render(<Dashboard config={wlcConfig} sede={sede} {...handlers} />);
-
-    await waitFor(() => {
-      expect(screen.getByTestId('guest-table')).toBeInTheDocument();
-    });
-
-    await user.click(screen.getByTestId('mock-badge'));
-    expect(screen.getByTestId('badge-modal')).toBeInTheDocument();
-
-    await user.click(screen.getByTestId('mock-badge-close'));
-    expect(screen.queryByTestId('badge-modal')).not.toBeInTheDocument();
   });
 
   // ── Lock overlay ────────────────────────────────────────────────────────
@@ -598,9 +542,9 @@ describe('Dashboard', () => {
     });
   });
 
-  // ── Disconnect ──────────────────────────────────────────────────────────
+  // ── Change sede ─────────────────────────────────────────────────────────
 
-  it('disconnects WLC when disconnect button is clicked', async () => {
+  it('releases the WLC binding when the change-sede button is clicked', async () => {
     const user = userEvent.setup();
     render(<Dashboard config={wlcConfig} sede={sede} {...handlers} />);
 
@@ -608,17 +552,17 @@ describe('Dashboard', () => {
       expect(screen.getByTestId('guest-table')).toBeInTheDocument();
     });
 
-    const disconnectBtn = screen.getByTitle('Disconnetti');
-    await user.click(disconnectBtn);
+    const changeSedeBtn = screen.getByTestId('change-sede-btn');
+    await user.click(changeSedeBtn);
 
     await waitFor(() => {
-      expect(mockUpdateWlcConfig).toHaveBeenCalledWith({ authenticated: false });
+      expect(mockClearSessionSede).toHaveBeenCalled();
     });
-    expect(handlers.onDisconnect).toHaveBeenCalledOnce();
+    expect(handlers.onChangeSede).toHaveBeenCalledOnce();
   });
 
-  it('still disconnects when the API call fails (silent catch)', async () => {
-    mockUpdateWlcConfig.mockRejectedValue(new Error('Network error'));
+  it('still returns to the sede selector when the API call fails (silent catch)', async () => {
+    mockClearSessionSede.mockRejectedValue(new Error('Network error'));
     const user = userEvent.setup();
     render(<Dashboard config={wlcConfig} sede={sede} {...handlers} />);
 
@@ -626,16 +570,16 @@ describe('Dashboard', () => {
       expect(screen.getByTestId('guest-table')).toBeInTheDocument();
     });
 
-    const disconnectBtn = screen.getByTitle('Disconnetti');
-    await user.click(disconnectBtn);
+    const changeSedeBtn = screen.getByTestId('change-sede-btn');
+    await user.click(changeSedeBtn);
 
     // The API was called and rejected
     await waitFor(() => {
-      expect(mockUpdateWlcConfig).toHaveBeenCalledWith({ authenticated: false });
+      expect(mockClearSessionSede).toHaveBeenCalled();
     });
 
     // onDisconnect is still called (the catch silently ignores the error)
-    expect(handlers.onDisconnect).toHaveBeenCalledOnce();
+    expect(handlers.onChangeSede).toHaveBeenCalledOnce();
 
     // No error toast should appear (the catch block is silent: catch { /* ignore */ })
     expect(screen.queryByTestId('toast')).not.toBeInTheDocument();
@@ -824,5 +768,56 @@ describe('Dashboard', () => {
     unmount();
 
     expect(disconnectFn).toHaveBeenCalledOnce();
+  });
+
+  // ── Role gating ─────────────────────────────────────────────────────────
+  //
+  // Hiding a control is a convenience for the operator; the API is what refuses
+  // anything. These tests check the convenience, and in particular that an
+  // absent role — an older backend, or one of the many mocks that predate this
+  // — still gets the permissive behaviour rather than an empty console.
+
+  describe('role gating', () => {
+    it('shows everything to an admin', async () => {
+      render(<Dashboard config={wlcConfig} sede={sede} ssoUser={{ ...ssoUser, role: 'admin' }} {...handlers} />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('guest-table')).toBeInTheDocument();
+      });
+      expect(screen.getByTestId('settings-button')).toBeInTheDocument();
+      expect(screen.getByTestId('register-guest-btn')).toBeInTheDocument();
+    });
+
+    it('hides the administration panel from an operator', async () => {
+      render(<Dashboard config={wlcConfig} sede={sede} ssoUser={{ ...ssoUser, role: 'operator' }} {...handlers} />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('guest-table')).toBeInTheDocument();
+      });
+      expect(screen.queryByTestId('settings-button')).not.toBeInTheDocument();
+      // …but an operator still works with guests.
+      expect(screen.getByTestId('register-guest-btn')).toBeInTheDocument();
+    });
+
+    it('leaves a viewer with nothing that changes state', async () => {
+      render(<Dashboard config={wlcConfig} sede={sede} ssoUser={{ ...ssoUser, role: 'viewer' }} {...handlers} />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('guest-table')).toBeInTheDocument();
+      });
+      expect(screen.queryByTestId('settings-button')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('register-guest-btn')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('mock-resend')).not.toBeInTheDocument();
+    });
+
+    it('behaves as before when the backend sends no role', async () => {
+      render(<Dashboard config={wlcConfig} sede={sede} ssoUser={ssoUser} {...handlers} />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('guest-table')).toBeInTheDocument();
+      });
+      expect(screen.getByTestId('settings-button')).toBeInTheDocument();
+      expect(screen.getByTestId('register-guest-btn')).toBeInTheDocument();
+    });
   });
 });

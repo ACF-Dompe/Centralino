@@ -23,7 +23,11 @@ import { log } from '../logger.js';
 import type { SamlStrategy } from '../auth/saml.js';
 import { buildSloRedirectUrl } from '../auth/saml.js';
 import type { AppUser } from '../auth/user.js';
-import { toBreakGlassUser } from '../auth/user.js';
+import { toBreakGlassUser, isSamlUser } from '../auth/user.js';
+import type { AuthProfile } from '../auth/authorization.js';
+import { resolveAuthProfile, invalidateAuthProfile } from '../middleware/authorize.js';
+import { upsertAppUserFromSaml } from '../repositories/appUsers.js';
+import { listSedi } from '../repositories/index.js';
 import {
   DUMMY_PASSWORD_HASH,
   verifyPassword,
@@ -37,7 +41,18 @@ import { createIpAllowlist, type IpAllowlist } from '../utils/ipAllowlist.js';
 import { createLoginThrottle, type LoginThrottle } from '../utils/loginThrottle.js';
 import { isLocalUrl } from '../utils/sanitize.js';
 
-type BreakGlassConfig = typeof config.breakGlass;
+/**
+ * The break-glass settings the login path actually reads.
+ *
+ * The seed fields on `config.breakGlass` describe how the bootstrap account is
+ * created by the migration; they have nothing to do with serving a login, so
+ * they stay out of this contract rather than becoming something every caller
+ * (and every test) has to supply.
+ */
+type BreakGlassConfig = Omit<
+  typeof config.breakGlass,
+  'seedUsername' | 'seedDisplayName' | 'seedPassword'
+>;
 
 interface AuthRouterOptions {
   samlEnabled: boolean;
@@ -73,8 +88,18 @@ const BREAKGLASS_GENERIC_ERROR = 'Credenziali non valide.';
  */
 const parseSamlBody = express.urlencoded({ extended: false, limit: '1mb' });
 
-/** Payload shape returned by /me and by a successful break-glass login. */
-function toProfile(user: AppUser) {
+/**
+ * Payload shape returned by /me and by a successful break-glass login.
+ *
+ * The role travels with the profile so the UI can hide what the user cannot do,
+ * but it is resolved per request, never read back from the session — see
+ * auth/authorization.ts. `status` defaults to 'pending' when no profile could
+ * be resolved: an unknown user is an unprofiled one, not an allowed one.
+ *
+ * `sedeIds` is always a concrete list, including for admins and break-glass
+ * sessions, so the client never has to reason about a wildcard.
+ */
+function toProfile(user: AppUser, authz: AuthProfile | null, allSedeIds: number[]) {
   return {
     nameID: user.nameID,
     email: user.email,
@@ -83,7 +108,30 @@ function toProfile(user: AppUser) {
     surname: user.surname,
     objectId: user.objectId,
     authMethod: user.authMethod,
+    role: authz?.role ?? null,
+    status: authz?.status ?? 'pending',
+    sedeIds: authz ? (authz.allSedi ? allSedeIds : authz.sedeIds) : [],
   };
+}
+
+/**
+ * Build the profile payload for a session.
+ *
+ * Kept off `loadAuthorization` on purpose: that middleware answers 403 for an
+ * unprofiled user, and /me is precisely the endpoint that has to tell such a
+ * user *why* they are blocked. Answering 403 here would leave the frontend with
+ * nothing to show but the sign-in screen, which they would complete
+ * successfully, over and over.
+ */
+async function buildProfile(user: AppUser) {
+  let authz: AuthProfile | null = null;
+  try {
+    authz = await resolveAuthProfile(user);
+  } catch (err) {
+    log.error({ err: (err as Error).message }, 'Authorization lookup failed while building /me');
+  }
+  const allSedeIds = authz?.allSedi ? (await listSedi()).map((s) => s.id) : [];
+  return toProfile(user, authz, allSedeIds);
 }
 
 /** Common audit fields for every break-glass log line. */
@@ -284,10 +332,13 @@ function registerBreakGlassRoutes(
               'Break-glass login SUCCEEDED — SSO was bypassed',
             );
 
-            res.json({
-              success: true,
-              data: { ...toProfile(user), sessionTtlMinutes: bg.sessionTtlMinutes },
-            });
+            void (async () => {
+              const profile = await buildProfile(user);
+              res.json({
+                success: true,
+                data: { ...profile, sessionTtlMinutes: bg.sessionTtlMinutes },
+              });
+            })();
           });
         });
       } catch (err) {
@@ -379,7 +430,10 @@ export function createAuthRouter(opts: AuthRouterOptions): Router {
       // A break-glass session can exist in both of these states, so return it
       // when present.
       if (req.isAuthenticated() && req.user) {
-        return res.json({ success: true, data: toProfile(req.user as AppUser) });
+        void (async () => {
+          res.json({ success: true, data: await buildProfile(req.user as AppUser) });
+        })();
+        return;
       }
 
       // With SAML configured but broken, answer 401 — "you are not signed in" —
@@ -429,10 +483,61 @@ export function createAuthRouter(opts: AuthRouterOptions): Router {
       if (!req.user) {
         return res.redirect('/?sso_error=authentication-failed');
       }
-      const sessionData = req.session as unknown as Record<string, unknown>;
-      const redirectTo = (sessionData.samlRedirect as string) || '/';
-      delete sessionData.samlRedirect;
-      res.redirect(redirectTo);
+
+      const finishRedirect = (): void => {
+        const sessionData = req.session as unknown as Record<string, unknown>;
+        const redirectTo = (sessionData.samlRedirect as string) || '/';
+        delete sessionData.samlRedirect;
+        res.redirect(redirectTo);
+      };
+
+      // Just-in-time provisioning.
+      //
+      // It lives here rather than in the strategy's verify callback for two
+      // reasons: that callback is registered for the logout flow as well, so a
+      // LogoutResponse would trigger an upsert too, and putting a database
+      // write in `auth/saml.ts` would turn a pure protocol module into one that
+      // cannot be tested without a database.
+      //
+      // It cannot live in `deserializeUser` either — that runs on every single
+      // request.
+      void (async () => {
+        const user = req.user as AppUser;
+        if (!isSamlUser(user)) return finishRedirect();
+
+        try {
+          const provisioned = await upsertAppUserFromSaml(user);
+          // The row may have been changed by an admin moments ago; make sure
+          // this request sees the current state rather than a cached one.
+          invalidateAuthProfile(provisioned.subject);
+
+          log.info(
+            {
+              event: 'sso-jit-provisioning',
+              subject: provisioned.subject,
+              created: provisioned.created,
+              role: provisioned.role,
+              status: provisioned.status,
+              correlationId: req.correlationId,
+            },
+            provisioned.created
+              ? 'New SSO user created in pending state — an admin has to profile it before they can work'
+              : 'Existing SSO user, directory entry refreshed',
+          );
+          finishRedirect();
+        } catch (err) {
+          // Fail closed. No directory row means no authorization, so letting
+          // the session stand would leave the user authenticated and refused
+          // everywhere, with nothing explaining why.
+          log.error(
+            { err: (err as Error).message, correlationId: req.correlationId },
+            'JIT provisioning failed — destroying the session rather than leaving it half-established',
+          );
+          req.logout(() =>
+            req.session.destroy(() => res.redirect('/?sso_error=provisioning-failed')),
+          );
+        }
+      })();
     });
   });
 
@@ -527,7 +632,9 @@ export function createAuthRouter(opts: AuthRouterOptions): Router {
         error: 'Not authenticated. Use /api/auth/login to authenticate.',
       });
     }
-    res.json({ success: true, data: toProfile(req.user as AppUser) });
+    void (async () => {
+      res.json({ success: true, data: await buildProfile(req.user as AppUser) });
+    })();
   });
 
   return router;

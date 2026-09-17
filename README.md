@@ -373,25 +373,70 @@ the design rationale is in [backend/README.md](backend/README.md).
 | POST   | `/api/auth/callback` | SAML ACS — receive AuthnResponse from Entra ID |
 | POST   | `/api/auth/logout` | Logout (local + SLO redirect to Entra ID) |
 | POST   | `/api/auth/slo/callback` | Receive LogoutResponse from Entra ID (SLO) |
-| GET    | `/api/auth/me` | Return current user profile + `authMethod` (401/404 if unauthenticated) |
+| GET    | `/api/auth/me` | Current user profile, `authMethod`, plus `role` / `status` / `sedeIds` (401/404 if unauthenticated). Answers 200 even for an unprofiled user — it is how the UI knows *why* they are blocked |
 | GET    | `/api/auth/breakglass/status` | Whether the emergency login is usable by this client |
 | POST   | `/api/auth/breakglass/login` | Emergency local login (404 when disabled or IP not allowed) |
 | GET    | `/api/health` | Liveness probe (public, no auth required) |
-| POST   | `/api/wlc/login` | Verify WLC HTTPS credentials |
-| POST   | `/api/wlc/create-user` | Create guest account on the WLC (SSH) |
-| PUT    | `/api/wlc/status-user` | Enable / disable a guest |
-| POST   | `/api/wlc/delete-user` | Remove a guest |
-| POST   | `/api/wlc/get-users` | List users on the WLC |
-| POST   | `/api/wlc/import-users` | Import WLC users into local DB |
-| GET    | `/api/guests` | List guests (filter `?search&status&sedeId`) |
-| POST   | `/api/guests` | Create guest (returns one-time password) |
-| PUT    | `/api/guests/:id` | Update guest |
-| DELETE | `/api/guests/:id` | Delete guest |
-| POST   | `/api/guests/:id/resend-credentials` | Regenerate + re-send credentials |
-| GET/PUT| `/api/config/{wlc,email,sms}` | Channel configuration |
-| GET/DEL| `/api/sync-logs` | WLC operation history |
-| GET    | `/api/sedi` | List sites (sedi) |
-| GET    | `/api/sedi/:id` | Get site with WLC connection params |
+| GET    | `/api/session/context` | Who is signed in, what they may do, and which site they are on. The client bootstrap |
+| DELETE | `/api/session/sede` | Release the current site without signing out ("Cambia sede") |
+| POST   | `/api/wlc/login` | Connect this session to a site. Takes `{ sedeId }` only — host, port and username come from the site record, the password from Key Vault |
+| POST   | `/api/wlc/create-user` | Create guest account on the WLC (SSH) — **admin** |
+| PUT    | `/api/wlc/status-user` | Enable / disable a guest — **admin** |
+| POST   | `/api/wlc/delete-user` | Remove a guest — **admin** |
+| POST   | `/api/wlc/get-users` | List users on the WLC — **admin** |
+| POST   | `/api/wlc/import-users` | Import WLC users into local DB — **admin** |
+| GET    | `/api/guests` | List guests for the session's site (filter `?search&status`) |
+| POST   | `/api/guests` | Create guest (returns one-time password) — **operator** |
+| PUT    | `/api/guests/:id` | Update guest — **operator** |
+| DELETE | `/api/guests/:id` | Delete guest — **operator** |
+| POST   | `/api/guests/:id/resend-credentials` | Regenerate + re-send credentials — **operator** |
+| GET    | `/api/config/wlc` | *Deprecated* — resolves the session's site. Use `/api/session/context` |
+| GET/PUT| `/api/config/sms` | SMS channel configuration — **admin** |
+| GET/DEL| `/api/sync-logs` | WLC operation history — **operator** / **admin** |
+| GET    | `/api/sedi` | Sites in service that the caller may reach. Controller parameters are stripped for non-admins |
+| GET    | `/api/sedi/:id` | Get a site the caller may reach |
+
+### Administration — all under `requireRole('admin')`
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET    | `/api/admin/users` | User directory (filter `?status&search`) |
+| PATCH  | `/api/admin/users/:id` | Profile a user: role, status, granted sites |
+| DELETE | `/api/admin/users/:id` | Remove a directory entry (re-created, blocked, at the next sign-in) |
+| GET    | `/api/admin/sedi` | Every site, with connectivity diagnostics |
+| POST   | `/api/admin/sedi` | Create a site (starts out of service) |
+| PUT    | `/api/admin/sedi/:id` | Update a site. The code is immutable — it resolves the Key Vault secret |
+| PATCH  | `/api/admin/sedi/:id/active` | Put a site in or out of service |
+| POST   | `/api/admin/sedi/:id/test` | Probe the controller. Diagnostics only: touches no session |
+| DELETE | `/api/admin/sedi/:id` | Delete a site, refused while it still has guests |
+| GET    | `/api/admin/breakglass` | Emergency accounts and their state |
+| POST   | `/api/admin/breakglass/:username/{enable,disable,unlock}` | Enable, disable, clear a lockout |
+
+There is deliberately **no** endpoint that creates a break-glass account or
+rotates its password: those stay in `make breakglass`, so a compromised admin
+session cannot mint a credential that bypasses Entra (COMPLIANCE.md D1).
+
+## Roles
+
+Every user who completes SSO gets a directory entry at their first sign-in, and
+that entry starts **blocked**: the tenant can authenticate, but nothing is
+granted until an administrator profiles it.
+
+| Role | Can |
+|---|---|
+| `viewer` | See the dashboard and the guest list for the sites they were granted |
+| `operator` | The above, plus create, revoke and re-send credentials |
+| `admin` | The above at every site, plus the administration panel |
+
+Authorization is resolved per request and is **not** stored in the session, so a
+change takes effect within `RBAC_CACHE_TTL_SECONDS` (15s by default) rather than
+at the user's next sign-in.
+
+Bootstrapping a fresh deployment: the migration creates `bk.guestportal` when
+`BREAKGLASS_SEED_PASSWORD` is set, and that account can profile the first
+administrators. Without exposing the emergency login to a network, the same can
+be done with `make appusers ARGS="grant <email> --role admin --sedi MIL,AQ"`,
+run inside the container with `az containerapp exec`.
 
 
 ## Key Vault & ACA Configuration

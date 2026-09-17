@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { api, type SamlUser } from '../api/client';
+import { api, ApiError, type SamlUser } from '../api/client';
 import { useLocale } from '../i18n';
-import { Key, AlertTriangle, Building, MapPin, ArrowRight, Loader2, User } from './icons';
+import { AlertTriangle, Building, MapPin, ArrowRight, Loader2 } from './icons';
+import UserTag from './UserTag';
 import type { Sede, WlcConfig } from '../types';
 
 interface LoginProps {
@@ -9,11 +10,27 @@ interface LoginProps {
   onAuthenticated: (cfg: WlcConfig, sede: Sede) => void;
 }
 
+/**
+ * Site selection, and nothing else.
+ *
+ * This screen used to carry a form for the controller's address, ports, admin
+ * account and SSID — every operator retyping infrastructure settings at each
+ * sign-in, with the values sent back to the server and saved. Those parameters
+ * now live on the site record and are edited in the admin panel, which leaves
+ * this screen with a single question: which site are you at?
+ */
 export default function Login({ ssoUser, onAuthenticated }: LoginProps) {
   const [, , t] = useLocale();
   const [sedi, setSedi] = useState<Sede[]>([]);
-  const [selectedSede, setSelectedSede] = useState<Sede | null>(null);
   const [loadingSedi, setLoadingSedi] = useState(true);
+  /** Site currently being connected — drives the spinner and blocks double clicks. */
+  const [connectingId, setConnectingId] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [errorSedeId, setErrorSedeId] = useState<number | null>(null);
+  /** Set when the controller could not be reached, to offer the dev sandbox. */
+  const [unreachableSede, setUnreachableSede] = useState<Sede | null>(null);
+
+  const isAdmin = ssoUser?.role === 'admin';
 
   useEffect(() => {
     api.listSedi()
@@ -21,6 +38,95 @@ export default function Login({ ssoUser, onAuthenticated }: LoginProps) {
       .catch(() => setSedi([]))
       .finally(() => setLoadingSedi(false));
   }, []);
+
+  /**
+   * Turn a failure into something the operator can act on.
+   *
+   * Worth the detail: "unreachable" is somebody's job to fix on the network,
+   * a wrong password is nobody's job on this screen, and a missing Key Vault
+   * secret is an administrator's. Collapsing them into one message would send
+   * every case to the same dead end.
+   */
+  function describeFailure(sede: Sede, code: string | undefined, message: string | undefined, unreachable: boolean): string {
+    switch (code) {
+      case 'CREDENTIAL_MISSING':
+        return t('login.error.credentialMissing', { sede: sede.name });
+      case 'SEDE_INACTIVE':
+        return t('login.error.sedeInactive', { sede: sede.name });
+      case 'WLC_NOT_CONFIGURED':
+        return t('login.error.notConfigured', { sede: sede.name });
+      case 'sede_forbidden':
+        return t('login.error.forbidden', { sede: sede.name });
+      default:
+        if (unreachable) return t('login.error.unreachableSede', { sede: sede.name });
+        return message || t('login.error.creds');
+    }
+  }
+
+  async function connect(sede: Sede) {
+    if (connectingId != null) return; // already connecting
+    setConnectingId(sede.id);
+    setError(null);
+    setErrorSedeId(null);
+    setUnreachableSede(null);
+
+    try {
+      const r = await api.wlcLogin({ sedeId: sede.id });
+      if (r.success) {
+        onAuthenticated(
+          {
+            id: sede.id,
+            host: sede.wlcHost ?? '',
+            port: sede.wlcPort ?? 443,
+            sshPort: sede.wlcSshPort ?? 22,
+            username: sede.wlcUsername ?? '',
+            wlanSsid: sede.wlcSsid ?? '',
+            authenticated: true,
+            sedeId: sede.id,
+          },
+          sede,
+        );
+        return;
+      }
+      const unreachable = r.isUnreachable === true;
+      setError(describeFailure(sede, r.error, r.message ?? r.error, unreachable));
+      setErrorSedeId(sede.id);
+      if (unreachable) setUnreachableSede(sede);
+    } catch (err) {
+      const apiErr = err as ApiError;
+      // A network-level failure reaching our own backend is indistinguishable
+      // from the controller being down, so offer the same escape hatch.
+      const unreachable = apiErr.code === undefined || apiErr.status >= 500;
+      setError(describeFailure(sede, apiErr.code, apiErr.message, unreachable));
+      setErrorSedeId(sede.id);
+      if (unreachable) setUnreachableSede(sede);
+    } finally {
+      setConnectingId(null);
+    }
+  }
+
+  /**
+   * Enter the local sandbox: a session bound to a site whose controller never
+   * answered, so guests are written to the database and never pushed.
+   *
+   * Development only. In production this would hand an operator a console that
+   * looks like it works and silently provisions nobody.
+   */
+  function enterSandbox(sede: Sede) {
+    onAuthenticated(
+      {
+        id: sede.id,
+        host: sede.wlcHost ?? '',
+        port: sede.wlcPort ?? 443,
+        sshPort: sede.wlcSshPort ?? 22,
+        username: sede.wlcUsername ?? '',
+        wlanSsid: sede.wlcSsid ?? '',
+        authenticated: false,
+        sedeId: sede.id,
+      },
+      sede,
+    );
+  }
 
   return (
     <div className="grid min-h-screen lg:grid-cols-2">
@@ -54,234 +160,89 @@ export default function Login({ ssoUser, onAuthenticated }: LoginProps) {
         </div>
       </div>
 
-      {/* Right panel: SSO user tag + sede selector or WLC form */}
+      {/* Right panel: user tag + sede selector */}
       <div className="flex items-center justify-center bg-slate-50 p-6">
-        {ssoUser && (
-          <div className="absolute right-3 top-3 hidden items-center gap-2 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-600 shadow-sm md:flex">
-            <User className="h-3.5 w-3.5" />
-            <span className="font-medium text-slate-700">{ssoUser.displayName}</span>
-            <span className="text-slate-400">{ssoUser.email}</span>
+        {ssoUser && <UserTag user={ssoUser} className="absolute right-3 top-3 hidden bg-white shadow-sm md:flex" />}
+
+        <div className="w-full max-w-2xl">
+          <div className="mb-6 flex items-center gap-3 lg:hidden">
+            <img src="/logo.png" alt="Dompe" className="h-6" />
           </div>
-        )}
-        {selectedSede === null ? (
-          <SedeSelector
-            sedi={sedi}
-            loading={loadingSedi}
-            onSelect={setSelectedSede}
-          />
-        ) : (
-          <SedeWlcForm
-            sede={selectedSede}
-            onBack={() => setSelectedSede(null)}
-            onAuthenticated={onAuthenticated}
-          />
-        )}
-      </div>
-    </div>
-  );
-}
 
-function SedeSelector({
-  sedi,
-  loading,
-  onSelect,
-}: {
-  sedi: Sede[];
-  loading: boolean;
-  onSelect: (s: Sede) => void;
-}) {
-  const [, , t] = useLocale();
-  return (
-    <div className="w-full max-w-2xl">
-      <div className="mb-6 flex items-center gap-3 lg:hidden">
-        <img src="/logo.png" alt="Dompe" className="h-6" />
-      </div>
+          <h2 className="text-xl font-bold text-navy">{t('login.sede.heading')}</h2>
+          <p className="mt-1 text-sm text-slate-500">{t('login.sede.subtitle')}</p>
 
-      <h2 className="text-xl font-bold text-navy">{t('login.sede.heading')}</h2>
-      <p className="mt-1 text-sm text-slate-500">{t('login.sede.subtitle')}</p>
-
-      {loading ? (
-        <div className="mt-8 flex items-center justify-center gap-2 text-slate-500">
-          <Loader2 className="h-4 w-4 animate-spin" /> {t('toast.loading')}
-        </div>
-      ) : sedi.length === 0 ? (
-        <div className="mt-8 rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
-          {t('login.sede.empty')}
-        </div>
-      ) : (
-        <div className="mt-6 grid gap-3 sm:grid-cols-2">
-          {sedi.map((s) => (
-            <button
-              key={s.id}
-              onClick={() => onSelect(s)}
-              className="group card flex items-start gap-3 p-4 text-left transition hover:shadow-elev hover:ring-2 hover:ring-navy/30"
+          {loadingSedi ? (
+            <div className="mt-8 flex items-center justify-center gap-2 text-slate-500">
+              <Loader2 className="h-4 w-4 animate-spin" /> {t('toast.loading')}
+            </div>
+          ) : sedi.length === 0 ? (
+            // Distinguished from a configuration problem on purpose: an
+            // operator with no grants needs an administrator, not a network
+            // engineer. Admins see every site, so for them an empty list really
+            // does mean nothing is configured.
+            <div
+              data-testid="sede-empty"
+              className="mt-8 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800"
             >
-              <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-navy text-white">
-                <Building className="h-5 w-5" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <span className="rounded bg-navy/5 px-1.5 py-0.5 font-mono text-[10px] font-bold text-navy">
-                    {s.code}
-                  </span>
-                  <div className="truncate text-sm font-bold text-slate-800">{s.name}</div>
+              {isAdmin ? t('login.sede.empty') : t('login.sede.noneAssigned')}
+            </div>
+          ) : (
+            <div className="mt-6 grid gap-3 sm:grid-cols-2">
+              {sedi.map((s) => (
+                <div key={s.id}>
+                  <button
+                    data-testid={`sede-card-${s.code}`}
+                    onClick={() => connect(s)}
+                    disabled={connectingId != null}
+                    aria-busy={connectingId === s.id}
+                    className="group card flex w-full items-start gap-3 p-4 text-left transition hover:shadow-elev hover:ring-2 hover:ring-navy/30 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-navy text-white">
+                      {connectingId === s.id
+                        ? <Loader2 className="h-5 w-5 animate-spin" />
+                        : <Building className="h-5 w-5" />}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="rounded bg-navy/5 px-1.5 py-0.5 font-mono text-[10px] font-bold text-navy">
+                          {s.code}
+                        </span>
+                        <div className="truncate text-sm font-bold text-slate-800">{s.name}</div>
+                      </div>
+                      <div className="mt-1 flex items-center gap-1 text-xs text-slate-500">
+                        <MapPin className="h-3 w-3" />
+                        <span className="truncate">{s.city}</span>
+                      </div>
+                      {s.address && <div className="mt-1 truncate text-[11px] text-slate-400">{s.address}</div>}
+                    </div>
+                    <ArrowRight className="h-4 w-4 flex-shrink-0 text-slate-300 transition group-hover:translate-x-0.5 group-hover:text-navy" />
+                  </button>
+
+                  {errorSedeId === s.id && error && (
+                    <div
+                      data-testid={`sede-error-${s.code}`}
+                      className="mt-1.5 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700"
+                    >
+                      <AlertTriangle className="mr-1 inline h-3 w-3 align-text-bottom" />
+                      {error}
+                      <button
+                        className="ml-2 font-semibold underline hover:no-underline"
+                        onClick={() => connect(s)}
+                      >
+                        {t('login.retry')}
+                      </button>
+                    </div>
+                  )}
                 </div>
-                <div className="mt-1 flex items-center gap-1 text-xs text-slate-500">
-                  <MapPin className="h-3 w-3" />
-                  <span className="truncate">{s.city}</span>
-                </div>
-                {s.address && <div className="mt-1 truncate text-[11px] text-slate-400">{s.address}</div>}
-                {s.wlcHost && (
-                  <div className="mt-1.5 truncate font-mono text-[10px] text-slate-400">WLC: {s.wlcHost}</div>
-                )}
-              </div>
-              <ArrowRight className="h-4 w-4 flex-shrink-0 text-slate-300 transition group-hover:translate-x-0.5 group-hover:text-navy" />
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function SedeWlcForm({
-  sede,
-  onBack,
-  onAuthenticated,
-}: {
-  sede: Sede;
-  onBack: () => void;
-  onAuthenticated: (cfg: WlcConfig, sede: Sede) => void;
-}) {
-  const [, , t] = useLocale();
-  const [host, setHost] = useState(sede.wlcHost ?? '172.18.106.100');
-  const [port, setPort] = useState(sede.wlcPort ?? 443);
-  const [sshPort, setSshPort] = useState(sede.wlcSshPort ?? 22);
-  const [username, setUsername] = useState('admin_guest');
-  const [ssid, setSsid] = useState(sede.wlcSsid ?? 'Dompe Guest');
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [unreachable, setUnreachable] = useState(false);
-  const [showDemo, setShowDemo] = useState(false);
-
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    setSubmitting(true);
-    setError(null);
-    setUnreachable(false);
-    try {
-      const r = await api.wlcLogin({ host, port, username, sedeId: sede.id });
-      if (r.success) {
-        onAuthenticated({ id: 0, host, port, sshPort, username, wlanSsid: ssid, authenticated: true, sedeId: sede.id }, sede);
-        return;
-      }
-      if (r.isUnreachable) {
-        setUnreachable(true);
-        setShowDemo(true);
-        setError(r.error ?? t('login.error.unreachable'));
-      } else {
-        setError(r.error ?? t('login.error.creds'));
-      }
-    } catch (err) {
-      setError((err as Error).message);
-      setUnreachable(true);
-      setShowDemo(true);
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  function enableDemo() {
-    onAuthenticated({ id: 0, host, port, sshPort, username, wlanSsid: ssid, authenticated: false, sedeId: sede.id }, sede);
-  }
-
-  return (
-    <>
-      <form onSubmit={submit} className="card w-full max-w-md p-8">
-        <button
-          type="button"
-          onClick={onBack}
-          className="mb-3 text-xs font-medium text-slate-500 transition hover:text-navy"
-        >
-          ← {t('login.sede.changeSede')}
-        </button>
-
-        <div className="mb-4 flex items-center gap-3 rounded-lg border border-navy/10 bg-navy/5 p-3">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-navy text-white">
-            <Building className="h-4 w-4" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <span className="rounded bg-navy/10 px-1.5 py-0.5 font-mono text-[10px] font-bold text-navy">{sede.code}</span>
-              <div className="truncate text-sm font-bold text-slate-800">{sede.name}</div>
+              ))}
             </div>
-            <div className="truncate text-[11px] text-slate-500">{sede.city} · WLC {host}</div>
-          </div>
+          )}
         </div>
+      </div>
 
-        <h2 className="text-xl font-bold text-navy">{t('login.heading')}</h2>
-        <p className="mt-1 text-sm text-slate-500">{t('login.subtitle')}</p>
-
-        {error && (
-          <div className="mt-4 flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
-            <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0" />
-            <span>{error}</span>
-          </div>
-        )}
-
-        <div className="mt-6 grid grid-cols-2 gap-4">
-          <div className="col-span-2">
-            <label className="label" htmlFor="wlc-host">{t('login.host')}</label>
-            <input id="wlc-host" className="input" value={host} onChange={(e) => setHost(e.target.value)} required />
-          </div>
-          <div>
-            <label className="label" htmlFor="wlc-port">{t('login.port')}</label>
-            <input id="wlc-port" className="input" type="number" value={port} onChange={(e) => setPort(Number(e.target.value))} />
-          </div>
-          <div>
-            <label className="label" htmlFor="wlc-ssh-port">{t('login.sshPort')}</label>
-            <input id="wlc-ssh-port" className="input" type="number" value={sshPort} onChange={(e) => setSshPort(Number(e.target.value))} />
-          </div>
-          <div className="col-span-2">
-            <label className="label" htmlFor="wlc-username">{t('login.username')}</label>
-            <div className="relative">
-              <input id="wlc-username" className="input pl-9" value={username} onChange={(e) => setUsername(e.target.value)} required />
-              <Key className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-            </div>
-          </div>
-          <div className="col-span-2">
-            <label className="label" htmlFor="wlc-ssid">{t('login.ssid')}</label>
-            <input id="wlc-ssid" className="input" value={ssid} onChange={(e) => setSsid(e.target.value)} />
-          </div>
-        </div>
-
-        <button data-testid="wlc-connect-btn" type="submit" className="btn-primary mt-6 w-full" disabled={submitting}>
-          {submitting ? t('toast.loading') : t('login.submit')}
-        </button>
-
-        {import.meta.env.DEV && (
-          <>
-            <div className="mt-4 flex items-center gap-3">
-              <div className="h-px flex-1 bg-slate-200" />
-              <span className="text-[10px] font-medium uppercase tracking-widest text-slate-400">{t('login.or')}</span>
-              <div className="h-px flex-1 bg-slate-200" />
-            </div>
-
-            <button
-              type="button"
-              onClick={enableDemo}
-              className="btn-ghost mt-3 w-full"
-            >
-              <span aria-hidden>🧪</span> {t('login.demo.enter')}
-            </button>
-            <p className="mt-1.5 text-center text-[11px] text-slate-400">
-              {t('login.demo.description')}
-            </p>
-          </>
-        )}
-      </form>
-
-      {showDemo && unreachable && (
+      {/* Local sandbox. Development only — see enterSandbox. */}
+      {import.meta.env.DEV && unreachableSede && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
           <div className="card w-full max-w-md p-6 shadow-elev">
             <div className="flex items-center gap-3">
@@ -296,16 +257,16 @@ function SedeWlcForm({
             <p className="mt-4 text-sm text-slate-600">{t('login.demo.detail')}</p>
             {error && <p className="mt-2 text-xs italic text-slate-500">{error}</p>}
             <div className="mt-6 flex flex-col gap-2 sm:flex-row sm:justify-end">
-              <button className="btn-ghost" onClick={() => setShowDemo(false)}>
+              <button className="btn-ghost" onClick={() => setUnreachableSede(null)}>
                 {t('login.demo.edit')}
               </button>
-              <button className="btn-primary" onClick={enableDemo}>
+              <button className="btn-primary" onClick={() => enterSandbox(unreachableSede)}>
                 {t('login.demo.enable')}
               </button>
             </div>
           </div>
         </div>
       )}
-    </>
+    </div>
   );
 }

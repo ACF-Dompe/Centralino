@@ -11,19 +11,35 @@
  * The WebSocket endpoint is at `/api/ws`.
  * Messages are JSON: { type: string, data?: unknown, timestamp: string }
  *
- * Authentication:
+ * Authentication and authorization:
  *   WebSocket upgrades are authenticated via the same Express session that
  *   protects the REST API. On upgrade, the session cookie (guestportal.sid) is
  *   parsed and validated against the PostgreSQL session store. Only clients
  *   with a valid passport-authenticated session are allowed to upgrade.
  *   Unauthenticated upgrade requests receive a 401 response.
+ *
+ *   The verifier also resolves the caller's authorization, for two reasons: a
+ *   suspended user must not keep a live socket just because their session
+ *   cookie is still valid, and each connection has to remember which site it
+ *   may hear about. Events used to go to every client regardless, so an
+ *   operator in one city saw guest names appear from another — harmless while
+ *   sites were only a filter, not acceptable now that they are a boundary.
  */
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { Server, IncomingMessage } from 'http';
 import { log } from '../logger.js';
 
+/** What a connection is allowed to hear. */
+interface ClientContext {
+  ws: WebSocket;
+  /** Site this connection may receive events for; null means every site. */
+  sedeId: number | null;
+  /** True for an admin or break-glass session: no site restriction. */
+  allSedi: boolean;
+}
+
 /** Connected clients, keyed by a monotonic connection id. */
-const clients = new Map<number, WebSocket>();
+const clients = new Map<number, ClientContext>();
 let nextId = 0;
 
 export type WsEvent =
@@ -42,11 +58,15 @@ export type WsEvent =
  */
 export interface SessionVerifier {
   /**
-   * Verify that a request has a valid authenticated session.
-   * Calls the callback with `true` if the session is valid (contains a
-   * passport user), or `false` otherwise.
+   * Verify that a request has a valid, currently-authorized session.
+   *
+   * Calls back with null to refuse the upgrade, or with the scope the
+   * connection should be granted.
    */
-  verifySession: (req: IncomingMessage, callback: (ok: boolean) => void) => void;
+  verifySession: (
+    req: IncomingMessage,
+    callback: (scope: { sedeId: number | null; allSedi: boolean } | null) => void,
+  ) => void;
 }
 
 /**
@@ -72,9 +92,9 @@ export function initWsServer(server: Server, sessionVerifier: SessionVerifier): 
     const reqPath = request.url ?? '';
     if (!reqPath.startsWith('/api/ws')) return; // Not our path — pass through
 
-    sessionVerifier.verifySession(request, (ok) => {
-      if (!ok) {
-        log.warn({ ip: request.socket.remoteAddress }, 'WebSocket upgrade rejected — unauthenticated');
+    sessionVerifier.verifySession(request, (scope) => {
+      if (!scope) {
+        log.warn({ ip: request.socket.remoteAddress }, 'WebSocket upgrade rejected — unauthenticated or not authorized');
         socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
         socket.destroy();
         return;
@@ -82,15 +102,25 @@ export function initWsServer(server: Server, sessionVerifier: SessionVerifier): 
 
       // Session valid — perform the WebSocket upgrade
       wss.handleUpgrade(request, socket, head, (ws) => {
-        wss.emit('connection', ws, request);
+        wss.emit('connection', ws, request, scope);
       });
     });
   });
 
-  wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
+  wss.on('connection', (
+    ws: WebSocket,
+    req: IncomingMessage,
+    scope?: { sedeId: number | null; allSedi: boolean },
+  ) => {
     const id = nextId++;
-    clients.set(id, ws);
-    log.debug({ clientId: id, total: clients.size, ip: req.socket.remoteAddress }, 'WebSocket connected');
+    clients.set(id, {
+      ws,
+      sedeId: scope?.sedeId ?? null,
+      // Absent scope means the caller wired a permissive verifier (tests);
+      // treat it as unrestricted rather than silently muting every event.
+      allSedi: scope?.allSedi ?? true,
+    });
+    log.debug({ clientId: id, total: clients.size, sedeId: scope?.sedeId ?? null, ip: req.socket.remoteAddress }, 'WebSocket connected');
 
     ws.on('close', () => {
       clients.delete(id);
@@ -120,8 +150,8 @@ export function initWsServer(server: Server, sessionVerifier: SessionVerifier): 
 export function shutdownWsServer(): void {
   if (!_wss) return;
   // Close all connected clients
-  for (const [id, ws] of clients) {
-    try { ws.close(); } catch { /* ignore */ }
+  for (const [id, client] of clients) {
+    try { client.ws.close(); } catch { /* ignore */ }
     clients.delete(id);
   }
   _wss.close(() => {
@@ -130,9 +160,20 @@ export function shutdownWsServer(): void {
   _wss = null;
 }
 
+/** Which site an event concerns, or null when it concerns no site in particular. */
+function eventSedeId(event: WsEvent): number | null {
+  const raw = (event.data as { sedeId?: number | null }).sedeId;
+  return raw == null ? null : Number(raw);
+}
+
 /**
- * Broadcast an event to every connected WebSocket client.
- * Serialises the event as JSON with an automatic timestamp.
+ * Broadcast an event to the clients entitled to see it.
+ *
+ * Events carry a site, and a connection only receives the ones for the site it
+ * is working on — guest names are personal data, and there is no reason for an
+ * operator in one location to be told who just connected in another. Events
+ * with no site attached still go to everyone; only admins and break-glass
+ * sessions see everything.
  */
 export function broadcast(event: WsEvent): void {
   if (clients.size === 0) return;
@@ -141,14 +182,18 @@ export function broadcast(event: WsEvent): void {
     ...event,
     timestamp: new Date().toISOString(),
   });
+  const sedeId = eventSedeId(event);
 
-  for (const [id, ws] of clients) {
+  for (const [id, client] of clients) {
     try {
-      if (ws.readyState === ws.OPEN) {
-        ws.send(message);
-      } else {
+      if (client.ws.readyState !== client.ws.OPEN) {
         clients.delete(id); // clean up stale connections
+        continue;
       }
+      const entitled =
+        client.allSedi || sedeId == null || client.sedeId === sedeId;
+      if (!entitled) continue;
+      client.ws.send(message);
     } catch {
       clients.delete(id); // remove on send error
     }

@@ -183,6 +183,41 @@ export const config = {
      * this is the most effective compensating control available.
      */
     ipAllowlist: readString('BREAKGLASS_IP_ALLOWLIST', ''),
+
+    /**
+     * Bootstrap account, created by the migration when it does not yet exist.
+     *
+     * It is what makes the user directory usable at all: every SSO user is
+     * created blocked, so somebody has to be able to profile the first admins,
+     * and this account is that somebody.
+     *
+     * SECRET. There is deliberately no default password: an empty value means
+     * the account is simply not created (create it with the CLI instead). A
+     * built-in default would be a published backdoor, and a generated one would
+     * be a password nobody knows.
+     */
+    seedUsername: readString('BREAKGLASS_SEED_USERNAME', 'bk.guestportal'),
+    seedDisplayName: readString('BREAKGLASS_SEED_DISPLAY_NAME', 'Break Glass Guest Portal'),
+    seedPassword: readString('BREAKGLASS_SEED_PASSWORD', ''),
+  },
+
+  /**
+   * Role-based access control.
+   *
+   * `cacheTtlSeconds` bounds how stale an authorization decision can be. It is
+   * kept below the dashboard's 30s poll on purpose: a suspended user loses
+   * access at their next automatic refresh, without having to click anything.
+   * Lower it to react faster, at the cost of a lookup per request per user.
+   *
+   * `enforcement` set to 'log-only' records what would have been denied and
+   * lets it through — a way to watch a rollout before it can lock anybody out.
+   * It is not a default: the code ships enforcing.
+   */
+  rbac: {
+    cacheTtlSeconds: readNumber('RBAC_CACHE_TTL_SECONDS', 15),
+    enforcement: readString('RBAC_ENFORCEMENT', 'enforce').toLowerCase() === 'log-only'
+      ? ('log-only' as const)
+      : ('enforce' as const),
   },
 
   /**

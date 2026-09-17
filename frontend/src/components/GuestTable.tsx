@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useLocale } from '../i18n';
 import { formatRemaining, progressPercent, progressBarClass, statusBadgeClass } from '../utils/time';
-import { Copy, Trash, Send, Check, Wifi, Building, Phone, Mail, RefreshCw } from './icons';
+import { Copy, Trash, Check, Wifi, Building, Phone, Mail, RefreshCw } from './icons';
 import type { Guest } from '../types';
 
 interface Props {
@@ -9,11 +9,15 @@ interface Props {
   loading: boolean;
   onActivate: (g: Guest) => void;
   onDelete: (g: Guest) => void;
-  onBadge: (g: Guest) => void;
   onResend?: (g: Guest) => void;
+  /**
+   * Hide every action that changes something, for the read-only role. The
+   * copy-to-clipboard buttons stay: reading is exactly what this role is for.
+   */
+  readOnly?: boolean;
 }
 
-export default function GuestTable({ guests, loading, onActivate, onDelete, onBadge, onResend }: Props) {
+export default function GuestTable({ guests, loading, onActivate, onDelete, onResend, readOnly = false }: Props) {
   const [, , t] = useLocale();
   const [tick, setTick] = useState(0);
 
@@ -123,22 +127,21 @@ export default function GuestTable({ guests, loading, onActivate, onDelete, onBa
                   </td>
                   <td className="px-4 py-3 align-top">
                     <div className="flex items-center justify-end gap-1">
-                      {g.status === 'pending' && (
+                      {!readOnly && g.status === 'pending' && (
                         <button className="btn-ghost text-emerald-700 hover:bg-emerald-50" onClick={() => onActivate(g)} title={t('table.activate')}>
                           <Check className="h-4 w-4" />
                         </button>
                       )}
-                      <button className="btn-ghost text-navy hover:bg-navy/5" onClick={() => onBadge(g)} title={t('table.badge')}>
-                        <Send className="h-4 w-4" />
-                      </button>
-                      {onResend && g.email && (
+                      {!readOnly && onResend && g.email && (
                         <button className="btn-ghost text-indigo-700 hover:bg-indigo-50" onClick={() => onResend(g)} title={t('table.resend')}>
                           <RefreshCw className="h-4 w-4" />
                         </button>
                       )}
-                      <button className="btn-ghost text-rose-600 hover:bg-rose-50" onClick={() => onDelete(g)} title={t('table.delete')}>
-                        <Trash className="h-4 w-4" />
-                      </button>
+                      {!readOnly && (
+                        <button className="btn-ghost text-rose-600 hover:bg-rose-50" onClick={() => onDelete(g)} title={t('table.delete')}>
+                          <Trash className="h-4 w-4" />
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>

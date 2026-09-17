@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import { useLocale } from '../i18n';
 import BreakGlassLogin from './BreakGlassLogin';
-import { Building, ArrowRight, LogIn } from './icons';
+import { Building, ArrowRight, LogIn, AlertTriangle } from './icons';
 
 interface SsoLoginProps {
   /** Called after a successful break-glass login, to re-run the bootstrap. */
@@ -13,6 +13,14 @@ export default function SsoLogin({ onBreakGlassAuthenticated }: SsoLoginProps = 
   const [, , t] = useLocale();
   const [breakGlassAvailable, setBreakGlassAvailable] = useState(false);
   const [showBreakGlass, setShowBreakGlass] = useState(false);
+
+  /**
+   * The ACS redirects back here with a reason when a sign-in could not be
+   * completed. Without showing it, a user whose directory entry failed to be
+   * created would just land on the sign-in page again, complete it again, and
+   * have no idea why nothing happens.
+   */
+  const ssoError = new URLSearchParams(window.location.search).get('sso_error');
 
   // The backend reports `false` both when the feature is off and when this
   // client is outside the CIDR allowlist, so the link never appears to someone
@@ -78,6 +86,16 @@ export default function SsoLogin({ onBreakGlassAuthenticated }: SsoLoginProps = 
             <h2 className="mt-6 text-2xl font-bold text-navy">
               {t('sso.heading')}
             </h2>
+
+            {ssoError === 'provisioning-failed' && (
+              <div
+                data-testid="sso-provisioning-error"
+                className="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-left text-xs text-rose-700"
+              >
+                <AlertTriangle className="mr-1 inline h-3.5 w-3.5 align-text-bottom" />
+                {t('sso.error.provisioning')}
+              </div>
+            )}
             <p className="mt-2 text-sm text-slate-500">
               {t('sso.subtitle')}
             </p>

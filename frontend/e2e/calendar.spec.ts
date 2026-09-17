@@ -100,13 +100,15 @@ test.describe('Calendar date picker — Custom duration', () => {
     ).not.toBeVisible();
   });
 
-  test('switches back to a numeric input when a preset chip is clicked', async ({ page }) => {
+  test('hides the date picker when a preset chip is clicked', async ({ page }) => {
     await enterDemoSandbox(page);
     await openRegisterGuestModal(page);
     await page.getByRole('button', { name: /Data personalizzata/i }).click();
     await expect(page.getByTestId('custom-date-input')).toBeVisible();
     await page.getByRole('button', { name: /^4 ore$/ }).click();
     await expect(page.getByTestId('custom-date-input')).not.toBeVisible();
-    await expect(page.getByTestId('duration-number-input')).toBeVisible();
+    // The duration is now a preset or an end date — there is no free-form
+    // minutes box left to fall back to.
+    await expect(page.getByTestId('duration-number-input')).toHaveCount(0);
   });
 });

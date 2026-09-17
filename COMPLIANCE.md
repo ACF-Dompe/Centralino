@@ -124,7 +124,9 @@ Tutti i **P0** (4/4) e **P1‑P2** (11/11) sono stati risolti nel codice. In que
 | Rigenerazione della sessione al login (anti session-fixation) e TTL cookie ridotto (default 120 min vs 24 h SSO) | `routes/auth.ts` |
 | Scadenza per account (`expires_at`) per time-boxare le credenziali | `breakglass_users` |
 | Audit a livello `warn` di **ogni** tentativo, riuscito o no, con `event`/`reason`/`ip`/`userAgent`/`correlationId`; alert KQL obbligatorio in guida di deploy §1.3.4 | `routes/auth.ts` |
-| Account creabili **solo da CLI**: nessun endpoint HTTP di gestione, che sarebbe una via di privilege escalation da una sessione compromessa | `scripts/breakglass.ts` |
+| **Creazione e rotazione password solo da CLI.** Gli endpoint HTTP esposti (`GET /api/admin/breakglass`, `enable`, `disable`, `unlock`) non possono creare un account né cambiarne la password: una sessione admin compromessa non può coniarsi un bypass permanente dell'SSO. Richiedono ruolo `admin` e sono auditati a `warn`, **letture comprese** | `scripts/breakglass.ts`, `routes/admin.ts` |
+| Guardia `last_breakglass`: il pannello rifiuta di disabilitare l'ultimo account utilizzabile — sono credenziali che servono proprio quando l'SSO è giù e nessuno potrebbe crearne di nuove | `routes/admin.ts` |
+| Account di bootstrap creato dalla migrazione solo se `BREAKGLASS_SEED_PASSWORD` è presente e lunga almeno 16 caratteri, e **solo se assente** (`ON CONFLICT DO NOTHING`): non ruota una password già cambiata né riabilita un account disabilitato di proposito. Nessuna password di default nel sorgente | `db/bootstrapBreakGlass.ts` |
 | Banner ambra persistente + badge in dashboard: una sessione di emergenza non può passare per una sessione normale | `Dashboard.tsx` |
 | Il logout break-glass **non** tenta il Single Logout SAML (il `nameID` è un utente locale, non un soggetto Entra) | `routes/auth.ts` |
 
@@ -134,6 +136,9 @@ Tutti i **P0** (4/4) e **P1‑P2** (11/11) sono stati risolti nel codice. In que
 2. Dipende da PostgreSQL: copre un outage di **Entra/SSO**, non del **database**.
 3. Il throttle per IP è per-replica; il lockout per account è globale.
 4. `BREAKGLASS_IP_ALLOWLIST` vuota espone l'endpoint a internet: in assenza di secondo fattore è il controllo compensativo più efficace e va popolata con i CIDR di egress corporate/VPN. Il backend logga un `warn` esplicito all'avvio se il break-glass è abilitato senza allowlist.
+5. **Un amministratore compromesso può disabilitare (non creare) un account break-glass.** La guardia `last_breakglass` impedisce di azzerarli tutti, e ogni azione è auditata; resta comunque un modo per degradare la disponibilità del percorso di emergenza.
+6. `BREAKGLASS_SEED_PASSWORD` è un **segreto** e va legata al solo job ACA di migrazione, non al container backend: quest'ultimo non ne ha mai bisogno (in produzione `SKIP_MIGRATIONS=true`). Dopo il bootstrap la password va ruotata da CLI e archiviata nel password manager — il valore in Key Vault a quel punto non è più quello vivo.
+7. **L'account break-glass è il bootstrap della profilazione utenti.** Ogni utente SSO nasce bloccato, quindi finché non esiste un amministratore profilato questo account è l'unico che può crearne uno. In alternativa, senza esporre nulla su internet, si usa `make appusers` via `az containerapp exec`.
 
 ---
 

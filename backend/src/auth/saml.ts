@@ -53,6 +53,33 @@ export interface SamlUser {
 }
 
 /**
+ * Build the name shown in the UI for an SSO user.
+ *
+ * Entra ID populates the `.../claims/name` claim with the UPN, which for this
+ * tenant is the mail address. Using it as the display name made the header read
+ * the address twice — once as the "name" and once as the email next to it. The
+ * given name and surname claims carry the actual person's name, so prefer them
+ * and keep `.../claims/name` only as a fallback for a tenant that does not
+ * release them.
+ *
+ * Every candidate is a claim we do not control, so each one is trimmed and
+ * skipped when empty; `nameID` is the last resort and is always present.
+ */
+export function buildDisplayName(parts: {
+  givenName: string;
+  surname: string;
+  nameClaim: string;
+  nameID: string;
+}): string {
+  const fullName = [parts.givenName, parts.surname]
+    .map((v) => (v ?? '').trim())
+    .filter((v) => v.length > 0)
+    .join(' ');
+
+  return fullName || parts.nameClaim?.trim() || parts.nameID?.trim() || '';
+}
+
+/**
  * Check that `cert` is something node-saml can actually parse, and say so
  * clearly at startup instead of at the first login.
  *
@@ -168,26 +195,35 @@ export function createSamlStrategy(params: {
       return done(null, false);
     }
 
+    const nameID: string = profile.nameID ?? '';
+    const givenName: string =
+      profile?.[
+        'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname'
+      ] ?? profile?.givenName ?? '';
+    const surname: string =
+      profile?.[
+        'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/surname'
+      ] ?? profile?.surname ?? '';
+
     const user: SamlUser = {
       authMethod: 'saml',
-      nameID: profile.nameID ?? '',
+      nameID,
       nameIDFormat: profile.nameIDFormat ?? undefined,
       email:
         profile?.[
           'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress'
         ] ?? profile?.email ?? '',
-      displayName:
-        profile?.[
-          'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name'
-        ] ?? profile?.displayName ?? profile?.nameID ?? '',
-      givenName:
-        profile?.[
-          'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname'
-        ] ?? profile?.givenName ?? '',
-      surname:
-        profile?.[
-          'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/surname'
-        ] ?? profile?.surname ?? '',
+      displayName: buildDisplayName({
+        givenName,
+        surname,
+        nameClaim:
+          profile?.[
+            'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name'
+          ] ?? profile?.displayName ?? '',
+        nameID,
+      }),
+      givenName,
+      surname,
       objectId:
         profile?.[
           'http://schemas.microsoft.com/identity/claims/objectidentifier'

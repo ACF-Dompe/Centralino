@@ -15,7 +15,7 @@ const mockLog = vi.hoisted(() => ({
 }));
 vi.mock('../logger.js', () => ({ log: mockLog }));
 
-import { createSamlStrategy } from '../auth/saml.js';
+import { createSamlStrategy, buildDisplayName } from '../auth/saml.js';
 import type { CacheProvider } from '@node-saml/node-saml';
 
 /**
@@ -207,5 +207,57 @@ describe('createSamlStrategy', () => {
       // The identity claims must stay protected either way.
       expect(options?.wantAssertionsSigned).toBe(true);
     });
+  });
+});
+
+describe('buildDisplayName', () => {
+  // Entra releases the UPN — the mail address — as the `name` claim for this
+  // tenant, so using it made the header print the address next to itself.
+  it('prefers given name and surname over the name claim', () => {
+    expect(buildDisplayName({
+      givenName: 'Mario',
+      surname: 'Rossi',
+      nameClaim: 'mario.rossi@dompe.com',
+      nameID: 'mario.rossi@dompe.com',
+    })).toBe('Mario Rossi');
+  });
+
+  it('falls back to the name claim when neither given name nor surname is released', () => {
+    expect(buildDisplayName({
+      givenName: '',
+      surname: '',
+      nameClaim: 'Mario Rossi',
+      nameID: 'mario.rossi@dompe.com',
+    })).toBe('Mario Rossi');
+  });
+
+  it('falls back to the nameID when no name claim is released either', () => {
+    expect(buildDisplayName({
+      givenName: '',
+      surname: '',
+      nameClaim: '',
+      nameID: 'mario.rossi@dompe.com',
+    })).toBe('mario.rossi@dompe.com');
+  });
+
+  it('uses whichever of the two name parts is present', () => {
+    expect(buildDisplayName({ givenName: 'Mario', surname: '', nameClaim: 'x', nameID: 'y' }))
+      .toBe('Mario');
+    expect(buildDisplayName({ givenName: '', surname: 'Rossi', nameClaim: 'x', nameID: 'y' }))
+      .toBe('Rossi');
+  });
+
+  // Claims are values we do not control: blank-but-present is a real case.
+  it('ignores whitespace-only claims', () => {
+    expect(buildDisplayName({
+      givenName: '   ',
+      surname: '	',
+      nameClaim: '  ',
+      nameID: 'mario.rossi@dompe.com',
+    })).toBe('mario.rossi@dompe.com');
+  });
+
+  it('returns an empty string when the IdP releases nothing usable', () => {
+    expect(buildDisplayName({ givenName: '', surname: '', nameClaim: '', nameID: '' })).toBe('');
   });
 });

@@ -136,12 +136,10 @@ export async function enterDemoSandbox(page: Page): Promise<void> {
   await expect(page.getByRole('button', { name: /Dompe Milano HQ/i }).first()).toBeVisible({
     timeout: 10_000,
   });
+  // Clicking the card connects: the controller parameters come from the site
+  // record, so there is no form to fill in and nothing to override. The mocked
+  // wlc/login answers `isUnreachable`, which is what raises the sandbox prompt.
   await page.getByRole('button', { name: /Dompe Milano HQ/i }).first().click();
-  // Replace the pre-filled WLC host with a TEST-NET IP so the connection
-  // fails fast and the "WLC NON RAGGIUNGIBILE" modal appears.
-  await page.getByLabel('Host / IP Controller', { exact: true }).fill('198.51.100.1');
-  // The password field is required and pre-filled empty — give it a value.
-  await page.getByLabel('Password amministratore', { exact: true }).fill('demo');  await page.getByTestId('wlc-connect-btn').click();
 
   // The WLC is unreachable in the test env → fallback modal appears.
   const sandboxBtn = page.getByRole('button', { name: /Abilita Demo Sandbox/i });
@@ -162,7 +160,7 @@ export async function enterDemoSandbox(page: Page): Promise<void> {
  * before calling this helper.
  *
  * Handles: auth/me (SSO authenticated), config/wlc, wlc/login (configurable),
- * sedi, guests, config/email, auth/logout.
+ * sedi, guests, auth/logout.
  */
 export async function setupSsoCommonRoutes(
   page: Page,
@@ -188,24 +186,41 @@ export async function setupSsoCommonRoutes(
           surname: 'Rossi',
           objectId: 'a1b2c3d4-...',
           authMethod: 'saml',
+          // Authorization travels with the profile. Without a role the UI falls
+          // back to permissive, which would make the gating tests meaningless.
+          role: 'admin',
+          status: 'active',
+          sedeIds: [1],
         },
       }),
     });
   });
 
-  // 2. WLC config (exists, not authenticated)
-  await page.route('**/api/config/wlc', async (route) => {
+  // 2. Session context — who, what they may do, and which site they are on.
+  //    Replaces the old /api/config/wlc bootstrap, which inferred the current
+  //    site from a configuration table and could restore the wrong one.
+  await page.route('**/api/session/context', async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
         data: {
-          id: 0, host: '172.18.106.100', port: 443, sshPort: 22,
-          username: 'admin_guest', password: '', wlanSsid: 'Dompe Guest',
-          authenticated: false, sedeId: null,
+          user: {
+            displayName: 'Mario Rossi',
+            email: 'mario.rossi@dompe.com',
+            role: 'admin',
+            status: 'active',
+            sedeIds: null,
+          },
+          sede: null,
+          wlc: null,
         },
       }),
     });
+  });
+
+  await page.route('**/api/session/sede', async (route) => {
+    await route.fulfill({ status: 204, body: '' });
   });
 
   // 3. Sedi list (Dompe Milano HQ)
@@ -225,37 +240,6 @@ export async function setupSsoCommonRoutes(
     });
   });
 
-
-  // 5. Email config (GET + PUT for ConfigPanel and BadgeModal)
-  await page.route('**/api/config/email', async (route) => {
-    if (route.request().method() === 'GET') {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          data: {
-            id: 0, smtpHost: 'smtp.example.com', smtpPort: 587,
-            sender: 'noreply@example.com', encryption: 'starttls',
-            requireAuth: true, username: 'smtp-user', password: 'smtp-pass',
-          },
-        }),
-      });
-    } else if (route.request().method() === 'PUT') {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          data: {
-            id: 0, smtpHost: 'smtp.example.com', smtpPort: 587,
-            sender: 'noreply@example.com', encryption: 'starttls',
-            requireAuth: true, username: 'smtp-user', password: 'smtp-pass',
-          },
-        }),
-      });
-    } else {
-      await route.fallback();
-    }
-  });
 
   // 6. Logout (POST → success)
   await page.route('**/api/auth/logout', async (route) => {
@@ -344,23 +328,23 @@ export async function setupSsoLogoutRoutes(
   });
 }
 
-/** Shared: navigate, select sede, and fill WLC form (before clicking Connect). */
-async function ssoSelectSedeAndFillForm(page: Page): Promise<void> {
+/**
+ * Navigate to the site selector and connect to the first site.
+ *
+ * There is no form to fill in any more: the controller's address, ports, admin
+ * account and SSID come from the site record, so choosing a site IS the connect
+ * action. The mail address is deliberately not asserted here — the user tag
+ * shows the name only, with the address in its tooltip.
+ */
+async function ssoSelectSede(page: Page): Promise<void> {
   await page.goto('/');
 
-  // ── Phase 1: Sede selector ──
   await expect(page.getByRole('heading', { name: /Seleziona la sede/i })).toBeVisible({
     timeout: 15_000,
   });
   await expect(page.getByText('Mario Rossi')).toBeVisible();
-  await expect(page.getByText('mario.rossi@dompe.com')).toBeVisible();
 
-  // Click the first sede card
-  await page.getByRole('button', { name: /Dompe Milano HQ/i }).first().click();
-
-  // ── Phase 2: WLC form (not yet submitted) ──
-  await expect(page.getByText(/Milano · WLC 172\.18\.106\.100/i)).toBeVisible();
-  await page.getByLabel('Password amministratore', { exact: true }).fill('admin123');
+  await page.getByTestId('sede-card-MIL').click();
 }
 
 /**
@@ -374,9 +358,7 @@ async function ssoSelectSedeAndFillForm(page: Page): Promise<void> {
 export async function enterSsoDemoSandbox(page: Page): Promise<void> {
   await setupSsoCommonRoutes(page, { wlcPostResponse: 'unreachable' });
 
-  await ssoSelectSedeAndFillForm(page);
-
-  await page.getByTestId('wlc-connect-btn').click();
+  await ssoSelectSede(page);
 
   // Demo Sandbox modal
   const sandboxBtn = page.getByRole('button', { name: /Abilita Demo Sandbox/i });
@@ -400,10 +382,10 @@ export async function enterSsoDemoSandbox(page: Page): Promise<void> {
 export async function enterSsoHappyPath(page: Page): Promise<void> {
   await setupSsoCommonRoutes(page, { wlcPostResponse: 'success' });
 
-  await ssoSelectSedeAndFillForm(page);
+  await ssoSelectSede(page);
 
-  // WLC login succeeds → Dashboard renders directly (no Demo Sandbox modal)
-  await page.getByTestId('wlc-connect-btn').click();
+  // The click on the card IS the connect action; on success the Dashboard
+  // renders directly, with no Demo Sandbox modal in between.
 
   // Dashboard
   await expect(page.getByTestId('register-guest-btn')).toBeVisible({

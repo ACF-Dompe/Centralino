@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import Login from './components/Login';
 import Dashboard from './components/Dashboard';
 import SsoLogin from './components/SsoLogin';
+import PendingApproval from './components/PendingApproval';
 import type { Sede, WlcConfig } from './types';
 import { api, type SamlUser } from './api/client';
 import { getLocale, setLocale as setGlobalLocale, type Locale, SUPPORTED_LOCALES } from './i18n';
@@ -11,6 +12,7 @@ type AuthState =
   | { phase: 'loading' }
   | { phase: 'sso-unavailable' }   // SAML not configured → skip SSO
   | { phase: 'sso-required' }      // SAML configured, not authenticated
+  | { phase: 'sso-blocked'; user: SamlUser }  // signed in, not profiled yet
   | { phase: 'sso-authenticated'; user: SamlUser; wlc: WlcConfig | null; sede: Sede | null };
 
 export default function App() {
@@ -48,23 +50,32 @@ export default function App() {
           return;
         }
 
-        // 2. SSO authenticated — check WLC config
+        // 2. Authenticated, but is this user allowed to do anything yet?
+        //
+        // Only blocks on a status the backend actually sent. An older backend
+        // and the test mocks send nothing, and those sessions must keep working
+        // — the real gate is the API, which refuses every call from an
+        // unprofiled user regardless of what the UI decides to render.
+        if (ssoUser.status && ssoUser.status !== 'active') {
+          if (!cancelled) setState({ phase: 'sso-blocked', user: ssoUser });
+          return;
+        }
+
+        // 3. Which site is this session on? Read, never inferred: the previous
+        //    bootstrap derived it from the WLC config table and could restore a
+        //    site the operator had never picked.
         try {
-          const wlcRes = await api.getWlcConfig();
-          if (wlcRes.data.authenticated) {
-            let sede: Sede | null = null;
-            if (wlcRes.data.sedeId != null) {
-              try {
-                const sedeRes = await api.getSede(wlcRes.data.sedeId);
-                sede = sedeRes.data;
-              } catch { /* ignore */ }
-            }
-            if (!cancelled) {
-              setState({ phase: 'sso-authenticated', user: ssoUser, wlc: wlcRes.data, sede });
-            }
-            return;
+          const ctx = await api.getSessionContext();
+          if (!cancelled) {
+            setState({
+              phase: 'sso-authenticated',
+              user: { ...ssoUser, role: ctx.data.user.role, status: ctx.data.user.status },
+              wlc: ctx.data.wlc,
+              sede: ctx.data.sede as Sede | null,
+            });
           }
-        } catch { /* no WLC config yet — show WLC login */ }
+          return;
+        } catch { /* fall through to the site selector */ }
 
         if (!cancelled) {
           setState({ phase: 'sso-authenticated', user: ssoUser, wlc: null, sede: null });
@@ -83,7 +94,8 @@ export default function App() {
     setState({ phase: 'sso-authenticated', user: user!, wlc: cfg, sede });
   }
 
-  function handleWlcDisconnect() {
+  /** "Cambia sede": forget the site, keep the session. */
+  function handleChangeSede() {
     if (state.phase !== 'sso-authenticated') return;
     setState({ ...state, wlc: null, sede: null });
   }
@@ -140,6 +152,10 @@ export default function App() {
         />
       )}
 
+      {state.phase === 'sso-blocked' && (
+        <PendingApproval user={state.user} onLogout={handleSsoLogout} />
+      )}
+
       {showWlcLogin && (
         <Login
           ssoUser={state.phase === 'sso-authenticated' ? state.user : undefined}
@@ -152,8 +168,7 @@ export default function App() {
           config={state.wlc}
           sede={state.sede}
           ssoUser={state.user}
-          onDisconnect={handleWlcDisconnect}
-          onConfigUpdate={(c) => setState({ ...state, wlc: c })}
+          onChangeSede={handleChangeSede}
           onSsoLogout={handleSsoLogout}
         />
       )}

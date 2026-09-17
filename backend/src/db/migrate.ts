@@ -13,6 +13,8 @@
  * production case on Azure PostgreSQL, where the DB login is the backend UAMI.
  */
 import type { DbClient } from './index.js';
+import { log } from '../logger.js';
+import { ensureBreakGlassBootstrapAccount } from './bootstrapBreakGlass.js';
 import { config, AZURE_DB_SCOPE } from '../config.js';
 import { DefaultAzureCredential } from '@azure/identity';
 import pg from 'pg';
@@ -54,6 +56,69 @@ CREATE TABLE IF NOT EXISTS sedi (
 );
 CREATE INDEX IF NOT EXISTS idx_sedi_code ON sedi(code);
 
+-- The WLC parameters used to live in their own 1:1 table, linked from both
+-- sides (sedi.wlc_config_id and wlc_config.sede_id). The two links could
+-- disagree, which is why every read carried an OR-fallback and the uniqueness
+-- of the binding was only "best-effort". Folding the columns into sedi
+-- removes the class of bug: one row per site, no orphans, no fallback.
+-- wlc_config is still written for now and dropped in a later release.
+-- wlc_host stays nullable on purpose: it means "site created, WLC not
+-- configured yet", which is a legitimate state the admin panel can show.
+ALTER TABLE sedi ADD COLUMN IF NOT EXISTS wlc_host VARCHAR(255);
+ALTER TABLE sedi ADD COLUMN IF NOT EXISTS wlc_port INTEGER NOT NULL DEFAULT 443;
+ALTER TABLE sedi ADD COLUMN IF NOT EXISTS wlc_ssh_port INTEGER NOT NULL DEFAULT 22;
+ALTER TABLE sedi ADD COLUMN IF NOT EXISTS wlc_username VARCHAR(100) NOT NULL DEFAULT 'admin_guest';
+ALTER TABLE sedi ADD COLUMN IF NOT EXISTS wlc_ssid VARCHAR(100) NOT NULL DEFAULT 'Dompe Guest';
+ALTER TABLE sedi ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE sedi ADD COLUMN IF NOT EXISTS wlc_last_check_at TIMESTAMP;
+ALTER TABLE sedi ADD COLUMN IF NOT EXISTS wlc_last_check_ok BOOLEAN;
+ALTER TABLE sedi ADD COLUMN IF NOT EXISTS wlc_last_check_error TEXT;
+ALTER TABLE sedi ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT NOW();
+ALTER TABLE sedi ADD COLUMN IF NOT EXISTS updated_by VARCHAR(255);
+CREATE INDEX IF NOT EXISTS idx_sedi_active ON sedi(active);
+
+-- Application user directory, filled just-in-time from Entra at the first
+-- successful SSO login (routes/auth.ts, POST /callback) and then profiled by an
+-- admin. A new row is ALWAYS 'pending'/'viewer': until somebody profiles it the
+-- user can authenticate but not act, and that is enforced at the API, not in
+-- the UI.
+--
+-- subject is the stable natural key: the Entra objectId when the tenant
+-- releases it (it survives a mail change), otherwise 'email:<lower(email)>'.
+-- Neither one works alone — objectId can be absent, and mail addresses change.
+CREATE TABLE IF NOT EXISTS app_users (
+  id               BIGSERIAL PRIMARY KEY,
+  subject          VARCHAR(255) NOT NULL UNIQUE,
+  entra_object_id  VARCHAR(64),
+  email            VARCHAR(255),
+  display_name     VARCHAR(255) NOT NULL DEFAULT '',
+  given_name       VARCHAR(255),
+  surname          VARCHAR(255),
+  role             VARCHAR(20)  NOT NULL DEFAULT 'viewer',
+  status           VARCHAR(20)  NOT NULL DEFAULT 'pending',
+  created_at       TIMESTAMP NOT NULL DEFAULT NOW(),
+  updated_at       TIMESTAMP NOT NULL DEFAULT NOW(),
+  last_login_at    TIMESTAMP,
+  profiled_at      TIMESTAMP,
+  profiled_by      VARCHAR(255),
+  CHECK (role   IN ('admin','operator','viewer')),
+  CHECK (status IN ('pending','active','suspended'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_app_users_entra_object_id ON app_users(entra_object_id) WHERE entra_object_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_app_users_email_lower ON app_users(LOWER(email));
+CREATE INDEX IF NOT EXISTS idx_app_users_status ON app_users(status);
+
+-- Sites a user may connect to. A join table rather than an int[] column so the
+-- foreign key can do its job: a deleted site disappears from every grant
+-- instead of leaving a dangling id nothing can validate.
+CREATE TABLE IF NOT EXISTS app_user_sedi (
+  user_id    BIGINT  NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+  sede_id    INTEGER NOT NULL REFERENCES sedi(id)      ON DELETE CASCADE,
+  granted_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (user_id, sede_id)
+);
+CREATE INDEX IF NOT EXISTS idx_app_user_sedi_sede_id ON app_user_sedi(sede_id);
+
 -- WLC password is NOT stored in the DB (§2): it lives in Key Vault, injected
 -- as WLC_PASSWORD_<CODE> env vars and resolved per-sede at runtime.
 CREATE TABLE IF NOT EXISTS wlc_config (
@@ -92,6 +157,15 @@ CREATE TABLE IF NOT EXISTS breakglass_users (
   created_at      TIMESTAMP NOT NULL DEFAULT NOW(),
   updated_at      TIMESTAMP NOT NULL DEFAULT NOW()
 );
+
+-- Role of a break-glass account. CREATE TABLE IF NOT EXISTS does not touch a
+-- table that already exists, so on a migrated database the column can only
+-- arrive through this ALTER.
+-- Default 'admin' because the break-glass account bootstraps the whole
+-- directory: every SSO user starts blocked, so somebody has to be able to
+-- profile the first ones. Validation lives in the repository, not in a CHECK —
+-- there is no ADD CONSTRAINT IF NOT EXISTS to lean on.
+ALTER TABLE breakglass_users ADD COLUMN IF NOT EXISTS role VARCHAR(20) NOT NULL DEFAULT 'admin';
 
 -- Outstanding SAML AuthnRequest IDs, for InResponseTo replay validation.
 -- Persisted rather than held in memory: node-saml default in-memory cache
@@ -141,6 +215,57 @@ export async function runMigrations(client: DbClient): Promise<void> {
     );
   } catch {
     // Best-effort; duplicate bindings prevented by application logic
+  }
+
+  await backfillSediWlcColumns(client);
+
+  // The directory starts empty and every SSO user lands in it blocked, so the
+  // deployment needs one account that can profile the others.
+  try {
+    await ensureBreakGlassBootstrapAccount(client);
+  } catch (err) {
+    // A failed bootstrap must not abort a deploy — the CLI can still create the
+    // account. Making the failure loud is what counts.
+    log.error(
+      { err: (err as Error).message },
+      'Bootstrap of the break-glass account failed — create it with `make breakglass` before enabling SSO',
+    );
+  }
+}
+
+/**
+ * Copy the WLC parameters out of `wlc_config` and into `sedi`, once.
+ *
+ * `AND s.wlc_host IS NULL` is what makes this safe to leave in place. The
+ * migration runner has no version table: it replays the whole schema on every
+ * startup and on every migration job. Without the guard this UPDATE would run
+ * again each time and quietly undo whatever an admin had just changed from the
+ * panel — the same trap the seed documents for SEDE data.
+ *
+ * Matching on either side of the old double link (`wlc_config.sede_id` or
+ * `sedi.wlc_config_id`) is deliberate: the two could disagree, and that
+ * disagreement is precisely what this consolidation is retiring.
+ */
+async function backfillSediWlcColumns(client: DbClient): Promise<void> {
+  try {
+    await client.exec(
+      `UPDATE sedi s
+          SET wlc_host     = w.host,
+              wlc_port     = w.port,
+              wlc_ssh_port = w.ssh_port,
+              wlc_username = w.username,
+              wlc_ssid     = w.wlan_ssid
+         FROM wlc_config w
+        WHERE (w.sede_id = s.id OR w.id = s.wlc_config_id)
+          AND s.wlc_host IS NULL`,
+    );
+  } catch (err) {
+    // A failed backfill must not block a deploy: the columns exist either way,
+    // and the admin panel can fill them in. Surfacing it is what matters.
+    log.error(
+      { err: (err as Error).message },
+      'Backfill of the WLC columns on `sedi` failed — check the site parameters in the admin panel',
+    );
   }
 }
 

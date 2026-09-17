@@ -11,6 +11,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+#### One operator's "Disconnetti" could stop provisioning at another site
+- `updateWlcConfig()` wrote `WHERE id = (SELECT id FROM wlc_config ORDER BY id ASC LIMIT 1)` — **always the first row**, whatever site the operator was working on. That would be cosmetic if `authenticated` were only a UI flag, but it is not: `timer.ts` skipped the periodic sync for a site when it was false, and the guest routes skipped the SSH push and logged `(offline)`. So an operator pressing "Disconnetti" at L'Aquila switched off synchronisation **and** provisioning for Milan, where a different operator carried on creating guests that never reached the controller, with no error anywhere.
+- The flag is gone, split into the three separate things it was conflating: `sedi.active` ("this site is in service", written by an admin), `sedi.wlc_last_check_*` ("the last probe succeeded", written only by a probe, as diagnostics) and `req.session.sedeId` / `wlcConnected` ("this operator is connected here"). **No server-side decision is taken on a boolean the UI can write any more.** `getWlcConfig()` and `updateWlcConfig()` were removed outright rather than fixed — a site-less lookup is what made the bug possible — and `WlcConfig.sedeId` became non-nullable so the compiler located every caller.
+
+#### Any authenticated user could read another site's guests
+- `GET /api/guests?sedeId=` let the client name the site and the server obeyed. The site now comes from the session; a mismatched query parameter is answered with 403 rather than silently honoured, so the bug that produced it shows up instead of hiding.
+
+#### Guest events leaked across sites over the WebSocket
+- `broadcast()` sent every event to every connected client, so an operator in one city saw guest names appear from another. Each connection now carries the site it may hear about, and the upgrade re-checks authorization — a valid session cookie was previously enough to keep a socket open after the account had been suspended.
+
+#### The register form could create a guest account lasting for ever
+- The free-form minutes box bypassed the one-week cap, which was only applied to the custom end-date branch, and `validateDurationMinutes` was imported by the guest route and never called. The box is gone (presets and an end date cover every case) and the endpoint validates the value it is handed.
+
+### Added
+
+#### Application user directory with roles and per-site grants
+- The app had no concept of an application user: anyone who completed SSO could do everything, at every site. A directory entry is now created at the first successful sign-in and starts **blocked** — the tenant can authenticate, but nothing is granted until an administrator profiles it (role `admin` / `operator` / `viewer`, plus the sites the user may connect to).
+- Authorization is resolved **per request** by `middleware/authorize.ts` and deliberately never stored in the session, which lasts a day: a suspended account has to lose access in seconds. A 15-second per-replica cache bounds the staleness, chosen to sit below the dashboard's 30-second poll so a suspended user is locked out at their next automatic refresh without clicking anything. Every failure path is closed — an unknown user is 403 `user_not_provisioned`, a failed lookup is 503, never a default profile.
+- Signing in cannot change a role or a status: the provisioning statement leaves both out of its `ON CONFLICT DO UPDATE`, so a login can never undo an administrator's decision. It is a single statement, so concurrent logins cannot race.
+- `RBAC_ENFORCEMENT=log-only` records what would have been refused and lets it through, for watching the first rollout. The code ships enforcing.
+- New `make appusers` CLI, runnable with `az containerapp exec`. It exists for the bootstrap: every SSO user starts blocked, so without a way in from outside the web surface a fresh deployment would have nobody able to unblock anybody. Safer than the alternative, which is exposing the break-glass login to a network.
+
+#### Administration panel
+- Users, sites and emergency accounts, behind `requireRole('admin')`. It replaces the "Configura Canali" dialog, which edited the same controller fields through the path that carried the bug above, and whose "Test Connessione" was not a test — it called the login endpoint and then wrote `authenticated: true`, changing which controller the application considered live as a side effect of a diagnostic.
+- Guards that keep the application administrable: an admin cannot change their own role or status, the last active admin cannot be demoted or suspended, and the last usable break-glass account cannot be disabled.
+
+#### Break-glass: bootstrap account, and a read-mostly admin surface
+- The migration creates `bk.guestportal` (role `admin`) when `BREAKGLASS_SEED_PASSWORD` is set and at least 16 characters, and **only if it is missing** — it does not rotate a password somebody has already changed, nor re-enable an account somebody turned off. With no password configured it creates nothing and says so: a built-in default would be a backdoor published in the repository, and a generated one would be a credential nobody knows.
+- `/api/admin/breakglass` exposes read, enable, disable and unlock. **Creating an account and rotating a password stay in the CLI**, so a compromised admin session cannot mint a permanent SSO bypass. Documented against COMPLIANCE.md D1, whose compensating-controls table and known limits were updated in the same change.
+
+### Changed
+
+#### WLC parameters moved off the login screen and into the database
+- The screen after sign-in asked every operator to retype the controller's address, ports, admin account and SSID at each session, and sent them back to be saved. They live on the site record now: choosing a site *is* connecting to it, and `POST /api/wlc/login` accepts only a site id. Host, port and username are no longer accepted from the client at all — which also closes an SSH command-injection surface, since that username flowed into the guest CRUD commands.
+- `wlc_config` was folded into `sedi`. The two tables were 1:1 but linked from both sides, and the links could disagree — hence the defensive `OR` in every read and a uniqueness index created in a `try/catch` with the comment "best-effort". The backfill is guarded so the migration, which replays on every start, cannot overwrite what an administrator has just changed. The old table is still written and will be dropped in a later release.
+- Sites can be created from the panel, but **a new site still needs its Key Vault secret**, which means a platform-team request and a new ACA revision. The panel names both identifiers and keeps the site out of service until a connection test succeeds.
+- The seed no longer updates existing sites. It rewrote name, city and address on every start, which was harmless while those values only existed in source and would now silently revert an administrator's edit.
+
+#### Smaller UI corrections
+- The header showed the mail address twice, because Entra releases the UPN as the `name` claim for this tenant and the tag printed it beside the address. The display name is now composed from the given name and surname, and only the name is shown, with the address in the tooltip.
+- "Disconnetti" became **"Cambia sede"** — it keeps the session and returns to the site selector — and "Logout SSO" became **"Logout"**. They also had the same icon, which was half the confusion.
+- The "Conclusi" summary card summed two different outcomes; "Scaduto" and "Revocato" are now separate cards.
+- Re-sending credentials is a single action again. Two buttons called the same endpoint, and one of them went through a preview that showed a subject line different from the one actually sent and printed `Password: null`, because the guest password is never persisted. The preview and its component are gone.
+- The one-time password notice no longer explains where the password is not stored.
+
+
 #### SSO — `AADSTS75011` on every passwordless sign-in
 - **The AuthnRequest no longer constrains the authentication method.** `@node-saml/node-saml` 5.1.0 injects, by default, `RequestedAuthnContext = urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport` with `Comparison="exact"` into every AuthnRequest. Entra ID honours that constraint, so any user who signed in with certificate-based authentication, Windows Hello or FIDO2 (`amr = X509, MultiFactor, X509Device`) was rejected with `AADSTS75011` instead of being let through. Which method is acceptable is a Conditional Access / Authentication Strength decision inside the tenant, not a service-provider one — and a SAML enterprise application has no supported switch to make Entra ignore a `RequestedAuthnContext` it receives, so the fix belongs here. `createSamlStrategy` now sets `disableRequestedAuthnContext: true` by default (`backend/src/auth/saml.ts`), overridable with `SAML_DISABLE_REQUESTED_AUTHN_CONTEXT` for an IdP that demands an explicit context. The value is also pinned in `deploy-azure.yml` so a manual override cannot survive a deploy. New tests assert the generated AuthnRequest XML, not just the option flag.
 

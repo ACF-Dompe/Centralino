@@ -9,6 +9,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "breakglass": "tsx src/scripts/breakglass.ts",
+    "appusers": "tsx src/scripts/appusers.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },
