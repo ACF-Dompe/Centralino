@@ -29,7 +29,7 @@ RUN npm run build -w frontend
 # nginx-unprivileged ships an nginx.conf already adapted for non-root:
 # no "user" directive, pid in /tmp, all temp paths under /tmp.
 # This is what fixes the /var/cache/nginx permission-denied crash.
-FROM nginxinc/nginx-unprivileged:1.28-alpine AS runtime
+FROM nginxinc/nginx-unprivileged:1.30-alpine AS runtime
 
 # The base image declares USER 101, so apk needs an explicit root switch.
 # Targeted fix for CVE-2026-31789 (libcrypto3/libssl3 >= 3.5.6).

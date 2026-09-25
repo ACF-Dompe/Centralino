@@ -29,26 +29,44 @@ COPY backend ./backend
 # Build backend (tsc)
 RUN npm run build -w backend
 
-# ---------- Stage 2: runtime ----------
+# ---------- Stage 2: production dependencies ----------
+# Resolved in a separate stage so that the runtime image never needs npm.
+FROM node:22-alpine AS deps
+
+WORKDIR /app
+
+COPY package.json package-lock.json* ./
+COPY backend/package.json ./backend/package.json
+RUN npm install --omit=dev --workspace=backend --include-workspace-root --no-audit --no-fund
+
+# ---------- Stage 3: runtime ----------
 FROM node:22-alpine AS runtime
 
 # Upgrade system packages to latest available versions
 RUN apk upgrade --no-cache
 
+# Remove the package managers shipped with the base image. The container only
+# ever runs `node` (app, migration job, seed and break-glass CLIs all invoke
+# backend/dist/*.js directly), while npm vendors its own dependency tree
+# (tar, glob, minimatch, sigstore, ip-address, ...) that Trivy flags on every
+# scan even though nothing at runtime can reach it.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+           /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
+           /opt/yarn-v* /usr/local/bin/yarn /usr/local/bin/yarnpkg
+
 ENV NODE_ENV=production \
-    PORT=3000 \
-    NPM_CONFIG_UPDATE_NOTIFIER=false
+    PORT=3000
 
 # Add a non-root user
 RUN addgroup -S app && adduser -S app -G app
 
 WORKDIR /app
 
-# Install only backend production deps
-COPY package.json package-lock.json* ./
+# The manifests are still needed at runtime: backend/package.json declares
+# "type": "module", which is what makes Node load dist/*.js as ESM.
+COPY package.json ./
 COPY backend/package.json ./backend/package.json
-RUN npm install --omit=dev --workspace=backend --include-workspace-root --no-audit --no-fund \
-    && npm cache clean --force
+COPY --from=deps /app/node_modules ./node_modules
 
 # Copy built artifacts only
 COPY --from=build /app/backend/dist ./backend/dist

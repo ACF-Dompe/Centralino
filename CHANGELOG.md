@@ -30,6 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - **Accepted deviation D4** (COMPLIANCE.md): an admin can read and replace a WLC controller password. It reverses the earlier "no secret crosses the API" rule (§5.1) for this one value, on request. **Infra prerequisite:** the backend UAMI needs **Key Vault Secrets Officer**, preferably scoped to the `WLC-PASSWORD-*` secrets.
+- **Backend image no longer ships npm, npx, corepack or yarn.** Production dependencies are installed in a separate `deps` stage and copied in, and the package managers of the `node:22-alpine` base are deleted from the runtime stage. npm vendors its own tree (tar, glob, minimatch, brace-expansion, sigstore, @sigstore/core, ip-address, ...), which Trivy reported on every image scan although nothing in the container can reach it. Every in-container operation already calls `node` directly (migration job, `db/seed.js`, `scripts/breakglass.js`), so none is affected; `npm` is simply not there any more under `az containerapp exec`.
+- **Frontend image moved from `nginx-unprivileged:1.28-alpine` to `1.30-alpine`.** The 1.28 branch is out of support: its tag has not been rebuilt since February 2026 (nginx 1.28.2), and the nginx advisories published since then list only 1.30.x and 1.31.x as fixed.
+- **Deploy pipeline SARIF uploads now carry a `category`** (`deploy-trivy-fs`, `deploy-trivy-backend`, `deploy-trivy-frontend`). The three uploads of the same job had none, so each overwrote the previous one in code scanning, and alerts from one scan were closed or kept open depending on which step ran last.
 
 ### Fixed
 

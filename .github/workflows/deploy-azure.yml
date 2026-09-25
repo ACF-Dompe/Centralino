@@ -210,6 +210,7 @@ jobs:
         if: always()
         with:
           sarif_file: 'trivy-results.sarif'
+          category: 'deploy-trivy-fs'
 
       # Build Docker images
       - name: Log in to Azure (OIDC)
@@ -271,12 +272,14 @@ jobs:
         if: always()
         with:
           sarif_file: 'trivy-backend-results.sarif'
+          category: 'deploy-trivy-backend'
 
       - name: Upload Trivy frontend results
         uses: github/codeql-action/upload-sarif@v3
         if: always()
         with:
           sarif_file: 'trivy-frontend-results.sarif'
+          category: 'deploy-trivy-frontend'
 
       # NOTE: Image-tag immutability / retention on the SHARED ACR is managed by
       # the platform (infrastructure team). The application pipeline does NOT
