@@ -277,6 +277,17 @@ export async function setupSsoCommonRoutes(
       await route.fallback();
     }
   });
+
+  // 8. Entra directory search for the Referente field: switched off, as in
+  //    local dev. The field then works as plain text, which is what the
+  //    register-guest steps type into it.
+  await page.route('**/api/directory/users**', async (route) => {
+    await route.fulfill({
+      status: 503,
+      contentType: 'application/json',
+      body: JSON.stringify({ success: false, error: 'directory_unavailable', message: 'Ricerca nella directory non abilitata.' }),
+    });
+  });
 }
 
 /**

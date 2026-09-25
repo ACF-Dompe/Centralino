@@ -377,6 +377,9 @@ jobs:
               MAIL_GRAPH_CLIENT_SECRET="@Microsoft.KeyVault(SecretUri=https://${KV}.vault.azure.net/secrets/MAIL-GRAPH-CLIENT-SECRET/)" \
               MAIL_GRAPH_USER_ID="${{ secrets.MAIL_GRAPH_USER_ID }}" \
               MAIL_GRAPH_FROM_ADDRESS="noreply@dompe.com" \
+              KEY_VAULT_URL="https://${KV}.vault.azure.net" \
+              DIRECTORY_SEARCH_ENABLED="${{ vars.DIRECTORY_SEARCH_ENABLED || 'false' }}" \
+              DIRECTORY_UPN_DOMAINS="dompe.com,ext.dompe.com" \
               BACKEND_BASE_URL="http://${{ secrets.ACA_BACKEND_NAME }}.${{ secrets.ACA_ENVIRONMENT_DEFAULT_DOMAIN }}" \
               SKIP_MIGRATIONS=true \
               SEED_ENABLED=false \

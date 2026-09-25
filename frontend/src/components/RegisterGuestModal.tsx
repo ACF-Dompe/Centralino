@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { api } from '../api/client';
 import { useLocale } from '../i18n';
 import { X, Plus, Copy, Check, Key, AlertTriangle, Calendar } from './icons';
+import DirectoryUserCombobox from './DirectoryUserCombobox';
 import type { Guest, Sede } from '../types';
 
 interface Props {
@@ -225,7 +226,10 @@ export default function RegisterGuestModal({ sede, onClose, onCreated }: Props) 
           </div>
           <div>
             <label className="label" htmlFor="rg-host">{t('create.host')}</label>
-            <input id="rg-host" className="input" required value={host} onChange={(e) => setHost(e.target.value)} placeholder={t('create.host.placeholder')} />
+            {/* Suggestions come live from Entra ID; free text stays allowed for
+                a sponsor who is not in the directory. Same id as before, so the
+                label (and every test that finds the field by it) still works. */}
+            <DirectoryUserCombobox id="rg-host" required value={host} onChange={setHost} placeholder={t('create.host.placeholder')} />
           </div>
           <div className="sm:col-span-2">
             <label className="label">{t('create.duration')}</label>

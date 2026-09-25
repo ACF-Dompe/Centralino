@@ -5,6 +5,10 @@
  * create an account or set a password. Those credentials bypass Entra and MFA
  * entirely (COMPLIANCE.md D1), and the whole reason they stay CLI-only is that a
  * compromised admin session must not be able to mint one.
+ *
+ * The controller password is the opposite case, by decision (COMPLIANCE.md D4):
+ * an admin can read and replace it, so what is pinned here is that it is only
+ * ever fetched on request and never sits in the site list.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
@@ -28,6 +32,9 @@ vi.mock('../../i18n', () => ({
         'admin.users.you': 'Tu',
         'admin.users.autoAdmin': 'Admin automatico',
         'admin.users.autoAdminHelp': 'Amministratore per convenzione.',
+        'admin.users.delete': 'Elimina',
+        'admin.users.confirmDelete': 'Eliminare {name}?',
+        'admin.wlc.reloadResult': '{loaded} caricate, {missing} mancanti, {failed} errori.',
         'admin.bg.cliOnly': 'Creazione e cambio password solo da CLI.',
         'admin.bg.disable': 'Disabilita',
         'admin.bg.enable': 'Abilita',
@@ -53,6 +60,9 @@ const mockAdminApi = vi.hoisted(() => ({
   setSedeActive: vi.fn(),
   testSede: vi.fn(),
   deleteSede: vi.fn(),
+  getSedePassword: vi.fn(),
+  setSedePassword: vi.fn(),
+  reloadWlc: vi.fn(),
   listBreakGlass: vi.fn(),
   enableBreakGlass: vi.fn(),
   disableBreakGlass: vi.fn(),
@@ -220,6 +230,68 @@ describe('AdminPanel', () => {
     });
   });
 
+  describe('deleting a user', () => {
+    it('deletes after confirmation and reloads the list', async () => {
+      const u = userEvent.setup();
+      window.confirm = vi.fn(() => true);
+      mockAdminApi.deleteUser.mockResolvedValue({ success: true });
+      render(<AdminPanel currentUserEmail="admin@dompe.com" onClose={vi.fn()} />);
+      await waitFor(() => expect(screen.getByTestId('admin-user-delete-7')).toBeInTheDocument());
+
+      await u.click(screen.getByTestId('admin-user-delete-7'));
+
+      expect(window.confirm).toHaveBeenCalledWith('Eliminare Mario Rossi?');
+      await waitFor(() => expect(mockAdminApi.deleteUser).toHaveBeenCalledWith(7));
+      await waitFor(() => expect(mockAdminApi.listUsers).toHaveBeenCalledTimes(2));
+    });
+
+    it('does nothing when the confirmation is declined', async () => {
+      const u = userEvent.setup();
+      window.confirm = vi.fn(() => false);
+      render(<AdminPanel currentUserEmail="admin@dompe.com" onClose={vi.fn()} />);
+      await waitFor(() => expect(screen.getByTestId('admin-user-delete-7')).toBeInTheDocument());
+
+      await u.click(screen.getByTestId('admin-user-delete-7'));
+
+      expect(mockAdminApi.deleteUser).not.toHaveBeenCalled();
+    });
+
+    it('is not offered on your own row', async () => {
+      mockAdminApi.listUsers.mockResolvedValue({
+        data: [{ ...users[0], id: 1, email: 'admin@dompe.com', role: 'admin', status: 'active' }],
+      });
+      render(<AdminPanel currentUserEmail="admin@dompe.com" onClose={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByTestId('admin-user-1')).toBeInTheDocument());
+      expect(screen.queryByTestId('admin-user-delete-1')).not.toBeInTheDocument();
+    });
+
+    /** The next sign-in would bring them back as administrator anyway. */
+    it('is not offered for an administrator granted by convention', async () => {
+      mockAdminApi.listUsers.mockResolvedValue({
+        data: [{ ...users[0], role: 'admin' as const, status: 'active' as const, autoAdmin: true }],
+      });
+      render(<AdminPanel currentUserEmail="admin@dompe.com" onClose={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByTestId('admin-user-7')).toBeInTheDocument());
+      expect(screen.queryByTestId('admin-user-delete-7')).not.toBeInTheDocument();
+    });
+
+    it('surfaces a refusal from the server', async () => {
+      const u = userEvent.setup();
+      window.confirm = vi.fn(() => true);
+      mockAdminApi.deleteUser.mockRejectedValue(
+        Object.assign(new Error('È l\'ultimo amministratore attivo.'), { code: 'last_admin', status: 409 }),
+      );
+      render(<AdminPanel currentUserEmail="admin@dompe.com" onClose={vi.fn()} />);
+      await waitFor(() => expect(screen.getByTestId('admin-user-delete-7')).toBeInTheDocument());
+
+      await u.click(screen.getByTestId('admin-user-delete-7'));
+
+      await waitFor(() => expect(screen.getByText(/ultimo amministratore/)).toBeInTheDocument());
+    });
+  });
+
   describe('sedi tab', () => {
     it('shows the site form', async () => {
       const u = userEvent.setup();
@@ -242,10 +314,10 @@ describe('AdminPanel', () => {
     });
 
     /**
-     * Creating the secret is a platform-team request, so the panel names both
-     * identifiers rather than leaving the admin to guess the convention.
+     * The password can be set from the panel now, but the platform team may
+     * still provision it: both identifiers stay named.
      */
-    it('names the Key Vault secret to request when it is missing', async () => {
+    it('names the Key Vault secret when it is missing', async () => {
       const u = userEvent.setup();
       mockAdminApi.listSedi.mockResolvedValue({
         data: [{ ...sedi[0], credentialConfigured: false }],
@@ -258,13 +330,94 @@ describe('AdminPanel', () => {
       expect(screen.getByText('WLC_PASSWORD_MIL')).toBeInTheDocument();
     });
 
-    it('never offers a field for the controller password', async () => {
+    describe('controller password (Key Vault)', () => {
+      async function openSedi() {
+        const u = userEvent.setup();
+        render(<AdminPanel currentUserEmail="admin@dompe.com" onClose={vi.fn()} />);
+        await u.click(screen.getByTestId('admin-tab-sedi'));
+        await waitFor(() => expect(screen.getByTestId('sede-password')).toBeInTheDocument());
+        return u;
+      }
+
+      it('keeps it masked, and fetches nothing, until asked', async () => {
+        await openSedi();
+        expect(screen.getByTestId('sede-password-value')).toHaveTextContent('••••••••');
+        expect(mockAdminApi.getSedePassword).not.toHaveBeenCalled();
+        // Not an input: nothing for a password manager to capture.
+        expect(document.querySelector('input[type="password"]')).toBeNull();
+      });
+
+      it('shows it on request and hides it again', async () => {
+        mockAdminApi.getSedePassword.mockResolvedValue({ data: { password: 'S3cret!' } });
+        const u = await openSedi();
+
+        await u.click(screen.getByTestId('sede-password-toggle'));
+        await waitFor(() => expect(screen.getByTestId('sede-password-value')).toHaveTextContent('S3cret!'));
+        expect(mockAdminApi.getSedePassword).toHaveBeenCalledWith(1);
+
+        await u.click(screen.getByTestId('sede-password-toggle'));
+        expect(screen.getByTestId('sede-password-value')).not.toHaveTextContent('S3cret!');
+      });
+
+      it('reports a Key Vault failure', async () => {
+        mockAdminApi.getSedePassword.mockRejectedValue(new Error('Key Vault non configurato (KEY_VAULT_URL).'));
+        const u = await openSedi();
+
+        await u.click(screen.getByTestId('sede-password-toggle'));
+
+        await waitFor(() => expect(screen.getByTestId('sede-password-error')).toHaveTextContent('Key Vault non configurato'));
+      });
+
+      it('saves a new password after confirmation', async () => {
+        window.confirm = vi.fn(() => true);
+        mockAdminApi.setSedePassword.mockResolvedValue({ success: true });
+        const u = await openSedi();
+
+        await u.click(screen.getByTestId('sede-password-edit'));
+        await u.type(screen.getByTestId('sede-password-input'), 'N3w-pass');
+        await u.click(screen.getByTestId('sede-password-save'));
+
+        await waitFor(() => expect(mockAdminApi.setSedePassword).toHaveBeenCalledWith(1, 'N3w-pass'));
+        await waitFor(() => expect(screen.getByTestId('sede-password-saved')).toBeInTheDocument());
+        expect(screen.queryByTestId('sede-password-input')).not.toBeInTheDocument();
+      });
+
+      it('does not save when the confirmation is declined', async () => {
+        window.confirm = vi.fn(() => false);
+        const u = await openSedi();
+
+        await u.click(screen.getByTestId('sede-password-edit'));
+        await u.type(screen.getByTestId('sede-password-input'), 'N3w-pass');
+        await u.click(screen.getByTestId('sede-password-save'));
+
+        expect(mockAdminApi.setSedePassword).not.toHaveBeenCalled();
+      });
+
+      it('lets the new password be shown while typing it', async () => {
+        const u = await openSedi();
+        await u.click(screen.getByTestId('sede-password-edit'));
+
+        expect(screen.getByTestId('sede-password-input')).toHaveAttribute('type', 'password');
+        await u.click(screen.getByTestId('sede-password-input-toggle'));
+        expect(screen.getByTestId('sede-password-input')).toHaveAttribute('type', 'text');
+      });
+    });
+
+    it('reloads the WLC passwords from Key Vault and reports the outcome', async () => {
       const u = userEvent.setup();
+      mockAdminApi.reloadWlc.mockResolvedValue({
+        data: { loaded: ['MIL'], missing: ['TOR'], failed: [{ code: 'NA', error: '503: Service unavailable' }] },
+      });
       render(<AdminPanel currentUserEmail="admin@dompe.com" onClose={vi.fn()} />);
       await u.click(screen.getByTestId('admin-tab-sedi'));
+      await waitFor(() => expect(screen.getByTestId('wlc-reload-btn')).toBeInTheDocument());
 
-      await waitFor(() => expect(screen.getByTestId('sede-save-btn')).toBeInTheDocument());
-      expect(document.querySelector('input[type="password"]')).toBeNull();
+      await u.click(screen.getByTestId('wlc-reload-btn'));
+
+      await waitFor(() => expect(screen.getByTestId('wlc-reload-result')).toBeInTheDocument());
+      expect(mockAdminApi.reloadWlc).toHaveBeenCalledOnce();
+      expect(screen.getByTestId('wlc-reload-result')).toHaveTextContent('1 caricate, 1 mancanti, 1 errori.');
+      expect(screen.getByTestId('wlc-reload-result')).toHaveTextContent('NA: 503: Service unavailable');
     });
 
     it('runs a connection test', async () => {

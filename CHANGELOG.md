@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+#### Referente searched live in Entra ID
+- The "Referente / Sponsor" field of the register-guest form is now a combobox that searches the directory as you type (Microsoft Graph `GET /users`, debounced, the previous request aborted). It matches the start of the display name, first name, surname, mail or UPN, returns only enabled users whose UPN ends in `@dompe.com` or `@ext.dompe.com` (`DIRECTORY_UPN_DOMAINS`), and shows the display name only. Nothing is cached, on the server or in the browser.
+- Free text stays allowed, for a sponsor who is not in the directory. The stored value is unchanged (`guests.host`, the display name), so there is no schema change.
+- New `GET /api/directory/users?q=` (admin/operator). The domain is checked again on the results, only `id` and `displayName` leave the backend, and the query is never logged. It answers 503 when `DIRECTORY_SEARCH_ENABLED` is off (the default), and the field then quietly behaves as plain text.
+- Authenticates as the backend managed identity through a shared `DefaultAzureCredential` (`utils/azureCredential.ts`). **Infra prerequisite:** Graph application permission `User.Read.All` with admin consent on the backend UAMI.
+
+#### Deleting a portal user from the admin panel
+- The Users tab has a Delete button (with confirmation). The API existed already; it now also refuses an administrator by convention (409 `auto_admin_immutable`), who would be re-created as admin at the next sign-in anyway, and the `admin-user-deleted` audit line records what the user had (mail, role, status, sites), since the row is gone afterwards. The button is not offered on your own row or on a convention admin.
+
+#### WLC controller password from Key Vault: show, change, reload
+- With `KEY_VAULT_URL` set, the backend reads every site's `WLC-PASSWORD-<CODE>` secret directly (`@azure/keyvault-secrets`) at startup and keeps it in memory. `wlcPasswordForSede` prefers that value, then the `WLC_PASSWORD_<CODE>` env var, then `WLC_DEFAULT_PASSWORD`. An env var still holding an unresolved `@Microsoft.KeyVault(...)` or `secretref:` text is now ignored instead of being sent to the controller as the password (COMPLIANCE.md §7.1).
+- In the site form an admin can show the password (read live from Key Vault, on request only, masked again after 30 seconds) and change it: the new value becomes a new secret version and is used from the next controller call, without a restart. The controller itself is not touched: the password must already have been changed on the WLC.
+- "Ricarica configurazioni WLC" re-reads every site's password from Key Vault, so a secret changed directly in the vault is picked up without restarting. One unreadable site keeps its previous value.
+- New `GET` / `PUT /api/admin/sedi/:id/password` and `POST /api/admin/wlc/reload`, each audited at `warn` (`admin-wlc-password-viewed`, `admin-wlc-password-changed`, `admin-wlc-reload`) and in `sync_logs`. Responses are `no-store`; the value is never logged, and a write never echoes it.
+- A new site can now be put in service from the panel alone: setting its password creates the secret, so no env binding or new revision is needed.
+
+### Security
+
+- **Accepted deviation D4** (COMPLIANCE.md): an admin can read and replace a WLC controller password. It reverses the earlier "no secret crosses the API" rule (§5.1) for this one value, on request. **Infra prerequisite:** the backend UAMI needs **Key Vault Secrets Officer**, preferably scoped to the `WLC-PASSWORD-*` secrets.
+
 ### Fixed
 
 #### One operator's "Disconnetti" could stop provisioning at another site

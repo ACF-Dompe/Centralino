@@ -39,6 +39,10 @@ const mockWlcSsh = vi.hoisted(() => ({
   extractGuestUsers: vi.fn(),
 }));
 const mockEmail = vi.hoisted(() => ({ sendCredentialEmail: vi.fn() }));
+const mockDirectory = vi.hoisted(() => {
+  class DirectoryDisabledError extends Error {}
+  return { searchDirectoryUsers: vi.fn(), DirectoryDisabledError };
+});
 const mockLog = vi.hoisted(() => ({
   info: vi.fn(),
   warn: vi.fn(),
@@ -115,6 +119,7 @@ vi.mock('../repositories/index.js', () => mockRepo);
 vi.mock('../services/wlcWebui.js', () => mockWlcWebui);
 vi.mock('../services/wlcSsh.js', () => mockWlcSsh);
 vi.mock('../services/email.js', () => mockEmail);
+vi.mock('../services/entraDirectory.js', () => mockDirectory);
 vi.mock('../logger.js', () => ({ log: mockLog }));
 
 // ── Import router AFTER mocks (vi.mock is hoisted) ──────────────────────
@@ -1014,6 +1019,56 @@ describe('Routes Integration', () => {
     it('keeps the raw WLC endpoints for admins only', async () => {
       mockAuthzState.authz = { ...mockAuthzState.authz, role: 'operator' };
       const res = await request(app).post('/api/wlc/create-user').send({});
+      expect(res.status).toBe(403);
+    });
+  });
+
+  // ═════════════════════════════════════════════════════════════════════
+  //  Directory search (Referente)
+  // ═════════════════════════════════════════════════════════════════════
+  describe('GET /api/directory/users', () => {
+    it('returns the display names found in Entra, uncached', async () => {
+      mockDirectory.searchDirectoryUsers.mockResolvedValue([{ id: 'a', displayName: 'Maria Rossi' }]);
+
+      const res = await request(app).get('/api/directory/users').query({ q: ' ros ' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data).toEqual([{ id: 'a', displayName: 'Maria Rossi' }]);
+      expect(res.headers['cache-control']).toBe('no-store');
+      expect(mockDirectory.searchDirectoryUsers).toHaveBeenCalledWith('ros');
+    });
+
+    it.each([
+      ['too short', 'r'],
+      ['too long', 'x'.repeat(65)],
+      ['a control character', 'ro\u0001s'],
+    ])('rejects a query that is %s', async (_label, q) => {
+      const res = await request(app).get('/api/directory/users').query({ q });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('invalid_query');
+      expect(mockDirectory.searchDirectoryUsers).not.toHaveBeenCalled();
+    });
+
+    it('answers 503 when the search is switched off, so the field stays free text', async () => {
+      mockDirectory.searchDirectoryUsers.mockRejectedValue(new mockDirectory.DirectoryDisabledError('off'));
+      const res = await request(app).get('/api/directory/users').query({ q: 'ros' });
+      expect(res.status).toBe(503);
+      expect(res.body.error).toBe('directory_unavailable');
+    });
+
+    it('answers 502 on a Graph failure, without logging the query', async () => {
+      mockDirectory.searchDirectoryUsers.mockRejectedValue(new Error('Insufficient privileges'));
+
+      const res = await request(app).get('/api/directory/users').query({ q: 'Rossi' });
+
+      expect(res.status).toBe(502);
+      expect(res.body.error).toBe('directory_error');
+      expect(JSON.stringify(mockLog.error.mock.calls)).not.toContain('Rossi');
+    });
+
+    it('is closed to viewers', async () => {
+      mockAuthzState.authz = { ...mockAuthzState.authz, role: 'viewer' };
+      const res = await request(app).get('/api/directory/users').query({ q: 'ros' });
       expect(res.status).toBe(403);
     });
   });

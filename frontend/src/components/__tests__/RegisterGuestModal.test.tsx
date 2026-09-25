@@ -20,7 +20,9 @@ vi.mock('../../i18n', () => ({
         'create.company': 'Azienda',
         'create.company.default': 'Ospite Individuale',
         'create.host': 'Referente / Sponsor',
-        'create.host.placeholder': 'Dr.ssa Maria Rossi',
+        'create.host.placeholder': 'Cerca per nome, cognome o email',
+        'create.host.searching': 'Ricerca in corso…',
+        'create.host.noResults': 'Nessun utente trovato',
         'create.duration': 'Durata accesso',
         'create.remarks': 'Note',
         'create.remarks.placeholder': 'Note interne...',
@@ -60,9 +62,11 @@ vi.mock('../../i18n', () => ({
 
 // Mock API
 const mockCreateGuest = vi.fn();
+const mockSearchDirectoryUsers = vi.fn();
 vi.mock('../../api/client', () => ({
   api: {
     createGuest: (...args: unknown[]) => mockCreateGuest(...args),
+    searchDirectoryUsers: (...args: unknown[]) => mockSearchDirectoryUsers(...args),
   },
 }));
 
@@ -100,6 +104,8 @@ describe('RegisterGuestModal', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockCreateGuest.mockResolvedValue({ data: newGuest });
+    // No match in the directory: the typed text is what gets submitted.
+    mockSearchDirectoryUsers.mockResolvedValue({ data: [] });
   });
 
   it('renders the form title', () => {
@@ -229,6 +235,37 @@ describe('RegisterGuestModal', () => {
 
     await waitFor(() => {
       expect(screen.getByText('Errore di connessione')).toBeInTheDocument();
+    });
+  });
+
+  it('fills the Referente with the display name picked from Entra', async () => {
+    mockSearchDirectoryUsers.mockResolvedValue({ data: [{ id: 'oid-1', displayName: 'Maria Rossi' }] });
+    const user = userEvent.setup();
+    render(<RegisterGuestModal sede={sede} onClose={vi.fn()} onCreated={vi.fn()} />);
+
+    await user.type(screen.getByLabelText('Nome completo'), 'Test Guest');
+    await user.type(screen.getByLabelText('Referente / Sponsor'), 'ros');
+    await user.click(await screen.findByTestId('directory-option-0'));
+
+    expect(screen.getByLabelText('Referente / Sponsor')).toHaveValue('Maria Rossi');
+    expect(mockSearchDirectoryUsers).toHaveBeenLastCalledWith('ros', expect.anything());
+
+    await user.click(screen.getByText('Crea Ospite'));
+    await waitFor(() => {
+      expect(mockCreateGuest).toHaveBeenCalledWith(expect.objectContaining({ host: 'Maria Rossi' }));
+    });
+  });
+
+  it('still accepts a Referente typed by hand', async () => {
+    const user = userEvent.setup();
+    render(<RegisterGuestModal sede={sede} onClose={vi.fn()} onCreated={vi.fn()} />);
+
+    await user.type(screen.getByLabelText('Nome completo'), 'Test Guest');
+    await user.type(screen.getByLabelText('Referente / Sponsor'), 'Sponsor Esterno');
+    await user.click(screen.getByText('Crea Ospite'));
+
+    await waitFor(() => {
+      expect(mockCreateGuest).toHaveBeenCalledWith(expect.objectContaining({ host: 'Sponsor Esterno' }));
     });
   });
 

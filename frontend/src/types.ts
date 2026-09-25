@@ -36,7 +36,10 @@ export interface Sede {
 /** A site as the admin panel sees it, with connectivity diagnostics. */
 export interface AdminSede extends Sede {
   active: boolean;
-  /** Whether a WLC password is present in the environment. Never the value. */
+  /**
+   * Whether a WLC password is configured (Key Vault or environment). Never the
+   * value: an admin reads it on demand, one site at a time (COMPLIANCE.md D4).
+   */
   credentialConfigured: boolean;
   credentialEnvVar: string;
   credentialSecretName: string;
@@ -45,6 +48,22 @@ export interface AdminSede extends Sede {
   wlcLastCheckError: string | null;
   updatedAt: string | null;
   updatedBy: string | null;
+}
+
+/** Outcome of reloading the WLC passwords from Key Vault. */
+export interface WlcReloadResult {
+  loaded: string[];
+  missing: string[];
+  failed: { code: string; error: string }[];
+}
+
+/**
+ * A person found in Entra ID by the Referente search. Only the display name is
+ * sent to the browser; the id is there as a list key.
+ */
+export interface DirectoryUser {
+  id: string;
+  displayName: string;
 }
 
 /** A directory entry as the admin panel sees it. */

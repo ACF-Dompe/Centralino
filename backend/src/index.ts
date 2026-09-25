@@ -26,6 +26,7 @@ import cookieSignature from 'cookie-signature';
 import type { SessionData } from './auth/session.js';
 import { startBackgroundServices, stopBackgroundServices } from './services/timer.js';
 import { initWsServer, shutdownWsServer } from './services/ws.js';
+import { initWlcPasswords } from './services/wlcCredentials.js';
 import { getDb } from './db/index.js';
 import { log } from './logger.js';
 
@@ -34,6 +35,9 @@ let server: http.Server;
 async function main(): Promise<void> {
   await getDb();
   log.info({ url: redactUrl(config.databaseUrl) }, 'DB ready');
+  // Key Vault is the source of truth for the controller passwords; the env
+  // vars stay as a fallback. Never throws: an outage must not block startup.
+  await initWlcPasswords();
 
   const app = express();
   app.set('trust proxy', 1);

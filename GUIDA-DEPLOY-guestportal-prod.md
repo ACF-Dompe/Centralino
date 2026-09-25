@@ -100,6 +100,18 @@ az extension add --name containerapp --upgrade -y
 - Permesso **applicativo** `Mail.Send` + **admin consent**; genera un client secret → `MAIL-GRAPH-CLIENT-SECRET`.
 - Annota `MAIL_GRAPH_CLIENT_ID`, `MAIL_GRAPH_TENANT_ID`, `MAIL_GRAPH_USER_ID` (mailbox mittente licenziata).
 
+### 1.2-bis Ricerca del Referente in Entra (Graph, UAMI backend)
+Il campo "Referente" del form ospite cerca gli utenti in Entra in tempo reale. Il backend usa la **propria UAMI** (nessun secret), non l'App Registration della mail.
+- Assegnare alla UAMI backend il permesso **applicativo** Microsoft Graph `User.Read.All` con **admin consent**. Su una managed identity si assegna via Graph, non dal portale:
+  ```powershell
+  Connect-MgGraph -Scopes "AppRoleAssignment.ReadWrite.All","Application.Read.All"
+  $graph = Get-MgServicePrincipal -Filter "appId eq '00000003-0000-0000-c000-000000000000'"
+  $role  = $graph.AppRoles | Where-Object { $_.Value -eq 'User.Read.All' -and $_.AllowedMemberTypes -contains 'Application' }
+  $mi    = Get-MgServicePrincipal -Filter "displayName eq 'uami-guestportal-backend-prod'"
+  New-MgServicePrincipalAppRoleAssignment -ServicePrincipalId $mi.Id -PrincipalId $mi.Id -ResourceId $graph.Id -AppRoleId $role.Id
+  ```
+- Poi sul backend `DIRECTORY_SEARCH_ENABLED=true` (§7.1). Senza il permesso la ricerca risponde errore e il campo resta a testo libero: nessun blocco della registrazione ospiti.
+
 ### 1.3 Accesso break-glass (login locale di emergenza)
 
 Login username/password che funziona quando Entra ID / SSO non è raggiungibile.
@@ -215,6 +227,15 @@ az role assignment create --assignee "$FRONTEND_UAMI_PID" --role AcrPull --scope
 
 # 2.3 Key Vault Secrets User SOLO al backend (il frontend non legge segreti)
 az role assignment create --assignee "$BACKEND_UAMI_PID" --role "Key Vault Secrets User" --scope "$KV_ID"
+
+# 2.4 Key Vault Secrets Officer al backend, SOLO sui segreti WLC: serve per
+#     cambiare la password di un controller dal pannello admin (COMPLIANCE.md D4).
+#     Scope per singolo segreto, così il backend non può scrivere gli altri.
+#     Ripetere per ogni nuova sede (o assegnare sul vault, accettando lo scope più ampio).
+for CODE in MIL AQ NA TIR SM; do
+  az role assignment create --assignee "$BACKEND_UAMI_PID" --role "Key Vault Secrets Officer" \
+    --scope "$KV_ID/secrets/WLC-PASSWORD-$CODE"
+done
 ```
 Il principal Entra della UAMI backend sul PostgreSQL è creato nel §4.
 
@@ -397,7 +418,10 @@ az containerapp create \
     MAIL_GRAPH_ENABLED=true MAIL_GRAPH_TENANT_ID="<...>" \
     MAIL_GRAPH_CLIENT_ID="<...>" MAIL_GRAPH_USER_ID="<...>" \
     MAIL_GRAPH_FROM_ADDRESS="noreply@dompe.com" \
-    MAIL_GRAPH_CLIENT_SECRET="secretref:mail-graph-client-secret"
+    MAIL_GRAPH_CLIENT_SECRET="secretref:mail-graph-client-secret" \
+    AZURE_CLIENT_ID="<client-id della uami-guestportal-backend-prod>" \
+    KEY_VAULT_URL="https://<KV_NAME>.vault.azure.net" \
+    DIRECTORY_SEARCH_ENABLED=true DIRECTORY_UPN_DOMAINS="dompe.com,ext.dompe.com"
 
 # BACKEND_BASE_URL (serve il default domain dell'ambiente)
 ACA_DOMAIN=$(az containerapp env show -n <ACA_ENV_NAME> -g <RG_NAME> --query properties.defaultDomain -o tsv)
@@ -414,6 +438,8 @@ az containerapp update -n ca-guestportal-backend-prod -g <RG_NAME> \
 > `SAML_DISABLE_REQUESTED_AUTHN_CONTEXT=true` è il default del codice: è esplicitato qui perché rimuoverlo o portarlo a `false` rompe tutti i login passwordless con `AADSTS75011` (§1.1, §12).
 >
 > Le variabili `BREAKGLASS_*` **non** sono impostate qui: l'accesso di emergenza nasce disabilitato e va abilitato deliberatamente seguendo il §1.3.
+>
+> `KEY_VAULT_URL`: il backend legge i segreti `WLC-PASSWORD-<CODE>` direttamente da Key Vault all'avvio (le `WLC_PASSWORD_*` restano come fallback), e dal pannello admin la password di una sede si può vedere, cambiare e ricaricare senza riavvio (deviazione **D4**; la modifica richiede il §2.4). Dopo aver cambiato un segreto direttamente in Key Vault basta **"Ricarica configurazioni WLC"** nel pannello, invece di riavviare la revisione. `AZURE_CLIENT_ID` fa scegliere a `DefaultAzureCredential` la UAMI backend.
 
 ### 7.2 Frontend (ingress **external**, UAMI solo pull)
 ```bash
@@ -564,12 +590,16 @@ Migrazioni idempotenti/additive → il rollback immagine non richiede rollback s
 | WLC non risponde | egress `172.18.0.0/16` non abilitato (§8). Il messaggio di errore distingue ora i casi: *"Host irraggiungibile"* è rete, *"Connessione rifiutata"* è porta chiusa, *"Nome host non risolto"* è DNS. |
 | **`Certificato TLS del WLC rifiutato (SELF_SIGNED_CERT_IN_CHAIN)`** | Il controller **risponde**: a fallire è la verifica del certificato, non la rete. Il Catalyst 9800 presenta un certificato self-signed. Imposta `WLC_TLS_REJECT_UNAUTHORIZED=false` (deviazione D3) oppure installa un certificato attendibile sul controller. |
 | Mail non inviate | `MAIL_GRAPH_ENABLED≠true` o `Mail.Send`/consent/secret mancanti (§1.2) |
+| Referente: nessun suggerimento, solo testo libero | `DIRECTORY_SEARCH_ENABLED≠true` (risposta 503) oppure permesso Graph `User.Read.All` mancante sulla UAMI backend (502, log `Directory search failed`) (§1.2-bis) |
+| Pannello admin: "Key Vault non configurato" | `KEY_VAULT_URL` non impostato sul backend (§7.1) |
+| Pannello admin: "Scrittura su Key Vault non riuscita" | Manca `Key Vault Secrets Officer` sul segreto `WLC-PASSWORD-<CODE>` (§2.4). La lettura richiede solo Secrets User |
 
 ---
 
 ## 13. Checklist go‑live (tutta a cura del team infra)
 - [ ] App Entra: Enterprise App SAML + App Registration Graph (§1)
-- [ ] 2 UAMI create + ruoli (AcrPull ×2, KV Secrets User backend) (§2)
+- [ ] 2 UAMI create + ruoli (AcrPull ×2, KV Secrets User backend, KV Secrets Officer backend sui segreti `WLC-PASSWORD-*`) (§2)
+- [ ] UAMI backend: permesso Graph `User.Read.All` + admin consent per la ricerca Referente (§1.2-bis)
 - [ ] Secret Key Vault popolati (§3)
 - [ ] DB `guestportal_prod` + principal Entra UAMI + grant (§4)
 - [ ] Immagini backend+frontend buildate e pushate (SHA + `:prod`) (§5)

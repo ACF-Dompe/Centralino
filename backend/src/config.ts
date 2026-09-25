@@ -4,6 +4,7 @@
  * the demo experience smooth out of the box.
  */
 import 'dotenv/config';
+import { getCachedWlcPassword } from './utils/wlcPasswordCache.js';
 
 function readString(name: string, fallback: string): string {
   const v = process.env[name];
@@ -269,6 +270,40 @@ export const config = {
   },
 
   /**
+   * Live search of the Entra ID directory, used by the "Referente" field.
+   *
+   * Authenticates as the backend's managed identity (`DefaultAzureCredential`),
+   * which needs the Microsoft Graph application permission `User.Read.All`.
+   * Off by default: without the permission every search would fail, and the
+   * field works as plain text either way.
+   *
+   * `upnDomains` is matched against the user principal name (comma-separated,
+   * case-insensitive), both in the Graph filter and again on the results.
+   */
+  directory: {
+    enabled: readString('DIRECTORY_SEARCH_ENABLED', '').toLowerCase() === 'true',
+    upnDomains: readString('DIRECTORY_UPN_DOMAINS', 'dompe.com,ext.dompe.com')
+      .split(',')
+      .map((d) => d.trim().toLowerCase().replace(/^@/, ''))
+      .filter((d) => d.length > 0),
+    maxResults: readNumber('DIRECTORY_MAX_RESULTS', 15),
+  },
+
+  /**
+   * Key Vault holding the per-site WLC passwords (`WLC-PASSWORD-<CODE>`).
+   *
+   * When set, the backend reads those secrets directly at startup and on
+   * "reload", and the admin panel can show and change them (COMPLIANCE.md D4).
+   * Reading needs "Key Vault Secrets User" on the backend identity; changing a
+   * password needs "Key Vault Secrets Officer" (it can be scoped to the
+   * individual secrets). Empty = Key Vault not used; passwords come from the
+   * `WLC_PASSWORD_<CODE>` environment variables only.
+   */
+  keyVault: {
+    url: readString('KEY_VAULT_URL', ''),
+  },
+
+  /**
    * Database migration and seed controls.
    * Guidelines §6/§8: migrations are a CI step, not run at app startup.
    * Seed is Development-only (idempotent).
@@ -302,20 +337,39 @@ export const config = {
 };
 
 /**
- * Resolve the WLC admin password for a sede from the environment.
+ * True for a value that is still a Key Vault reference rather than a secret.
+ *
+ * Container Apps does not expand the App Service syntax
+ * `@Microsoft.KeyVault(...)`, and an unresolved `secretref:` reaches the
+ * container as literal text. Either would otherwise be sent to the controller
+ * as the password.
+ */
+function isUnresolvedSecretReference(value: string): boolean {
+  const v = value.trim();
+  return v.startsWith('@Microsoft.KeyVault') || v.startsWith('secretref:');
+}
+
+/**
+ * Resolve the WLC admin password for a sede.
  *
  * Per-sede model (§2): one Key Vault secret per site (`WLC-PASSWORD-<CODE>`,
- * environment-agnostic) is injected as the env var `WLC_PASSWORD_<CODE>`
- * (Key Vault reference). The password is NEVER read from or written to the DB.
- *
- * Falls back to `WLC_DEFAULT_PASSWORD` (local dev only) when the per-sede
- * variable is not set. Returns '' when nothing is configured.
+ * environment-agnostic). The password is NEVER read from or written to the DB.
+ * Resolution order:
+ *   1. the value read from Key Vault (`KEY_VAULT_URL`) at startup, on "reload"
+ *      or when an admin changed it — see `services/wlcCredentials.ts`;
+ *   2. the env var `WLC_PASSWORD_<CODE>` (Container Apps secret reference),
+ *      ignored while it still holds an unresolved reference;
+ *   3. `WLC_DEFAULT_PASSWORD` (local dev only).
+ * Returns '' when nothing is configured.
  */
 export function wlcPasswordForSede(sedeCode: string | null | undefined): string {
   if (sedeCode) {
+    const fromVault = getCachedWlcPassword(sedeCode);
+    if (fromVault && fromVault.length > 0) return fromVault;
+
     const key = 'WLC_PASSWORD_' + sedeCode.toUpperCase().replace(/[^A-Z0-9]/g, '_');
     const v = process.env[key];
-    if (v && v.length > 0) return v;
+    if (v && v.length > 0 && !isUnresolvedSecretReference(v)) return v;
   }
   return config.wlc.defaultPassword;
 }

@@ -15,6 +15,8 @@ import type {
   AdminUser,
   BreakGlassAccount,
   SessionContext,
+  DirectoryUser,
+  WlcReloadResult,
 } from '../types';
 
 const BASE = '/api';
@@ -176,6 +178,12 @@ export const api = {
     if (filter?.sedeId != null) params.set('sedeId', String(filter.sedeId));
     return request<{ data: Guest[] }>(`/guests?${params.toString()}`);
   },
+  /**
+   * Live people search in Entra ID for the Referente field. Never cached: pass
+   * an AbortSignal so a newer keystroke cancels the previous request.
+   */
+  searchDirectoryUsers: (q: string, signal?: AbortSignal) =>
+    request<{ data: DirectoryUser[] }>(`/directory/users?${new URLSearchParams({ q }).toString()}`, { signal }),
   createGuest: (body: Partial<Guest>) => request<{ data: Guest }>('/guests', { method: 'POST', body: JSON.stringify(body) }),
   updateGuest: (id: string, patch: Partial<Guest>) =>
     request<{ data: Guest }>(`/guests/${id}`, { method: 'PUT', body: JSON.stringify(patch) }),
@@ -236,6 +244,15 @@ export const adminApi = {
       { method: 'POST' },
     ),
   deleteSede: (id: number) => request<void>(`/admin/sedi/${id}`, { method: 'DELETE' }),
+
+  // Controller password in Key Vault (COMPLIANCE.md D4). Read on demand only,
+  // never kept around; every read and write is audited server-side.
+  getSedePassword: (id: number) =>
+    request<{ data: { password: string } }>(`/admin/sedi/${id}/password`, { cache: 'no-store' }),
+  setSedePassword: (id: number, password: string) =>
+    request<{ success: boolean }>(`/admin/sedi/${id}/password`, { method: 'PUT', body: JSON.stringify({ password }) }),
+  /** Re-read every site's password from Key Vault, without a restart. */
+  reloadWlc: () => request<{ data: WlcReloadResult }>('/admin/wlc/reload', { method: 'POST' }),
 
   // Break glass — read, enable, disable, unlock. Creating an account and
   // rotating its password stay in the CLI (COMPLIANCE.md D1).

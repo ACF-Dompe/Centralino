@@ -8,7 +8,9 @@
  *     create an account or rotate a password, because those credentials bypass
  *     Entra and MFA entirely (COMPLIANCE.md D1) and a compromised admin session
  *     must not be able to mint one.
- *   - No response ever carries a password hash or a WLC password.
+ *   - No response ever carries a password hash, and no list or site response
+ *     carries a WLC password. The one route that returns a controller password
+ *     is the per-site, audited Key Vault read (COMPLIANCE.md D4).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
@@ -49,6 +51,16 @@ const mockRepo = vi.hoisted(() => ({
 }));
 
 const mockWlcWebui = vi.hoisted(() => ({ loginWebUi: vi.fn() }));
+const mockWlcCredentials = vi.hoisted(() => {
+  class KeyVaultNotConfiguredError extends Error {}
+  return {
+    readWlcPasswordFromVault: vi.fn(),
+    writeWlcPasswordToVault: vi.fn(),
+    reloadWlcPasswords: vi.fn(),
+    describeKeyVaultError: vi.fn((err: unknown) => (err as Error).message),
+    KeyVaultNotConfiguredError,
+  };
+});
 const mockLog = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }));
 const mockAuthorize = vi.hoisted(() => ({ invalidateAuthProfile: vi.fn() }));
 
@@ -56,6 +68,7 @@ vi.mock('../repositories/appUsers.js', () => mockAppUsers);
 vi.mock('../repositories/breakglass.js', () => mockBreakGlass);
 vi.mock('../repositories/index.js', () => mockRepo);
 vi.mock('../services/wlcWebui.js', () => mockWlcWebui);
+vi.mock('../services/wlcCredentials.js', () => mockWlcCredentials);
 vi.mock('../logger.js', () => ({ log: mockLog }));
 vi.mock('../middleware/authorize.js', () => mockAuthorize);
 
@@ -309,6 +322,85 @@ describe('users', () => {
   });
 });
 
+describe('delete user', () => {
+  it('deletes a user and drops their cached profile', async () => {
+    mockAppUsers.getAppUserById.mockResolvedValue(directoryUser({ role: 'operator', status: 'active', sedeIds: [1] }));
+    mockAppUsers.deleteAppUser.mockResolvedValue(true);
+
+    const res = await request(app).delete('/api/admin/users/7');
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(mockAppUsers.deleteAppUser).toHaveBeenCalledWith(7);
+    expect(mockAuthorize.invalidateAuthProfile).toHaveBeenCalledWith('oid-7');
+  });
+
+  /** Once the row is gone, the audit line is the only record of what it granted. */
+  it('audits the deletion with what the user had', async () => {
+    mockAppUsers.getAppUserById.mockResolvedValue(directoryUser({ role: 'operator', status: 'active', sedeIds: [1] }));
+    mockAppUsers.deleteAppUser.mockResolvedValue(true);
+
+    await request(app).delete('/api/admin/users/7');
+
+    expect(mockLog.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'admin-user-deleted',
+        actor: 'admin@dompe.com',
+        target: 'oid-7',
+        before: { email: 'mario@dompe.com', role: 'operator', status: 'active', sedeIds: [1] },
+      }),
+      expect.any(String),
+    );
+  });
+
+  it('refuses to let an admin delete themselves', async () => {
+    mockAppUsers.getAppUserById.mockResolvedValue(directoryUser({ id: 1, role: 'admin', status: 'active' }));
+
+    const res = await request(app).delete('/api/admin/users/1');
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('cannot_modify_self');
+    expect(mockAppUsers.deleteAppUser).not.toHaveBeenCalled();
+  });
+
+  it('refuses to delete the last active admin', async () => {
+    mockAppUsers.getAppUserById.mockResolvedValue(directoryUser({ id: 9, role: 'admin', status: 'active' }));
+    mockAppUsers.countActiveAdmins.mockResolvedValue(0);
+
+    const res = await request(app).delete('/api/admin/users/9');
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('last_admin');
+    expect(mockAppUsers.deleteAppUser).not.toHaveBeenCalled();
+  });
+
+  /** The next sign-in would re-create them as an active administrator anyway. */
+  it('refuses to delete an administrator granted by convention', async () => {
+    mockAppUsers.getAppUserById.mockResolvedValue(
+      directoryUser({ email: 'admin365-x@dompe.onmicrosoft.com', role: 'admin', status: 'active', autoAdmin: true }),
+    );
+
+    const res = await request(app).delete('/api/admin/users/7');
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('auto_admin_immutable');
+    expect(mockAppUsers.deleteAppUser).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 for an unknown user', async () => {
+    mockAppUsers.getAppUserById.mockResolvedValue(null);
+    const res = await request(app).delete('/api/admin/users/404');
+    expect(res.status).toBe(404);
+    expect(mockAppUsers.deleteAppUser).not.toHaveBeenCalled();
+  });
+
+  it('rejects an id that is not a number', async () => {
+    const res = await request(app).delete('/api/admin/users/abc');
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_payload');
+  });
+});
+
 describe('sedi', () => {
   it('lists every site, in service or not', async () => {
     const res = await request(app).get('/api/admin/sedi');
@@ -515,6 +607,124 @@ describe('sedi', () => {
 
     expect(res.status).toBe(204);
     expect(mockRepo.deleteSede).toHaveBeenCalledWith(1);
+  });
+});
+
+/**
+ * COMPLIANCE.md D4: an admin can read and replace a controller password held
+ * in Key Vault. What keeps it bounded is tested here: audited reads and writes,
+ * no caching, the value never logged and never echoed by a write.
+ */
+describe('WLC password in Key Vault', () => {
+  const SECRET = 'S3cret-Wlc!';
+
+  function loggedText(): string {
+    return JSON.stringify([...mockLog.info.mock.calls, ...mockLog.warn.mock.calls, ...mockLog.error.mock.calls]);
+  }
+
+  it('shows a site password read live from Key Vault', async () => {
+    mockWlcCredentials.readWlcPasswordFromVault.mockResolvedValue(SECRET);
+
+    const res = await request(app).get('/api/admin/sedi/1/password');
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.password).toBe(SECRET);
+    expect(res.headers['cache-control']).toBe('no-store');
+    expect(mockWlcCredentials.readWlcPasswordFromVault).toHaveBeenCalledWith('MIL');
+  });
+
+  it('audits every read, without the value', async () => {
+    mockWlcCredentials.readWlcPasswordFromVault.mockResolvedValue(SECRET);
+
+    await request(app).get('/api/admin/sedi/1/password');
+
+    expect(mockLog.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'admin-wlc-password-viewed', actor: 'admin@dompe.com', code: 'MIL' }),
+      expect.any(String),
+    );
+    expect(mockRepo.addSyncLog).toHaveBeenCalledWith(expect.objectContaining({ action: 'admin-wlc-password-viewed MIL' }));
+    expect(loggedText()).not.toContain(SECRET);
+  });
+
+  it('answers 404 when the secret does not exist', async () => {
+    mockWlcCredentials.readWlcPasswordFromVault.mockResolvedValue(null);
+    const res = await request(app).get('/api/admin/sedi/1/password');
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('secret_not_found');
+  });
+
+  it('answers 503 when Key Vault is not configured', async () => {
+    mockWlcCredentials.readWlcPasswordFromVault.mockRejectedValue(new mockWlcCredentials.KeyVaultNotConfiguredError('off'));
+    const res = await request(app).get('/api/admin/sedi/1/password');
+    expect(res.status).toBe(503);
+    expect(res.body.error).toBe('keyvault_unavailable');
+  });
+
+  it('answers 502 when Key Vault refuses', async () => {
+    mockWlcCredentials.readWlcPasswordFromVault.mockRejectedValue(new Error('403 Forbidden'));
+    const res = await request(app).get('/api/admin/sedi/1/password');
+    expect(res.status).toBe(502);
+    expect(res.body.error).toBe('keyvault_error');
+  });
+
+  it('answers 404 for an unknown site', async () => {
+    mockRepo.getAdminSedeById.mockResolvedValue(null);
+    const res = await request(app).get('/api/admin/sedi/99/password');
+    expect(res.status).toBe(404);
+    expect(mockWlcCredentials.readWlcPasswordFromVault).not.toHaveBeenCalled();
+  });
+
+  it('stores a new password in Key Vault and never echoes it', async () => {
+    mockWlcCredentials.writeWlcPasswordToVault.mockResolvedValue(undefined);
+
+    const res = await request(app).put('/api/admin/sedi/1/password').send({ password: SECRET });
+
+    expect(res.status).toBe(200);
+    expect(mockWlcCredentials.writeWlcPasswordToVault).toHaveBeenCalledWith('MIL', SECRET);
+    expect(JSON.stringify(res.body)).not.toContain(SECRET);
+    expect(mockLog.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'admin-wlc-password-changed', code: 'MIL' }),
+      expect.any(String),
+    );
+    expect(loggedText()).not.toContain(SECRET);
+  });
+
+  it.each([
+    ['empty', ''],
+    ['a line break', 'abc\ndef'],
+    ['a non-ASCII character', 'pässword'],
+    ['a leading space', ' secret'],
+  ])('rejects a password with %s', async (_label, password) => {
+    const res = await request(app).put('/api/admin/sedi/1/password').send({ password });
+    expect(res.status).toBe(400);
+    expect(mockWlcCredentials.writeWlcPasswordToVault).not.toHaveBeenCalled();
+  });
+
+  it('points at the missing role when the write is refused', async () => {
+    mockWlcCredentials.writeWlcPasswordToVault.mockRejectedValue(new Error('403 Forbidden'));
+    const res = await request(app).put('/api/admin/sedi/1/password').send({ password: SECRET });
+    expect(res.status).toBe(502);
+    expect(res.body.message).toContain('Key Vault Secrets Officer');
+  });
+
+  it('reloads every site from Key Vault and reports the outcome', async () => {
+    const summary = { loaded: ['MIL', 'AQ'], missing: ['TOR'], failed: [{ code: 'NA', error: 'timeout' }] };
+    mockWlcCredentials.reloadWlcPasswords.mockResolvedValue(summary);
+
+    const res = await request(app).post('/api/admin/wlc/reload');
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual(summary);
+    expect(mockLog.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'admin-wlc-reload', loaded: ['MIL', 'AQ'], failed: ['NA'] }),
+      expect.any(String),
+    );
+  });
+
+  it('answers 503 on reload when Key Vault is not configured', async () => {
+    mockWlcCredentials.reloadWlcPasswords.mockRejectedValue(new mockWlcCredentials.KeyVaultNotConfiguredError('off'));
+    const res = await request(app).post('/api/admin/wlc/reload');
+    expect(res.status).toBe(503);
   });
 });
 

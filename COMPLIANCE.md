@@ -31,7 +31,7 @@ Tutti i **P0** (4/4) e **P1‑P2** (11/11) sono stati risolti nel codice. In que
 | # | Difetto | Stato | Dettaglio |
 |---|---|---|---|
 | **4** | Provisioning app‑owned (RG/KV/ACA env) | ✅ **FIXED** | Modello **consume‑only**: la pipeline non crea più alcuna risorsa (rimossi DB‑bootstrap, `containerapp job create`, `acr repository update`). `provision.sh` è ora un **preflight read‑only**; `provision-infra.yml` è "Azure Platform Preflight". Nomi risorse **parametrizzati** via secret GitHub. Le risorse (RG/KV/ACA env/Container App/UAMI/DB/ruolo Entra/ACR/AGW) sono pre‑provisionate dalla piattaforma. `setup-oidc.sh` non assegna più RBAC sul Key Vault (compito infra) né hardcoda il nome KV; resta solo la creazione dell'App Registration OIDC, la cui ownership è da confermare con l'architetto (§4.1). |
-| **5.1** | Segreti WLC/SMTP esposti via GET API | ✅ **FIXED** | `GET /config/wlc` → `password: undefined` | `GET /config/email` → `password: undefined` | `GET /config/sms` → `apiKey: undefined` |
+| **5.1** | Segreti WLC/SMTP esposti via GET API | ✅ **FIXED** | `GET /config/wlc` → `password: undefined` | `GET /config/email` → `password: undefined` | `GET /config/sms` → `apiKey: undefined`. Le API di elenco e di configurazione continuano a non restituire la password WLC; l'unica eccezione, per decisione del richiedente, è la lettura puntuale e auditata da Key Vault riservata agli admin — deviazione **D4**. |
 | **5.2** | `targetPassword` in audit log `sync_logs` | ✅ **FIXED** | `const safePayload = { ...cfg, targetPassword: '***' }` prima del log. |
 | **5.3** | Default TLS insicuri (`rejectUnauthorized: false`) | 🔶 **PARZIALE** | Il **default del codice** resta sicuro: `WLC_TLS_REJECT_UNAUTHORIZED` vale `true` in produzione e `false` solo in dev. In produzione è però impostato esplicitamente a `false` per scelta operativa — vedi deviazione **D3** (certificato self-signed dei Catalyst). La verifica dell host key SSH è un flag esplicito, default off — deviazione **D2**. Entrambe riguardano lo stesso percorso di rete verso i WLC. |
 | **5.4** | WebSocket `/ws` non autenticato | ✅ **FIXED** | Path: `/api/ws` + `sessionVerifier.verifySession()` sull'upgrade → 401 se non autenticato. |
@@ -80,11 +80,11 @@ Tutti i **P0** (4/4) e **P1‑P2** (11/11) sono stati risolti nel codice. In que
 |---|---|---|---|
 | 1 | Due immagini/Dockerfile indipendenti | 🟢 Conforme | Stateless, non‑root, multi‑stage |
 | 2 | README + `.gitignore`; nessun segreto committato | 🟢 Conforme | README root/backend/frontend/scripts; segreti rimossi |
-| 3 | Config via env; segreti solo via KV ref | 🟢 Conforme | Password WLC in Key Vault per sede (`WLC_PASSWORD_<CODE>`), mai in DB (§2 v7); SMTP rimosso, mail solo via Graph (§3 v7). Resta solo `sms_config.api_key` in DB, ma la feature SMS è nascosta e il campo è vuoto |
+| 3 | Config via env; segreti solo via KV ref | 🟢 Conforme | Password WLC in Key Vault per sede (`WLC-PASSWORD-<CODE>`, letta dal backend via SDK con fallback su `WLC_PASSWORD_<CODE>`), mai in DB (§2 v7); visibile e modificabile solo dagli admin, con audit (D4); SMTP rimosso, mail solo via Graph (§3 v7). Resta solo `sms_config.api_key` in DB, ma la feature SMS è nascosta e il campo è vuoto |
 | 4 | API sotto `/api`, same‑origin, no CORS | 🟢 Conforme | CORS rimosso |
 | 5 | Frontend→backend server‑side via `BACKEND_BASE_URL` | ⚪ N/A | Nessun SSR |
 | 6 | Dietro AGW (URL relativi, header forwarded) | 🟢 Conforme | `trust proxy`; WS ora sotto `/api/ws` |
-| 7 | Accesso Azure via `DefaultAzureCredential` scoped | 🟢 Conforme | DB via Entra ID; mail via client credentials |
+| 7 | Accesso Azure via `DefaultAzureCredential` scoped | 🟢 Conforme | DB via Entra ID; Key Vault (password WLC) e Microsoft Graph (ricerca Referente, `User.Read.All`) via UAMI del backend; mail via client credentials |
 | 8 | SSO Entra SAML 2.0 | 🟢 Conforme | Hardening completo applicato |
 | 9 | Migrazioni idempotenti, no superuser | 🟢 Conforme | Entrypoint CLI funzionante ✅ |
 | 10 | Pipeline 5 stage + branch mapping + Trivy | 🟢 Conforme | Struttura ok; Trivy ora blocco solo CRITICAL ✅ + docker-security.yml autonomo stabile (3/3 success) |
@@ -195,6 +195,34 @@ rileva il MITM **senza** toccare i controller, ed è la via più economica.
 
 ---
 
+### D4 — Password WLC leggibile e modificabile dagli admin via HTTP
+
+| Campo | Valore |
+|---|---|
+| **Cosa** | Dal pannello di amministrazione un utente con ruolo `admin` può **vedere** la password del controller di una sede (letta live da Key Vault, `GET /api/admin/sedi/:id/password`), **cambiarla** (nuova versione del segreto `WLC-PASSWORD-<CODE>`, `PUT /api/admin/sedi/:id/password`) e **ricaricare** in memoria tutte le password da Key Vault senza riavvio (`POST /api/admin/wlc/reload`). |
+| **Perché** | Richiesta operativa: la rotazione della password del controller non deve dipendere da un ticket al team piattaforma e da una nuova revisione ACA, e una sede nuova deve poter essere messa in servizio dal pannello. Prima la password era deliberatamente non leggibile né scrivibile via HTTP (§5.1). |
+| **Deviazione** | Una sessione admin compromessa può leggere la password admin di ogni WLC e sostituirla nel Key Vault (negando così il servizio sulla sede finché non viene ripristinata). Il backend richiede sul vault il ruolo **Key Vault Secrets Officer** (scrittura), non più solo Secrets User. |
+| **Rischio residuo** | La password del controller diventa raggiungibile da chi controlla una sessione admin, non più solo da chi ha accesso al Key Vault. Il controller non viene modificato dall'app: la password va cambiata prima sul WLC, poi salvata qui. |
+
+**Controlli e mitigazioni** (nel codice):
+
+| Controllo | Dove |
+|---|---|
+| Solo ruolo `admin` (intero router `/api/admin`, autorizzazione risolta per richiesta) | `index.ts`, `middleware/authorize.ts` |
+| **Ogni** lettura e scrittura auditata a `warn` con attore, sede e `correlationId` (`admin-wlc-password-viewed`, `admin-wlc-password-changed`, `admin-wlc-reload`), più una riga in `sync_logs` visibile in UI. Il valore non compare mai nei log | `routes/admin.ts` |
+| Lettura su richiesta, una sede alla volta: la password non fa parte del DTO sede né di alcun elenco; risposta con `Cache-Control: no-store`; nel pannello viene tolta dallo stato quando nascosta e comunque dopo 30 s | `routes/admin.ts`, `AdminPanel.tsx` |
+| La scrittura non restituisce mai il valore; validazione come ogni credenziale IOS-XE (ASCII stampabile, niente a capo, niente spazi iniziali/finali che il validatore rimuoverebbe in silenzio) | `routes/admin.ts`, `utils/sanitize.ts` |
+| Key Vault resta l'unico archivio: nulla va a database; la cache in memoria è per processo e si ricostruisce all'avvio | `services/wlcCredentials.ts`, `utils/wlcPasswordCache.ts` |
+| Un errore di Key Vault non spegne una sede funzionante: il reload mantiene il valore precedente per le sedi non leggibili e l'avvio non fallisce | `services/wlcCredentials.ts` |
+
+**Limiti noti, a verbale:**
+
+1. Il ruolo **Key Vault Secrets Officer** va concesso al backend; per contenere l'impatto conviene assegnarlo con scope sui singoli segreti `WLC-PASSWORD-*` anziché sull'intero vault.
+2. La cache è per replica: con più repliche una modifica dal pannello arriva alle altre al riavvio o al successivo "Ricarica configurazioni WLC" (oggi il backend gira con una replica).
+3. Resta l'esposizione del canale verso il controller descritta in **D2**/**D3**.
+
+---
+
 ## Backlog di Remediation Aggiornato
 
 ### Ancora aperti (richiedono azione esterna / coordinamento)
@@ -206,7 +234,8 @@ rileva il MITM **senza** toccare i controller, ed è la via più economica.
 | P1 | Allineare naming/hostname a `<appname>.dompe.com` / zona `dompe.com` | 4 | 🏗️ Architetturale |
 | **P1** | **Host key SSH per sede (`WLC_SSH_HOST_KEY_<CODE>`) + raccolta delle 5 fingerprint** — prerequisito per riattivare la verifica e chiudere la deviazione D2 | D2 | 🔧 Codice + 🏗️ Infra (raccolta chiavi) |
 | **P1** | **Pinning TLS per sede (`WLC_TLS_CA_<CODE>`)** — mantiene la verifica attiva e rileva il MITM senza toccare i controller; prerequisito per chiudere D3 | D3 | 🔧 Codice + 🏗️ Infra (raccolta certificati) |
-| **P0** | **Convertire `deploy-azure.yml` e `scripts/provision.sh` alla sintassi secret di ACA (`keyvaultref:`/`secretref:`)** — finché non è fatto, un deploy via pipeline rompe di nuovo l SSO e riporta `SESSION_SECRET` a un valore pubblico | 7.1 | 🔧 Codice (pipeline) |
+| **P0** | **Convertire `deploy-azure.yml` e `scripts/provision.sh` alla sintassi secret di ACA (`keyvaultref:`/`secretref:`)** — finché non è fatto, un deploy via pipeline rompe di nuovo l SSO e riporta `SESSION_SECRET` a un valore pubblico. Le password WLC non ne dipendono più quando `KEY_VAULT_URL` è impostato (lette direttamente da Key Vault; un `@Microsoft.KeyVault(...)` letterale in `WLC_PASSWORD_*` viene ora ignorato) | 7.1 | 🔧 Codice (pipeline) |
+| P1 | UAMI backend: ruolo **Key Vault Secrets Officer** (meglio se con scope sui segreti `WLC-PASSWORD-*`) per la modifica password dal pannello, e permesso applicativo Graph **`User.Read.All`** con admin consent per la ricerca del Referente | D4 | 🏗️ Infrastruttura |
 
 ### Risolti nel codice (ultimo commit `df641852`)
 

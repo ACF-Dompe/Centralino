@@ -32,6 +32,7 @@ import { wlcPasswordForSede } from '../config.js';
 import { loginWebUi } from '../services/wlcWebui.js';
 import { execSsh, parseUsernameList, minutesToLifetime, extractGuestUsers } from '../services/wlcSsh.js';
 import { sendCredentialEmail } from '../services/email.js';
+import { searchDirectoryUsers, DirectoryDisabledError } from '../services/entraDirectory.js';
 import { broadcast } from '../services/ws.js';
 import { generateCredentials } from '../utils/credentials.js';
 import { sanitizeIOSXE, validateUsername, validatePassword, validateHost, validateDurationMinutes } from '../utils/sanitize.js';
@@ -545,6 +546,45 @@ router.post('/wlc/import-users', requireRole('admin'), requireSedeAccess(), asyn
       message: `Importati ${imported.length} utenti dal WLC${skipped.length > 0 ? ` (${skipped.length} già presenti, saltati)` : ''}.`,
     },
   });
+});
+
+/* ----------------------------- Directory ----------------------------- */
+
+const DIRECTORY_QUERY_MIN = 2;
+const DIRECTORY_QUERY_MAX = 64;
+
+/**
+ * Live people search in Entra ID for the "Referente" field.
+ *
+ * Nothing is cached, on purpose. Only display names come back, and the query is
+ * never logged: it is somebody's name.
+ */
+router.get('/directory/users', requireRole('admin', 'operator'), async (req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+
+  const hasControlChar = [...q].some((ch) => ch.charCodeAt(0) < 0x20 || ch.charCodeAt(0) === 0x7f);
+  if (q.length < DIRECTORY_QUERY_MIN || q.length > DIRECTORY_QUERY_MAX || hasControlChar) {
+    return res.status(400).json({
+      success: false,
+      error: 'invalid_query',
+      message: `La ricerca deve contenere da ${DIRECTORY_QUERY_MIN} a ${DIRECTORY_QUERY_MAX} caratteri.`,
+    });
+  }
+
+  try {
+    const users = await searchDirectoryUsers(q);
+    res.json({ success: true, data: users });
+  } catch (err) {
+    if (err instanceof DirectoryDisabledError) {
+      return res.status(503).json({ success: false, error: 'directory_unavailable', message: err.message });
+    }
+    log.error(
+      { err: (err as Error).message, queryLength: q.length, correlationId: req.correlationId },
+      'Directory search failed',
+    );
+    res.status(502).json({ success: false, error: 'directory_error', message: 'Ricerca nella directory non riuscita.' });
+  }
 });
 
 /* ----------------------------- Guests ----------------------------- */

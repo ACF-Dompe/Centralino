@@ -42,8 +42,16 @@ import {
   addSyncLog,
 } from '../repositories/index.js';
 import { loginWebUi } from '../services/wlcWebui.js';
+import {
+  readWlcPasswordFromVault,
+  writeWlcPasswordToVault,
+  reloadWlcPasswords,
+  describeKeyVaultError,
+  KeyVaultNotConfiguredError,
+  type WlcReloadResult,
+} from '../services/wlcCredentials.js';
 import { wlcPasswordForSede } from '../config.js';
-import { validateHost, validateUsername } from '../utils/sanitize.js';
+import { validateHost, validateUsername, validatePassword } from '../utils/sanitize.js';
 
 /** Site codes become Key Vault secret names, so they are tightly constrained. */
 const SEDE_CODE_PATTERN = /^[A-Z0-9]{2,20}$/;
@@ -212,14 +220,30 @@ export function createAdminRouter(): Router {
     if (req.authz?.userId === target.id) {
       return res.status(409).json({ success: false, error: 'cannot_modify_self', message: 'Non puoi eliminare il tuo account.' });
     }
+    // Deleting a convention admin achieves nothing: the next sign-in re-creates
+    // them as an active administrator.
+    if (target.autoAdmin) {
+      return res.status(409).json({
+        success: false,
+        error: 'auto_admin_immutable',
+        message: 'Questo account è amministratore per convenzione sull\'indirizzo: non può essere eliminato.',
+      });
+    }
     if (target.role === 'admin' && target.status === 'active' && (await countActiveAdmins(target.id)) === 0) {
       return res.status(409).json({ success: false, error: 'last_admin', message: 'È l\'ultimo amministratore attivo.' });
     }
 
     await deleteAppUser(target.id);
     invalidateAuthProfile(target.subject);
+    // The row is gone, so the log line is the only record of what it granted.
     log.warn(
-      { event: 'admin-user-deleted', actor: actorOf(req), target: target.subject, correlationId: req.correlationId },
+      {
+        event: 'admin-user-deleted',
+        actor: actorOf(req),
+        target: target.subject,
+        before: { email: target.email, role: target.role, status: target.status, sedeIds: target.sedeIds },
+        correlationId: req.correlationId,
+      },
       'Admin deleted a user from the directory',
     );
     // The user can sign in again and will be re-created as pending.
@@ -400,7 +424,7 @@ export function createAdminRouter(): Router {
       return res.status(400).json({
         success: false,
         error: 'CREDENTIAL_MISSING',
-        message: `Password non configurata: richiedi il segreto ${sede.credentialSecretName} e il binding ${sede.credentialEnvVar}.`,
+        message: `Password non configurata: impostala dal pannello (segreto Key Vault ${sede.credentialSecretName}) oppure tramite ${sede.credentialEnvVar}.`,
         credentialSecretName: sede.credentialSecretName,
         credentialEnvVar: sede.credentialEnvVar,
       });
@@ -420,6 +444,105 @@ export function createAdminRouter(): Router {
       isUnreachable: 'isUnreachable' in result ? result.isUnreachable : undefined,
       checkedAt: new Date().toISOString(),
     });
+  });
+
+  /*
+   * Controller password, in Key Vault (COMPLIANCE.md D4).
+   *
+   * An accepted deviation from "secrets never cross the API": an admin can read
+   * a site's password and replace it. What keeps it bounded:
+   *   - admin-only (the whole router), and each read or write is audited at
+   *     warn with the actor — a read is as sensitive as a write;
+   *   - read on demand, one site at a time, never part of a list or of the site
+   *     DTO, and sent with `Cache-Control: no-store`;
+   *   - the value is never logged, and a write never echoes it back;
+   *   - Key Vault stays the only store: nothing is written to the database.
+   * The controller itself is not touched: the password must already have been
+   * changed on the WLC before it is stored here.
+   */
+
+  router.get('/sedi/:id/password', async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const sede = await getAdminSedeById(Number(req.params.id));
+    if (!sede) return res.status(404).json({ success: false, error: 'not_found', message: 'Sede non trovata.' });
+
+    let password: string | null;
+    try {
+      password = await readWlcPasswordFromVault(sede.code);
+    } catch (err) {
+      return keyVaultFailure(req, res, err, 'read', sede.code);
+    }
+    await auditSede(req, 'admin-wlc-password-viewed', sede.code);
+    if (password == null) {
+      return res.status(404).json({
+        success: false,
+        error: 'secret_not_found',
+        message: `Il segreto ${sede.credentialSecretName} non esiste in Key Vault.`,
+      });
+    }
+    res.json({ success: true, data: { password } });
+  });
+
+  router.put('/sedi/:id/password', async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const sede = await getAdminSedeById(Number(req.params.id));
+    if (!sede) return res.status(404).json({ success: false, error: 'not_found', message: 'Sede non trovata.' });
+
+    const raw = (req.body ?? {}) as { password?: unknown };
+    const submitted = typeof raw.password === 'string' ? raw.password : '';
+    let password: string;
+    try {
+      // The validator trims, and a stored password quietly different from the
+      // one on the controller would only surface as a failed login later.
+      if (submitted !== submitted.trim()) {
+        throw new Error('La password non può iniziare o finire con uno spazio');
+      }
+      // Same rules as any credential that ends up in an IOS-XE session:
+      // printable ASCII, no line breaks.
+      password = validatePassword(submitted);
+    } catch (err) {
+      return res.status(400).json({ success: false, error: 'invalid_payload', message: (err as Error).message });
+    }
+
+    try {
+      await writeWlcPasswordToVault(sede.code, password);
+    } catch (err) {
+      return keyVaultFailure(req, res, err, 'write', sede.code);
+    }
+    await auditSede(req, 'admin-wlc-password-changed', sede.code);
+    res.json({ success: true });
+  });
+
+  /**
+   * Re-read every site's password from Key Vault into memory, so a secret
+   * changed directly in the vault is used without restarting the container.
+   */
+  router.post('/wlc/reload', async (req: Request, res: Response) => {
+    let result: WlcReloadResult;
+    try {
+      result = await reloadWlcPasswords();
+    } catch (err) {
+      return keyVaultFailure(req, res, err, 'reload', null);
+    }
+    log.warn(
+      {
+        event: 'admin-wlc-reload',
+        actor: actorOf(req),
+        loaded: result.loaded,
+        missing: result.missing,
+        failed: result.failed.map((f) => f.code),
+        correlationId: req.correlationId,
+      },
+      'Admin reloaded the WLC passwords from Key Vault',
+    );
+    await addSyncLog({
+      action: `admin-wlc-reload ${result.loaded.length} ok, ${result.missing.length} mancanti, ${result.failed.length} errori`,
+      method: 'ADMIN',
+      url: null,
+      payload: null,
+      statusCode: result.failed.length > 0 ? 207 : 200,
+    });
+    res.json({ success: true, data: result });
   });
 
   /**
@@ -579,6 +702,34 @@ function validateSedeWlcFields(body: Record<string, unknown>): string | null {
   }
 
   return null;
+}
+
+/**
+ * Answer a failed Key Vault call: 503 when it is not configured, 502 otherwise.
+ * The SDK message is logged (it names the missing permission, which is what the
+ * operator needs) but not returned verbatim to the browser.
+ */
+function keyVaultFailure(
+  req: Request,
+  res: Response,
+  err: unknown,
+  operation: 'read' | 'write' | 'reload',
+  code: string | null,
+): Response {
+  if (err instanceof KeyVaultNotConfiguredError) {
+    return res.status(503).json({ success: false, error: 'keyvault_unavailable', message: err.message });
+  }
+  log.error(
+    { event: 'admin-wlc-keyvault-error', operation, code, err: describeKeyVaultError(err), actor: actorOf(req), correlationId: req.correlationId },
+    'Key Vault call failed',
+  );
+  return res.status(502).json({
+    success: false,
+    error: 'keyvault_error',
+    message: operation === 'write'
+      ? 'Scrittura su Key Vault non riuscita: verifica che l\'identità del backend abbia il ruolo "Key Vault Secrets Officer".'
+      : 'Lettura da Key Vault non riuscita.',
+  });
 }
 
 /** Structured log plus a sync-log entry, so changes are visible in the UI too. */

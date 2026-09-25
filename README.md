@@ -300,6 +300,10 @@ the design rationale is in [backend/README.md](backend/README.md).
 | `WLC_SSH_TIMEOUT_MS` | `10000` | SSH connection timeout |
 | `WLC_SSH_VERIFY_HOST_KEY` | `false` | Verify the WLC SSH host key — off by design, see COMPLIANCE.md |
 | `WLC_SSH_HOST_KEY` | — | Expected host key; used only when verification is on |
+| `KEY_VAULT_URL` | — | Vault with the `WLC-PASSWORD-<CODE>` secrets, read at startup and on reload, editable from the admin panel (COMPLIANCE.md D4). Empty = env vars only |
+| `AZURE_CLIENT_ID` | — | Client id of the backend's user-assigned identity, for `DefaultAzureCredential` (Key Vault, Graph) |
+| `DIRECTORY_SEARCH_ENABLED` | `false` | Live Entra ID search for the Referente field (needs Graph `User.Read.All` on the backend identity) |
+| `DIRECTORY_UPN_DOMAINS` | `dompe.com,ext.dompe.com` | UPN domains the Referente search may return |
 | `SAML_ENTRY_POINT` | — | Entra ID SSO endpoint (see §SSO) |
 | `SAML_ISSUER` | — | SAML Entity ID (see §SSO) |
 | `SAML_CALLBACK_URL` | — | SAML ACS URL (see §SSO) |
@@ -385,6 +389,7 @@ the design rationale is in [backend/README.md](backend/README.md).
 | POST   | `/api/wlc/delete-user` | Remove a guest — **admin** |
 | POST   | `/api/wlc/get-users` | List users on the WLC — **admin** |
 | POST   | `/api/wlc/import-users` | Import WLC users into local DB — **admin** |
+| GET    | `/api/directory/users?q=` | Live Entra ID people search for the Referente field (display names only, UPN on `DIRECTORY_UPN_DOMAINS`, never cached) — **operator** / **admin** |
 | GET    | `/api/guests` | List guests for the session's site (filter `?search&status`) |
 | POST   | `/api/guests` | Create guest (returns one-time password) — **operator** |
 | PUT    | `/api/guests/:id` | Update guest — **operator** |
@@ -402,19 +407,27 @@ the design rationale is in [backend/README.md](backend/README.md).
 |--------|------|---------|
 | GET    | `/api/admin/users` | User directory (filter `?status&search`) |
 | PATCH  | `/api/admin/users/:id` | Profile a user: role, status, granted sites |
-| DELETE | `/api/admin/users/:id` | Remove a directory entry (re-created, blocked, at the next sign-in) |
+| DELETE | `/api/admin/users/:id` | Remove a directory entry (re-created, blocked, at the next sign-in). Refused on yourself, on the last active admin and on an administrator by convention |
 | GET    | `/api/admin/sedi` | Every site, with connectivity diagnostics |
 | POST   | `/api/admin/sedi` | Create a site (starts out of service) |
 | PUT    | `/api/admin/sedi/:id` | Update a site. The code is immutable — it resolves the Key Vault secret |
 | PATCH  | `/api/admin/sedi/:id/active` | Put a site in or out of service |
 | POST   | `/api/admin/sedi/:id/test` | Probe the controller. Diagnostics only: touches no session |
 | DELETE | `/api/admin/sedi/:id` | Delete a site, refused while it still has guests |
+| GET    | `/api/admin/sedi/:id/password` | Read the controller password live from Key Vault. Audited, `no-store` (COMPLIANCE.md D4) |
+| PUT    | `/api/admin/sedi/:id/password` | Store a new controller password in Key Vault and use it at once. Audited; the controller itself is not changed |
+| POST   | `/api/admin/wlc/reload` | Re-read every site's password from Key Vault, without a restart |
 | GET    | `/api/admin/breakglass` | Emergency accounts and their state |
 | POST   | `/api/admin/breakglass/:username/{enable,disable,unlock}` | Enable, disable, clear a lockout |
 
 There is deliberately **no** endpoint that creates a break-glass account or
 rotates its password: those stay in `make breakglass`, so a compromised admin
 session cannot mint a credential that bypasses Entra (COMPLIANCE.md D1).
+
+The WLC controller password is the accepted exception in the other direction
+(COMPLIANCE.md D4): an admin can read and replace it, one site at a time, and
+every read and write is logged at `warn`. It never appears in a list or in the
+site record.
 
 ## Roles
 
@@ -558,6 +571,16 @@ az role assignment create \
   --role "Key Vault Secrets User" \
   --scope /subscriptions/$(az keyvault show --name kv-guestportal-dev --query id -o tsv)
 ```
+
+The backend identity has two more grants when the related features are on:
+
+- **Key Vault Secrets Officer**, to change a WLC password from the admin panel
+  (COMPLIANCE.md D4). Prefer scoping it to the `WLC-PASSWORD-*` secrets:
+  `--scope "$(az keyvault show --name kv-guestportal-dev --query id -o tsv)/secrets/WLC-PASSWORD-MIL"`, one per site.
+- The Microsoft Graph **application** permission `User.Read.All` with admin
+  consent, for the Referente search (`DIRECTORY_SEARCH_ENABLED=true`). App roles
+  are granted to a managed identity through Graph (e.g. PowerShell
+  `New-MgServicePrincipalAppRoleAssignment`), not from the portal.
 
 ### Internal Backend FQDN
 

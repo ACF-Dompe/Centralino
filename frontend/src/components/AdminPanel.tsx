@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useLocale } from '../i18n';
 import { adminApi, ApiError } from '../api/client';
-import { X, Users, Building, Lock, Loader2, AlertTriangle, Save, Check, RefreshCw } from './icons';
-import type { AdminSede, AdminUser, BreakGlassAccount, Role, UserStatus } from '../types';
+import { X, Users, Building, Lock, Loader2, AlertTriangle, Save, Check, RefreshCw, Trash, Eye, EyeOff, Key } from './icons';
+import type { AdminSede, AdminUser, BreakGlassAccount, Role, UserStatus, WlcReloadResult } from '../types';
 
 interface Props {
   /** The signed-in admin, so the panel can refuse to let them edit themselves. */
@@ -138,6 +138,22 @@ function UsersTab({ currentUserEmail }: { currentUserEmail: string }) {
     }
   }
 
+  /**
+   * Remove someone from the portal. Their access ends at once; signing in again
+   * re-creates them blocked, so this is "start over", not a ban — suspending
+   * is the way to keep somebody out.
+   */
+  async function remove(u: AdminUser) {
+    if (!window.confirm(t('admin.users.confirmDelete', { name: u.displayName || u.email || u.subject }))) return;
+    setError(null);
+    try {
+      await adminApi.deleteUser(u.id);
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
   if (loading) {
     return <div className="flex items-center gap-2 text-sm text-slate-500"><Loader2 className="h-4 w-4 animate-spin" /> {t('toast.loading')}</div>;
   }
@@ -252,6 +268,19 @@ function UsersTab({ currentUserEmail }: { currentUserEmail: string }) {
                       {savedId === u.id ? <Check className="h-3.5 w-3.5" /> : <Save className="h-3.5 w-3.5" />}
                       {t('admin.users.save')}
                     </button>
+
+                    {/* Not offered on your own row, nor on a convention admin:
+                        the server refuses both, and the second would come back
+                        as admin at the next sign-in anyway. */}
+                    {!locked && (
+                      <button
+                        data-testid={`admin-user-delete-${u.id}`}
+                        className="btn-ghost px-2 py-1 text-xs text-rose-600 hover:bg-rose-50"
+                        onClick={() => void remove(u)}
+                      >
+                        <Trash className="h-3.5 w-3.5" /> {t('admin.users.delete')}
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -299,6 +328,8 @@ function SediTab() {
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<number | 'new' | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [reloading, setReloading] = useState(false);
+  const [reloadResult, setReloadResult] = useState<WlcReloadResult | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -314,6 +345,25 @@ function SediTab() {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+
+  /**
+   * Re-read every controller password from Key Vault, so a secret changed
+   * directly in the vault is used without restarting the backend.
+   */
+  async function reload() {
+    setReloading(true);
+    setError(null);
+    setReloadResult(null);
+    try {
+      const r = await adminApi.reloadWlc();
+      setReloadResult(r.data);
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setReloading(false);
+    }
+  }
 
   if (loading) {
     return <div className="flex items-center gap-2 text-sm text-slate-500"><Loader2 className="h-4 w-4 animate-spin" /> {t('toast.loading')}</div>;
@@ -332,6 +382,14 @@ function SediTab() {
           onClick={() => setSelected('new')}
         >
           + {t('admin.sede.new')}
+        </button>
+        <button
+          data-testid="wlc-reload-btn"
+          className="flex w-full items-center gap-1.5 rounded-lg px-3 py-2 text-left text-xs font-semibold text-navy transition hover:bg-navy/5 disabled:opacity-50"
+          disabled={reloading}
+          onClick={() => void reload()}
+        >
+          <RefreshCw className={`h-3.5 w-3.5 ${reloading ? 'animate-spin' : ''}`} /> {t('admin.wlc.reload')}
         </button>
         {sedi.map((s) => (
           <button
@@ -359,6 +417,25 @@ function SediTab() {
         {error && (
           <div className="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
             <AlertTriangle className="mr-1 inline h-3 w-3 align-text-bottom" />{error}
+          </div>
+        )}
+        {reloadResult && (
+          <div
+            data-testid="wlc-reload-result"
+            className={`mb-3 rounded-lg border px-3 py-2 text-xs ${
+              reloadResult.failed.length > 0
+                ? 'border-amber-200 bg-amber-50 text-amber-800'
+                : 'border-emerald-200 bg-emerald-50 text-emerald-800'
+            }`}
+          >
+            {t('admin.wlc.reloadResult', {
+              loaded: reloadResult.loaded.length,
+              missing: reloadResult.missing.length,
+              failed: reloadResult.failed.length,
+            })}
+            {reloadResult.failed.map((f) => (
+              <div key={f.code} className="mt-1 font-mono text-[11px]">{f.code}: {f.error}</div>
+            ))}
           </div>
         )}
         {selected === 'new'
@@ -472,9 +549,9 @@ function SedeForm({ sede, onSaved }: { sede: AdminSede | null; onSaved: () => vo
 
   return (
     <div className="space-y-4">
-      {/* A site cannot work without its Key Vault secret, and creating that is
-          a platform-team request — so name both identifiers explicitly rather
-          than leaving the admin to guess the convention. */}
+      {/* A site cannot work without its password. It can be set from the
+          password block below; both identifiers are still named for the case
+          where the platform team provisions it instead. */}
       {!isNew && !sede.credentialConfigured && (
         <div data-testid="sede-credential-missing" className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800">
           <div className="font-semibold">
@@ -534,9 +611,11 @@ function SedeForm({ sede, onSaved }: { sede: AdminSede | null; onSaved: () => vo
             <input id="wlc-ssid" className="input" value={wlcSsid} onChange={(e) => setWlcSsid(e.target.value)} />
           </Field>
         </div>
-        {/* The password is deliberately absent: it lives in Key Vault and the
-            application never reads it back, let alone writes it. */}
-        <p className="mt-2 text-[11px] text-slate-400">{t('admin.sede.passwordNote')}</p>
+        {/* The password lives in Key Vault, keyed by the site code, so it can
+            only be set once the site exists. */}
+        {isNew
+          ? <p className="mt-2 text-[11px] text-slate-400">{t('admin.sede.newSedePasswordHint')}</p>
+          : <SedePassword key={sede.id} sede={sede} onSaved={onSaved} />}
       </div>
 
       {!isNew && sede.wlcLastCheckAt && (
@@ -576,6 +655,166 @@ function SedeForm({ sede, onSaved }: { sede: AdminSede | null; onSaved: () => vo
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+/** How long a revealed password stays on screen before it is masked again. */
+const PASSWORD_REVEAL_MS = 30_000;
+
+/**
+ * The controller password, held in Key Vault (COMPLIANCE.md D4).
+ *
+ * Fetched only when the admin asks to see it, dropped from memory when hidden
+ * (or after 30 seconds), and never part of the site record. Changing it writes
+ * a new Key Vault version that the backend uses immediately; the controller is
+ * not touched, so the password must already have been changed there.
+ */
+function SedePassword({ sede, onSaved }: { sede: AdminSede; onSaved: () => void }) {
+  const [, , t] = useLocale();
+  const [revealed, setRevealed] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [showDraft, setShowDraft] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    if (revealed == null) return;
+    const timer = setTimeout(() => setRevealed(null), PASSWORD_REVEAL_MS);
+    return () => clearTimeout(timer);
+  }, [revealed]);
+
+  async function toggleReveal() {
+    setError(null);
+    if (revealed != null) {
+      setRevealed(null);
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await adminApi.getSedePassword(sede.id);
+      setRevealed(r.data.password);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function cancelEdit() {
+    setEditing(false);
+    setDraft('');
+    setShowDraft(false);
+  }
+
+  async function savePassword() {
+    if (!draft) return;
+    if (!window.confirm(t('admin.sede.passwordConfirm', { code: sede.code }))) return;
+    setBusy(true);
+    setError(null);
+    setSaved(false);
+    try {
+      await adminApi.setSedePassword(sede.id, draft);
+      cancelEdit();
+      setRevealed(null);
+      setSaved(true);
+      // Only a site that had no password needs the list refreshed (its
+      // "credential" dot and the missing-password banner change).
+      if (!sede.credentialConfigured) onSaved();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div data-testid="sede-password" className="mt-4 rounded-lg border border-slate-200 p-3">
+      <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-widest text-slate-500">
+        <Key className="h-3.5 w-3.5" /> {t('admin.sede.password')}
+      </div>
+
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        {/* Not an <input>: a read-only display gives password managers
+            nothing to offer to save. */}
+        <span data-testid="sede-password-value" className="input w-auto min-w-[12rem] select-all font-mono">
+          {revealed ?? (sede.credentialConfigured ? '••••••••' : '—')}
+        </span>
+        {sede.credentialConfigured && (
+          <button
+            data-testid="sede-password-toggle"
+            className="btn-ghost p-2"
+            disabled={busy}
+            onClick={() => void toggleReveal()}
+            aria-label={revealed != null ? t('admin.sede.passwordHide') : t('admin.sede.passwordShow')}
+            title={revealed != null ? t('admin.sede.passwordHide') : t('admin.sede.passwordShow')}
+          >
+            {revealed != null ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+          </button>
+        )}
+        {!editing && (
+          <button
+            data-testid="sede-password-edit"
+            className="btn-ghost text-xs"
+            disabled={busy}
+            onClick={() => { setEditing(true); setSaved(false); }}
+          >
+            {t('admin.sede.passwordEdit')}
+          </button>
+        )}
+      </div>
+
+      {editing && (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <label className="sr-only" htmlFor={`sede-password-input-${sede.id}`}>{t('admin.sede.passwordNew')}</label>
+          <div className="relative">
+            <input
+              id={`sede-password-input-${sede.id}`}
+              data-testid="sede-password-input"
+              type={showDraft ? 'text' : 'password'}
+              autoComplete="new-password"
+              className="input w-64 pr-9 font-mono"
+              placeholder={t('admin.sede.passwordNew')}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+            />
+            <button
+              type="button"
+              data-testid="sede-password-input-toggle"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+              onClick={() => setShowDraft((v) => !v)}
+              aria-label={showDraft ? t('admin.sede.passwordHide') : t('admin.sede.passwordShow')}
+            >
+              {showDraft ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            </button>
+          </div>
+          <button
+            data-testid="sede-password-save"
+            className="btn-primary text-xs"
+            disabled={busy || draft.length === 0}
+            onClick={() => void savePassword()}
+          >
+            <Save className="h-3.5 w-3.5" /> {t('admin.sede.passwordSave')}
+          </button>
+          <button className="btn-ghost text-xs" disabled={busy} onClick={cancelEdit}>
+            {t('admin.sede.passwordCancel')}
+          </button>
+        </div>
+      )}
+
+      <p className="mt-2 text-[11px] text-slate-400">{t('admin.sede.passwordHelp')}</p>
+      {saved && (
+        <p data-testid="sede-password-saved" className="mt-1 text-[11px] font-medium text-emerald-700">
+          <Check className="mr-1 inline h-3 w-3 align-text-bottom" />{t('admin.sede.passwordSaved')}
+        </p>
+      )}
+      {error && (
+        <p data-testid="sede-password-error" className="mt-1 text-[11px] font-medium text-rose-700">
+          <AlertTriangle className="mr-1 inline h-3 w-3 align-text-bottom" />{error}
+        </p>
+      )}
     </div>
   );
 }
