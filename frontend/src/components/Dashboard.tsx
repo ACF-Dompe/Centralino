@@ -9,6 +9,7 @@ import RegisterGuestModal from './RegisterGuestModal';
 import Toast, { type ToastMsg } from './Toast';
 import UserTag from './UserTag';
 import AdminPanel from './AdminPanel';
+import ResendDialog, { type ResendState } from './ResendDialog';
 
 import type { SamlUser } from '../api/client';
 
@@ -45,6 +46,7 @@ export default function Dashboard({ config, sede, ssoUser, onChangeSede, onSsoLo
   const [showAdmin, setShowAdmin] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [toast, setToast] = useState<ToastMsg | null>(null);
+  const [resendState, setResendState] = useState<ResendState | null>(null);
   const [lastSync, setLastSync] = useState<Date | null>(null);
   const [locked, setLocked] = useState(false);
   const pollingRef = useRef<number | null>(null);
@@ -162,14 +164,20 @@ export default function Dashboard({ config, sede, ssoUser, onChangeSede, onSsoLo
 
   const stats = useMemo(() => {
     const registered = guests.length;
-    const online = guests.filter((g) => g.status === 'active').length;
+    // A valid account and a device on the air are different things: the
+    // "Connessi Ora" card used to count every active account.
+    const activeGuests = guests.filter((g) => g.status === 'active');
+    const active = activeGuests.length;
+    const online = activeGuests.filter((g) => g.connected === true).length;
+    // Active accounts but no client table from the WLC: say so, not "0".
+    const onlineUnknown = active > 0 && activeGuests.every((g) => g.connected == null);
     const pending = guests.filter((g) => g.status === 'pending').length;
     // Expired and revoked used to share one "Conclusi" card. They are different
     // outcomes — one is the lifetime running out, the other an operator (or the
     // WLC sync) pulling the account — so they now get a card each.
     const expired = guests.filter((g) => g.status === 'expired').length;
     const deactivated = guests.filter((g) => g.status === 'deactivated').length;
-    return { registered, online, pending, expired, deactivated };
+    return { registered, active, online, onlineUnknown, pending, expired, deactivated };
   }, [guests]);
 
   async function handleSync() {
@@ -227,15 +235,15 @@ export default function Dashboard({ config, sede, ssoUser, onChangeSede, onSsoLo
   }
 
   async function resend(g: Guest) {
+    const who = { name: g.name, email: g.email ?? '' };
+    setResendState({ phase: 'sending', ...who });
     try {
-      const r = await api.resendCredentials(g.id);
-      if (r.emailSent) {
-        setToast({ kind: 'success', text: t('table.resendSuccess', { email: g.email ?? '' }) });
-      } else {
-        setToast({ kind: 'error', text: t('table.resendFailed') });
-      }
+      const result = await api.resendCredentials(g.id);
+      setResendState({ phase: 'done', ...who, result });
+      // The lifetime restarted on the WLC: show the new countdown.
+      if (result.wlcUpdated) await refresh();
     } catch (err) {
-      setToast({ kind: 'error', text: (err as Error).message });
+      setResendState({ phase: 'error', ...who, message: (err as Error).message });
     }
   }
 
@@ -369,9 +377,17 @@ export default function Dashboard({ config, sede, ssoUser, onChangeSede, onSsoLo
       )}
 
       <main className="mx-auto max-w-7xl space-y-6 px-4 py-6">
-        <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-5">
+        <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-6">
           <StatCard label={t('stats.registered')} value={stats.registered} tone="navy" />
-          <StatCard label={t('stats.online')} value={stats.online} tone="emerald" highlight={stats.online > 0} />
+          <StatCard label={t('stats.active')} value={stats.active} tone="emerald" />
+          <StatCard
+            label={t('stats.online')}
+            value={stats.onlineUnknown ? '—' : stats.online}
+            title={stats.onlineUnknown ? t('stats.onlineUnknown') : undefined}
+            tone="emerald"
+            highlight={stats.online > 0}
+            testId="stat-online"
+          />
           <StatCard label={t('stats.pending')} value={stats.pending} tone="amber" />
           <StatCard label={t('stats.expired')} value={stats.expired} tone="slate" />
           <StatCard label={t('stats.deactivated')} value={stats.deactivated} tone="slate" />
@@ -443,12 +459,23 @@ export default function Dashboard({ config, sede, ssoUser, onChangeSede, onSsoLo
       )}
       {locked && <LockOverlay onUnlock={() => setLocked(false)} />}
 
+      {resendState && <ResendDialog state={resendState} onClose={() => setResendState(null)} />}
+
       {toast && <Toast message={toast} onClose={() => setToast(null)} />}
     </div>
   );
 }
 
-function StatCard({ label, value, tone, highlight = false }: { label: string; value: number; tone: 'navy' | 'emerald' | 'amber' | 'slate'; highlight?: boolean }) {
+interface StatCardProps {
+  label: string;
+  value: number | string;
+  tone: 'navy' | 'emerald' | 'amber' | 'slate';
+  highlight?: boolean;
+  title?: string;
+  testId?: string;
+}
+
+function StatCard({ label, value, tone, highlight = false, title, testId }: StatCardProps) {
   const toneClass = {
     navy: 'from-navy to-navy-600 text-white',
     emerald: 'from-emerald-500 to-emerald-600 text-white',
@@ -456,7 +483,7 @@ function StatCard({ label, value, tone, highlight = false }: { label: string; va
     slate: 'from-slate-200 to-slate-300 text-slate-700',
   }[tone];
   return (
-    <div className={`relative overflow-hidden rounded-xl bg-gradient-to-br ${toneClass} p-5 shadow-card`}>
+    <div data-testid={testId} title={title} className={`relative overflow-hidden rounded-xl bg-gradient-to-br ${toneClass} p-5 shadow-card`}>
       <div className="text-[11px] font-semibold uppercase tracking-widest opacity-80">{label}</div>
       <div className={`mt-1 text-3xl font-bold ${highlight ? 'animate-pulse-soft' : ''}`}>{value}</div>
       <div className="pointer-events-none absolute -right-6 -top-6 h-20 w-20 rounded-full bg-white/10" />

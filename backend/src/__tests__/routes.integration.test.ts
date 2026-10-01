@@ -17,6 +17,7 @@ import express from 'express';
 const mockRepo = vi.hoisted(() => ({
   listGuests: vi.fn(),
   getGuest: vi.fn(),
+  guestUsernameExists: vi.fn(async (_username: string) => false),
   createGuest: vi.fn(),
   updateGuest: vi.fn(),
   deleteGuest: vi.fn(),
@@ -36,7 +37,7 @@ const mockWlcSsh = vi.hoisted(() => ({
   execSsh: vi.fn(),
   parseUsernameList: vi.fn(),
   minutesToLifetime: vi.fn(),
-  extractGuestUsers: vi.fn(),
+  extractGuestUsers: vi.fn((_output: string): Array<Record<string, unknown>> => []),
 }));
 const mockEmail = vi.hoisted(() => ({ sendCredentialEmail: vi.fn() }));
 const mockDirectory = vi.hoisted(() => {
@@ -124,6 +125,7 @@ vi.mock('../logger.js', () => ({ log: mockLog }));
 
 // ── Import router AFTER mocks (vi.mock is hoisted) ──────────────────────
 import { router } from '../routes/index.js';
+import { recordPresence, clearPresence } from '../services/wlcPresence.js';
 
 function createApp(): express.Express {
   const app = express();
@@ -686,6 +688,24 @@ describe('Routes Integration', () => {
       expect(res.body.data).toHaveLength(1);
     });
 
+    // `active` only says the account is valid; `connected` is what the
+    // controller's client table says, and null when nobody has read it.
+    it('says which guests the controller sees on the air', async () => {
+      mockRepo.listGuests.mockResolvedValue([
+        { id: 'g-1', name: 'Mario', username: 'g.mario123', status: 'active', sedeId: 1 },
+        { id: 'g-2', name: 'Anna', username: 'g.anna456', status: 'active', sedeId: 1 },
+      ]);
+
+      clearPresence();
+      let res = await request(app).get('/api/guests');
+      expect(res.body.data.map((g: { connected: unknown }) => g.connected)).toEqual([null, null]);
+
+      recordPresence(1, { readable: true, runTokens: new Set(['g.mario123']) });
+      res = await request(app).get('/api/guests');
+      expect(res.body.data.map((g: { connected: unknown }) => g.connected)).toEqual([true, false]);
+      clearPresence();
+    });
+
     it('passes search and status through, taking the sede from the session', async () => {
       await request(app).get('/api/guests?search=mario&status=active&sedeId=1');
       expect(mockRepo.listGuests).toHaveBeenCalledWith({
@@ -828,6 +848,20 @@ describe('Routes Integration', () => {
       expect(mockRepo.createGuest).not.toHaveBeenCalled();
     });
 
+    it('draws another username when the first one is taken', async () => {
+      mockRepo.guestUsernameExists.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+      mockRepo.createGuest.mockResolvedValue({ id: 'g-x', name: 'Mario Rossi' });
+      mockWlcSsh.execSsh.mockResolvedValue({ success: true, output: '' });
+      mockEmail.sendCredentialEmail.mockResolvedValue({ ok: true, mode: 'graph' });
+
+      const res = await request(app).post('/api/guests').send(validBody);
+
+      expect(res.status).toBe(200);
+      expect(mockRepo.guestUsernameExists).toHaveBeenCalledTimes(2);
+      const second = mockRepo.guestUsernameExists.mock.calls[1][0];
+      expect(mockRepo.createGuest).toHaveBeenCalledWith(expect.objectContaining({ username: second }));
+    });
+
     it('accepts the longest duration the form can produce', async () => {
       mockRepo.createGuest.mockResolvedValue({ id: 'g-week', name: 'Mario Rossi' });
       mockWlcSsh.execSsh.mockResolvedValue({ success: true, output: '' });
@@ -874,6 +908,64 @@ describe('Routes Integration', () => {
       expect(res.body.oneTimePassword).toBeDefined();
       expect(mockWlcSsh.execSsh).toHaveBeenCalledOnce();
       expect(mockEmail.sendCredentialEmail).toHaveBeenCalledOnce();
+    });
+
+    // The controller counts the lifetime from creation-time, which survives an
+    // edit: new credentials on the old account arrived already expired.
+    it('recreates the account on the WLC and restarts the lifetime', async () => {
+      mockRepo.getGuest.mockResolvedValue({
+        id: 'g-1', name: 'Mario', email: 'mario@example.com', host: 'Anna',
+        username: 'g.mario_abc', durationMinutes: 240, sedeId: 1, status: 'expired',
+      });
+      mockRepo.updateGuest.mockResolvedValue({
+        id: 'g-1', name: 'Mario', username: 'g.mario_abc', status: 'active', sedeId: 1,
+      });
+      mockWlcSsh.execSsh.mockResolvedValue({ success: true, output: '' });
+      mockEmail.sendCredentialEmail.mockResolvedValue({ ok: true, mode: 'graph' });
+
+      const before = Date.now();
+      const res = await request(app).post('/api/guests/g-1/resend-credentials');
+
+      expect(res.status).toBe(200);
+      const commands: string[] = mockWlcSsh.execSsh.mock.calls[0][0].commands;
+      expect(commands.indexOf('no user-name g.mario_abc')).toBeLessThan(commands.indexOf('user-name g.mario_abc'));
+      expect(commands.indexOf('no user-name g.mario_abc')).toBeGreaterThanOrEqual(0);
+      expect(mockRepo.updateGuest).toHaveBeenCalledWith('g-1', expect.objectContaining({
+        status: 'active',
+        elapsedSeconds: 0,
+      }));
+      const enabledAt = Date.parse(mockRepo.updateGuest.mock.calls[0][1].enabledAt);
+      expect(enabledAt).toBeGreaterThanOrEqual(before - 1000);
+    });
+
+    it('leaves the guest untouched when the WLC refused the update', async () => {
+      mockRepo.getGuest.mockResolvedValue({
+        id: 'g-1', name: 'Mario', email: 'mario@example.com', host: 'Anna',
+        username: 'g.mario_abc', durationMinutes: 240, sedeId: 1,
+      });
+      mockWlcSsh.execSsh.mockResolvedValue({ success: false, output: '', error: 'SSH error: ECONNREFUSED' });
+      mockEmail.sendCredentialEmail.mockResolvedValue({ ok: true, mode: 'graph' });
+
+      const res = await request(app).post('/api/guests/g-1/resend-credentials');
+
+      expect(res.body.wlcUpdated).toBe(false);
+      expect(mockRepo.updateGuest).not.toHaveBeenCalled();
+    });
+
+    it('passes on what the read-back found wrong', async () => {
+      mockRepo.getGuest.mockResolvedValue({
+        id: 'g-1', name: 'Mario', email: 'mario@example.com', host: 'Anna',
+        username: 'g.mario_abc', durationMinutes: 240, sedeId: 1,
+      });
+      mockRepo.updateGuest.mockResolvedValue(null);
+      // Commands accepted, but the account is not in the running-config.
+      mockWlcSsh.execSsh.mockResolvedValue({ success: true, output: 'WLC#' });
+      mockEmail.sendCredentialEmail.mockResolvedValue({ ok: true, mode: 'graph' });
+
+      const res = await request(app).post('/api/guests/g-1/resend-credentials');
+
+      expect(res.body.wlcUpdated).toBe(true);
+      expect(res.body.wlcIssues).toEqual([expect.stringContaining('non trovato')]);
     });
   });
 

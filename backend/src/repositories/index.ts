@@ -81,6 +81,13 @@ export async function getGuest(id: string): Promise<Guest | null> {
   return rows.length > 0 ? rowToGuest(rows[0]) : null;
 }
 
+/** Whether a guest with this WLC username exists, on any site and in any state. */
+export async function guestUsernameExists(username: string): Promise<boolean> {
+  const db = await getDb();
+  const res = await db.query(`SELECT 1 FROM guests WHERE username = ? LIMIT 1`, [username]);
+  return res.rows.length > 0;
+}
+
 export async function createGuest(
   g: Omit<Guest, 'createdAt' | 'elapsedSeconds' | 'status' | 'password'> & { status?: GuestStatus; password?: string | null },
 ): Promise<Guest> {

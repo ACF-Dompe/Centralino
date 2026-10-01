@@ -15,6 +15,7 @@ import {
 import {
   listGuests,
   getGuest,
+  guestUsernameExists,
   createGuest,
   updateGuest,
   deleteGuest,
@@ -30,7 +31,9 @@ import {
 } from '../repositories/index.js';
 import { wlcPasswordForSede } from '../config.js';
 import { loginWebUi } from '../services/wlcWebui.js';
-import { execSsh, parseUsernameList, minutesToLifetime, extractGuestUsers } from '../services/wlcSsh.js';
+import { execSsh, parseUsernameList, extractGuestUsers } from '../services/wlcSsh.js';
+import { provisionGuestAccount, provisionLogPayload } from '../services/wlcGuest.js';
+import { guestConnected } from '../services/wlcPresence.js';
 import { sendCredentialEmail } from '../services/email.js';
 import { searchDirectoryUsers, DirectoryDisabledError } from '../services/entraDirectory.js';
 import { broadcast } from '../services/ws.js';
@@ -83,6 +86,24 @@ function toPublicSede(sede: Sede, isAdmin: boolean): Partial<Sede> {
 /** The site this operator is working on, or null if they have not picked one. */
 function sessionSedeId(req: Request): number | null {
   return req.session.sedeId ?? null;
+}
+
+/** Attempts at drawing a username nobody has, before giving up. */
+const MAX_USERNAME_ATTEMPTS = 5;
+
+/**
+ * Credentials whose username no guest has ever had, on any site.
+ *
+ * Re-using a name is not only a unique-constraint error: on the controller,
+ * writing over an old account keeps its `creation-time`, and the new guest
+ * gets an account that has already expired.
+ */
+async function generateUniqueCredentials(name: string): Promise<{ username: string; password: string }> {
+  for (let attempt = 0; attempt < MAX_USERNAME_ATTEMPTS; attempt++) {
+    const creds = generateCredentials(name);
+    if (!(await guestUsernameExists(creds.username))) return creds;
+  }
+  throw new Error('Impossibile generare uno username libero, riprovare.');
 }
 
 /* ----------------------------- Health ----------------------------- */
@@ -289,38 +310,39 @@ router.post('/wlc/create-user', requireRole('admin'), async (req: Request, res: 
     return res.status(400).json({ success: false, error: (err as Error).message });
   }
 
-  const result = await execSsh({
-    host: String(host),
-    port: Number(sshPort) || 22,
-    username: safeUsername,
-    password: safePassword,
-    commands: [
-      'terminal length 0',
-      'configure terminal',
-      `user-name ${safeTargetUser}`,
-      `password 0 ${safeTargetPass}`,
-      `type network-user description Guest-User guest-user lifetime ${cfg.durationMinutes ? minutesToLifetime(cfg.durationMinutes) : minutesToLifetime(1440)}`,
-      'description Guest-User',
-      'do write memory', 'end',
-      `show running-config | include user-name ${safeTargetUser}`,
-      'exit',
-    ],
-  });
+  let minutes: number;
+  try {
+    minutes = cfg.durationMinutes ? validateDurationMinutes(cfg.durationMinutes) : 1440;
+  } catch (err) {
+    return res.status(400).json({ success: false, error: (err as Error).message });
+  }
+
+  const result = await provisionGuestAccount(
+    { host: String(host), port: Number(sshPort) || 22, username: safeUsername, password: safePassword },
+    { username: safeTargetUser, password: safeTargetPass, durationMinutes: minutes },
+  );
   const safePayload = { ...cfg, targetPassword: '***' };
+  const diagnostics = provisionLogPayload(result);
   await addSyncLog({
     action: `create-user ${safeTargetUser}`,
     method: 'SSH',
     url: `${host}:${sshPort ?? 22}`,
-    payload: JSON.stringify(safePayload),
-    statusCode: result.success ? 201 : 401,
+    payload: diagnostics ? `${JSON.stringify(safePayload)}\n${diagnostics}` : JSON.stringify(safePayload),
+    statusCode: result.ok ? 201 : 401,
   });
-  if (!result.success && /access denied|unauthorized/i.test(result.error ?? '')) {
+  if (!result.ok && /access denied|unauthorized/i.test(result.error ?? '')) {
     return res.json({ success: false, status: 401, error: 'Accesso SSH negato.' });
   }
-  if (!result.success) {
+  if (!result.ok) {
     return res.json({ success: false, status: 401, error: result.error ?? 'Errore SSH' });
   }
-  return res.json({ success: true, status: 201, method: 'ssh', message: `Utente ${safeTargetUser} creato.` });
+  return res.json({
+    success: true,
+    status: 201,
+    method: 'ssh',
+    message: `Utente ${safeTargetUser} creato.`,
+    ...(result.issues.length > 0 ? { issues: result.issues } : {}),
+  });
 });
 
 router.put('/wlc/status-user', requireRole('admin'), async (req: Request, res: Response) => {
@@ -617,7 +639,9 @@ router.get('/guests', async (req: Request, res: Response) => {
   }
 
   const guests = await listGuests({ search, status, sedeId });
-  res.json({ data: guests });
+  // `active` says the account is valid; whether a device is on the air comes
+  // from the controller's client table, and is null when that is not known.
+  res.json({ data: guests.map((g) => ({ ...g, connected: guestConnected(g.sedeId, g.username) })) });
 });
 
 /**
@@ -641,7 +665,12 @@ router.post('/guests', requireRole('admin', 'operator'), requireSedeAccess(), as
     return res.status(400).json({ success: false, error: (err as Error).message });
   }
 
-  const { username, password } = generateCredentials(String(name));
+  let username: string, password: string;
+  try {
+    ({ username, password } = await generateUniqueCredentials(String(name)));
+  } catch (err) {
+    return res.status(503).json({ success: false, error: (err as Error).message });
+  }
   const guestInput: Omit<Guest, 'createdAt' | 'elapsedSeconds' | 'password'> & { password: null } = {
     id: `g-${uuid().slice(0, 8)}`,
     name: String(name),
@@ -673,31 +702,18 @@ router.post('/guests', requireRole('admin', 'operator'), requireSedeAccess(), as
         statusCode: 0,
       });
     } else {
-      const r = await execSsh({
-        host: wlc.host,
-        port: wlc.sshPort,
-        username: wlc.username,
-        password: wlc.password,
-        commands: [
-          'terminal length 0',
-          'configure terminal',
-          `user-name ${username}`,
-          `password 0 ${password}`,
-          `type network-user description Guest-User guest-user lifetime ${minutesToLifetime(minutes)}`,
-          'description Guest-User',
-          'do write memory', 'end',
-          `show running-config | include user-name ${username}`,
-          'exit',
-        ],
-      });
+      const r = await provisionGuestAccount(
+        { host: wlc.host, port: wlc.sshPort, username: wlc.username, password: wlc.password },
+        { username, password, durationMinutes: minutes },
+      );
       await addSyncLog({
         action: `create-user ${username}`,
         method: 'SSH',
         url: `${wlc.host}:${wlc.sshPort}`,
-        payload: null,
-        statusCode: r.success ? 201 : 401,
+        payload: provisionLogPayload(r),
+        statusCode: r.ok ? 201 : 401,
       });
-      if (!r.success) {
+      if (!r.ok) {
         log.warn({ username, err: r.error }, 'WLC create-user failed');
       }
     }
@@ -722,7 +738,10 @@ router.post('/guests', requireRole('admin', 'operator'), requireSedeAccess(), as
         statusCode: mail.ok ? 200 : 500,
       });
     }
-  })();
+  })().catch((err: Error) => {
+    // Nobody awaits this: an escaping rejection would take the process down.
+    log.error({ err: err.message, username }, 'Guest provisioning task failed');
+  });
 
   broadcast({ type: 'guest:created', data: { id: guest.id, name: guest.name, username, sedeId: guest.sedeId } });
 
@@ -734,6 +753,10 @@ router.post('/guests', requireRole('admin', 'operator'), requireSedeAccess(), as
  * Re-send (or regenerate) credentials for an existing guest.
  * Always regenerates a new password (the old one is gone — we never
  * stored it), pushes it to the WLC, and emails it.
+ *
+ * The lifetime restarts: the account is recreated on the controller, which
+ * otherwise keeps counting from the original `creation-time` — the email
+ * promised a fresh duration while the controller answered "expired".
  */
 router.post('/guests/:id/resend-credentials', requireRole('admin', 'operator'), async (req: Request, res: Response) => {
   const id = String(req.params.id);
@@ -746,41 +769,42 @@ router.post('/guests/:id/resend-credentials', requireRole('admin', 'operator'), 
     return res.status(400).json({ success: false, error: 'L\'ospite non ha un indirizzo email — impossibile inviare le credenziali.' });
   }
 
-  // Generate a fresh password (deterministic seed from the guest id to keep
-  // the username stable; only the password changes).
-  const { username, password } = generateCredentials(`${before.name}-${Date.now()}`);
-  const newUsername = before.username; // keep the same WLC username
+  // A fresh password; the username stays, it is what the guest already knows.
+  const { password } = generateCredentials(before.name);
+  const newUsername = before.username;
 
   const wlc = before.sedeId != null ? await getWlcConfigBySede(before.sedeId) : null;
-  const expiresAt = new Date(Date.now() + before.durationMinutes * 60_000).toLocaleString();
+  const restartedAt = new Date();
+  const expiresAt = new Date(restartedAt.getTime() + before.durationMinutes * 60_000).toLocaleString();
 
   let wlcOk = false;
+  let wlcIssues: string[] = [];
   if (wlc?.usable) {
-    const r = await execSsh({
-      host: wlc.host,
-      port: wlc.sshPort,
-      username: wlc.username,
-      password: wlc.password,
-      commands: [
-        'terminal length 0',
-        'configure terminal',
-        `user-name ${newUsername}`,
-        `password 0 ${password}`,
-        `type network-user description Guest-User guest-user lifetime ${minutesToLifetime(before.durationMinutes)}`,
-        'description Guest-User',
-        'do write memory', 'end',
-        `show running-config | include user-name ${newUsername}`,
-        'exit',
-      ],
-    });
-    wlcOk = r.success;
+    const r = await provisionGuestAccount(
+      { host: wlc.host, port: wlc.sshPort, username: wlc.username, password: wlc.password },
+      { username: newUsername, password, durationMinutes: before.durationMinutes, replace: true },
+    );
+    wlcOk = r.ok;
+    wlcIssues = r.issues;
     await addSyncLog({
       action: `resend-credentials ${newUsername}`,
       method: 'SSH',
       url: `${wlc.host}:${wlc.sshPort}`,
-      payload: null,
-      statusCode: r.success ? 200 : 401,
+      payload: provisionLogPayload(r),
+      statusCode: r.ok ? 200 : 401,
     });
+    if (r.ok) {
+      // Start the clock where the controller just started it, so the
+      // dashboard, the email and the WLC agree on when the account ends.
+      const updated = await updateGuest(before.id, {
+        status: 'active',
+        enabledAt: restartedAt.toISOString(),
+        elapsedSeconds: 0,
+      });
+      if (updated) {
+        broadcast({ type: 'guest:updated', data: { id: updated.id, name: updated.name, username: updated.username, status: updated.status, sedeId: updated.sedeId } });
+      }
+    }
   } else {
     await addSyncLog({
       action: `resend-credentials ${newUsername} (offline)`,
@@ -814,6 +838,9 @@ router.post('/guests/:id/resend-credentials', requireRole('admin', 'operator'), 
     success: mail.ok,
     oneTimePassword: password,
     wlcUpdated: wlcOk,
+    // Present when the controller took the commands but the read-back
+    // disagreed — the credentials may still not work.
+    ...(wlcIssues.length > 0 ? { wlcIssues } : {}),
     emailSent: mail.ok,
     emailMode: mail.mode,
   });

@@ -7,9 +7,28 @@ describe('generateCredentials', () => {
     expect(result.username).toMatch(/^g\.mario\d{3}$/);
   });
 
-  it('generates password with DOMPE- prefix and 8 alphanumeric chars', () => {
-    const result = generateCredentials('Mario');
-    expect(result.password).toMatch(/^DOMPE-[A-Za-z2-9]{8}$/);
+  it('generates a 12-character password from the unambiguous alphabet', () => {
+    for (let i = 0; i < 200; i++) {
+      const { password } = generateCredentials('Mario');
+      expect(password).toMatch(/^[A-Za-z2-9]{12}$/);
+      expect(password).not.toMatch(/[IOilo01]/);
+    }
+  });
+
+  // It used to start with "DOMPE-": six characters every guest could predict.
+  it('has no fixed prefix', () => {
+    const firstChars = new Set(Array.from({ length: 50 }, () => generateCredentials('Mario').password.slice(0, 3)));
+    expect(firstChars.size).toBeGreaterThan(1);
+    expect(generateCredentials('Mario').password).not.toMatch(/^DOMPE/i);
+  });
+
+  it('always mixes upper case, lower case and digits', () => {
+    for (let i = 0; i < 200; i++) {
+      const { password } = generateCredentials('Mario');
+      expect(password).toMatch(/[A-Z]/);
+      expect(password).toMatch(/[a-z]/);
+      expect(password).toMatch(/[2-9]/);
+    }
   });
 
   it('strips non-alpha characters from slug', () => {

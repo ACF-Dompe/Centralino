@@ -49,9 +49,18 @@ vi.mock('../services/wlcSsh.js', () => ({
   parseUsernameList: vi.fn(),
   getGuestUsers: vi.fn(),
   extractGuestUsers: vi.fn(),
+  parseWirelessClients: vi.fn(() => ({ readable: false, runTokens: new Set<string>() })),
 }));
 
-import { execSsh, parseUsernameList, getGuestUsers, extractGuestUsers } from '../services/wlcSsh.js';
+import { execSsh, parseUsernameList, getGuestUsers, extractGuestUsers, parseWirelessClients } from '../services/wlcSsh.js';
+
+// ── Mock presence store ────────────────────────────────────────────────────
+
+vi.mock('../services/wlcPresence.js', () => ({
+  recordPresence: vi.fn(),
+}));
+
+import { recordPresence } from '../services/wlcPresence.js';
 
 // ── Logger suppression ─────────────────────────────────────────────────────
 
@@ -481,6 +490,69 @@ describe('startBackgroundServices / stopBackgroundServices', () => {
 
       // No crash — error caught and logged
       expect(vi.mocked(execSsh)).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── Connection state ──────────────────────────────────────────────────
+
+  describe('who is on the air (client table)', () => {
+    beforeEach(() => {
+      vi.mocked(listSedi).mockResolvedValue([makeSede(1)]);
+      vi.mocked(getWlcConfigBySede).mockResolvedValue(makeWlcConfig());
+      vi.mocked(parseUsernameList).mockReturnValue([]);
+      vi.mocked(getGuestUsers).mockReturnValue([]);
+      vi.mocked(extractGuestUsers).mockReturnValue([]);
+      vi.mocked(listGuests).mockResolvedValue([]);
+      vi.mocked(addSyncLog).mockResolvedValue();
+    });
+
+    it('asks for the client table as an optional probe, so a refusal cannot break the sync', async () => {
+      vi.mocked(execSsh).mockResolvedValue({ success: true, output: '' });
+
+      startBackgroundServices();
+      await vi.advanceTimersByTimeAsync(30000);
+
+      const input = vi.mocked(execSsh).mock.calls[0][0];
+      expect(input.optionalCommands).toEqual(['show wireless client summary detail']);
+      expect(input.commands).not.toContain('show wireless client summary detail');
+      // execSsh sends its own exit; one in the list would close the shell
+      // before the probe runs.
+      expect(input.commands).not.toContain('exit');
+    });
+
+    it('records the parsed client table for the site', async () => {
+      const scan = { readable: true, runTokens: new Set(['g.mario123']) };
+      vi.mocked(parseWirelessClients).mockReturnValue(scan);
+      vi.mocked(execSsh).mockResolvedValue({ success: true, output: 'table' });
+
+      startBackgroundServices();
+      await vi.advanceTimersByTimeAsync(30000);
+
+      expect(vi.mocked(parseWirelessClients)).toHaveBeenCalledWith('table');
+      expect(vi.mocked(recordPresence)).toHaveBeenCalledWith(1, scan);
+    });
+
+    it('forgets the site when the controller refused the probe', async () => {
+      vi.mocked(execSsh).mockResolvedValue({ success: true, output: '', optionalFailed: true });
+
+      startBackgroundServices();
+      await vi.advanceTimersByTimeAsync(30000);
+
+      expect(vi.mocked(parseWirelessClients)).not.toHaveBeenCalled();
+      expect(vi.mocked(recordPresence)).toHaveBeenCalledWith(1, null);
+      // The rest of the sync still ran.
+      expect(vi.mocked(addSyncLog)).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'sync: sede 1 ok' }),
+      );
+    });
+
+    it('forgets the site when the SSH session failed', async () => {
+      vi.mocked(execSsh).mockResolvedValue({ success: false, output: '', error: 'SSH timeout' });
+
+      startBackgroundServices();
+      await vi.advanceTimersByTimeAsync(30000);
+
+      expect(vi.mocked(recordPresence)).toHaveBeenCalledWith(1, null);
     });
   });
 });

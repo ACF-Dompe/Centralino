@@ -510,8 +510,9 @@ test.describe('SSO SAML login screen', () => {
     // Toast confirms activation
     await expect(page.getByText(/attivato/i)).toBeVisible({ timeout: 5_000 });
 
-    // After refresh, the status badge should show 'active' (Italian: 'Connesso')
-    await expect(page.getByText(/Connesso|Connected/i).first()).toBeVisible({ timeout: 10_000 });
+    // After refresh, the status badge shows 'active' (Italian: 'Attivo'). It
+    // only says 'Connesso' once the WLC sees a device on the air.
+    await expect(page.getByTestId('status-active').first()).toBeVisible({ timeout: 10_000 });
   });
 
   test('deletes a guest from the Dashboard guest table after SSO auth', async ({
@@ -771,8 +772,8 @@ test.describe('SSO SAML login screen', () => {
     await expect(page.getByText('Mario Scaduto')).not.toBeVisible();
     await expect(page.getByText('Mario Revocato')).not.toBeVisible();
 
-    // Click "Connesso" — only active guest visible
-    await page.getByRole('button', { name: /Connesso|Connected/i }).click();
+    // Click "Attivo" — only active guest visible
+    await page.getByRole('button', { name: /Attivo|Active/i }).click();
     await expect(page.getByText('Mario Connesso')).toBeVisible({ timeout: 10_000 });
     expect(lastFilter).toBe('active');
     await expect(page.getByText('Mario In Attesa')).not.toBeVisible();
@@ -878,7 +879,7 @@ test.describe('SSO SAML login screen', () => {
 
     expect(badgeSent).toBe(true);
 
-    // No preview modal opens — only a toast reports the outcome.
+    // No preview modal opens — the result dialog reports the outcome.
     await expect(page.getByTestId('badge-modal')).toHaveCount(0);
     await expect(page.getByText(/Credenziali reinviate|Credentials re-sent/i)).toBeVisible({
       timeout: 5_000,

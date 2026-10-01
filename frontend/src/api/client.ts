@@ -17,6 +17,7 @@ import type {
   SessionContext,
   DirectoryUser,
   WlcReloadResult,
+  ResendResult,
 } from '../types';
 
 const BASE = '/api';
@@ -189,10 +190,7 @@ export const api = {
     request<{ data: Guest }>(`/guests/${id}`, { method: 'PUT', body: JSON.stringify(patch) }),
   deleteGuest: (id: string) => request<{ success: boolean }>(`/guests/${id}`, { method: 'DELETE' }),
   resendCredentials: (id: string) =>
-    request<{ success: boolean; oneTimePassword: string; wlcUpdated: boolean; emailSent: boolean; emailMode: 'graph' | 'demo-log' }>(
-      `/guests/${id}/resend-credentials`,
-      { method: 'POST' },
-    ),
+    request<ResendResult>(`/guests/${id}/resend-credentials`, { method: 'POST' }),
 
   // Configs
   /** @deprecated Use getSessionContext(). */

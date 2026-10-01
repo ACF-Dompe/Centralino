@@ -39,7 +39,7 @@ with **SSO SAML 2.0** authentication via **Microsoft Entra ID**.
 - **Break-glass access** — audited emergency local login for an Entra/SSO outage, off by default
 - **WLC Login** with HTTPS Basic Auth to `/webui/index.html`
 - **Demo / Sandbox** mode when the WLC is unreachable (10s timeout)
-- **Guest CRUD** with auto-generated credentials (`g.{slug}{3digits}` / `DOMPE-{4digits}`)
+- **Guest CRUD** with auto-generated credentials (`g.{slug}{3digits}` / 12 random characters, no fixed prefix)
 - **Real-time timer** running server-side, polled every 5s
 - **Auto-expiry** and periodic sync (every 30s)
 - **Badge Modal** with Print / SMS / Email tabs, scannable Wi-Fi QR code

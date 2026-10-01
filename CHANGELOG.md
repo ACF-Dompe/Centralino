@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### "Connesso" means a device is on the air
+- An active guest used to be shown as "Connesso", and counted in "Connessi Ora", whether or not anybody was using the account. The background sync now also reads `show wireless client summary detail` and the dashboard says **Connesso** only for a username the controller sees in the Run state; a valid account nobody is using is **Attivo**. A new "Attivi" card counts valid accounts, "Connessi Ora" counts devices.
+- The client table is an optional probe (`execSsh` `optionalCommands`): a release that refuses it, or prints no user-name column, leaves the state "unknown" (badge "Attivo" with a tooltip, card "—") and is logged once per site at `warn`; the import/deactivation pass is unaffected. The state is kept in memory (`services/wlcPresence.ts`), never persisted, and expires after 90 s without a fresh reading.
+- `GET /api/guests` returns `connected: true | false | null` for each guest.
+
+#### Re-send credentials opens a dialog
+- The outcome of "Re-invia credenziali" is shown in a dialog instead of the corner toast: a waiting state while the WLC is updated, then whether the email went out, whether the controller took the new password, and anything its read-back found wrong (`wlcIssues`, new in the response).
+
 #### Referente searched live in Entra ID
 - The "Referente / Sponsor" field of the register-guest form is now a combobox that searches the directory as you type (Microsoft Graph `GET /users`, debounced, the previous request aborted). It matches the start of the display name, first name, surname, mail or UPN, returns only enabled users whose UPN ends in `@dompe.com` or `@ext.dompe.com` (`DIRECTORY_UPN_DOMAINS`), and shows the display name only. Nothing is cached, on the server or in the browser.
 - Free text stays allowed, for a sponsor who is not in the directory. The stored value is unchanged (`guests.host`, the display name), so there is no schema change.
@@ -29,12 +37,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Guest passwords are fully random.** They were `DOMPE-` followed by 8 random characters: six characters every guest could predict. They are now 12 random characters (CSPRNG, unambiguous alphabet without `I O i l o 0 1`), always with at least one upper-case letter, one lower-case letter and one digit in case the controller enforces a mix. Accounts already created keep their password until it is re-sent.
 - **Accepted deviation D4** (COMPLIANCE.md): an admin can read and replace a WLC controller password. It reverses the earlier "no secret crosses the API" rule (§5.1) for this one value, on request. **Infra prerequisite:** the backend UAMI needs **Key Vault Secrets Officer**, preferably scoped to the `WLC-PASSWORD-*` secrets.
 - **Backend image no longer ships npm, npx, corepack or yarn.** Production dependencies are installed in a separate `deps` stage and copied in, and the package managers of the `node:22-alpine` base are deleted from the runtime stage. npm vendors its own tree (tar, glob, minimatch, brace-expansion, sigstore, @sigstore/core, ip-address, ...), which Trivy reported on every image scan although nothing in the container can reach it. Every in-container operation already calls `node` directly (migration job, `db/seed.js`, `scripts/breakglass.js`), so none is affected; `npm` is simply not there any more under `az containerapp exec`.
 - **Frontend image moved from `nginx-unprivileged:1.28-alpine` to `1.30-alpine`.** The 1.28 branch is out of support: its tag has not been rebuilt since February 2026 (nginx 1.28.2), and the nginx advisories published since then list only 1.30.x and 1.31.x as fixed.
 - **Deploy pipeline SARIF uploads now carry a `category`** (`deploy-trivy-fs`, `deploy-trivy-backend`, `deploy-trivy-frontend`). The three uploads of the same job had none, so each overwrote the previous one in code scanning, and alerts from one scan were closed or kept open depending on which step ran last.
 
 ### Fixed
+
+#### Guest accounts on the WLC: cut-off sessions, inherited expiry, no read-back
+- **Every provisioning run timed out.** `WLC_SSH_TIMEOUT_MS` (10 s) covered connecting *and* running, and the ten-command sequence needs ~10 s of pacing alone: create and resend always ended in "SSH timeout" and closed the session before `write memory` and the check had answered, so resend always reported `wlcUpdated: false`. The budget now covers connecting; once the shell is open the session also gets the time its schedule needs.
+- **Re-send kept the old expiry.** The controller counts the lifetime from `creation-time`, which an edit does not reset, while the email promised a fresh duration: credentials re-sent for an older account arrived already expired. Resend now deletes and recreates the account (`no user-name` first, retried without it if the controller refuses), and restarts the guest's countdown in the app to match.
+- **A re-used username inherited an old account.** New usernames are checked against every guest ever created before use.
+- **Nothing checked what the controller ended up with.** The sequence (one copy in `services/wlcGuest.ts` instead of three) now sets `type … guest-user lifetime` before `password`, as in Cisco's procedure, drops the redundant `description` line, and reads the account back with `show running-config | section user-name`. A missing account, a missing or different lifetime, a `creation-time` more than 2 minutes off the server clock, or an account already expired is logged at `warn` and written to `sync_logs` with the session transcript (passwords masked).
+- The fire-and-forget provisioning task of `POST /api/guests` can no longer end in an unhandled rejection.
+- `POST /api/wlc/create-user` validates `durationMinutes` instead of passing it straight into the command.
 
 #### One operator's "Disconnetti" could stop provisioning at another site
 - `updateWlcConfig()` wrote `WHERE id = (SELECT id FROM wlc_config ORDER BY id ASC LIMIT 1)` — **always the first row**, whatever site the operator was working on. That would be cosmetic if `authenticated` were only a UI flag, but it is not: `timer.ts` skipped the periodic sync for a site when it was false, and the guest routes skipped the SSH push and logged `(offline)`. So an operator pressing "Disconnetti" at L'Aquila switched off synchronisation **and** provisioning for Milan, where a different operator carried on creating guests that never reached the controller, with no error anywhere.

@@ -55,7 +55,9 @@ const dictionaries: Record<Locale, Dict> = {
 
     // Stats
     'stats.registered': 'Registrati',
+    'stats.active': 'Attivi',
     'stats.online': 'Connessi Ora',
+    'stats.onlineUnknown': 'Stato connessione non disponibile dal WLC',
     'stats.pending': 'In attesa',
     'stats.expired': 'Scaduto',
     'stats.deactivated': 'Revocato',
@@ -80,6 +82,11 @@ const dictionaries: Record<Locale, Dict> = {
     'table.resend': 'Re-invia Credenziali',
     'table.resendSuccess': 'Credenziali reinviate a {email}',
     'table.resendFailed': 'Invio credenziali fallito',
+    'resend.title': 'Re-invio credenziali',
+    'resend.sending': 'Generazione della nuova password e invio a {email} in corso…',
+    'resend.lifetimeRestarted': 'La validità dell\'account riparte da adesso.',
+    'resend.wlcNotUpdated': 'Il WLC non ha confermato l\'aggiornamento: le nuove credenziali potrebbero non funzionare.',
+    'resend.wlcIssues': 'Il WLC ha accettato i comandi, ma la verifica ha rilevato:',
     'table.activate': 'Attiva',
     'table.revoke': 'Revoca',
     'table.delete': 'Elimina',
@@ -88,7 +95,10 @@ const dictionaries: Record<Locale, Dict> = {
 
     // Status
     'status.pending': 'In attesa',
-    'status.active': 'Connesso',
+    'status.active': 'Attivo',
+    'status.connected': 'Connesso',
+    'status.activeHint.offline': 'Account valido, nessun dispositivo connesso al WLC',
+    'status.activeHint.unknown': 'Account valido; stato della connessione non disponibile dal WLC',
     'status.expired': 'Scaduto',
     'status.deactivated': 'Revocato',
 
@@ -381,7 +391,9 @@ const dictionaries: Record<Locale, Dict> = {
     'header.language': 'Language',
 
     'stats.registered': 'Registered',
+    'stats.active': 'Active',
     'stats.online': 'Online Now',
+    'stats.onlineUnknown': 'Connection state not available from the WLC',
     'stats.pending': 'Pending',
     'stats.expired': 'Expired',
     'stats.deactivated': 'Revoked',
@@ -404,6 +416,11 @@ const dictionaries: Record<Locale, Dict> = {
     'table.resend': 'Re-send Credentials',
     'table.resendSuccess': 'Credentials re-sent to {email}',
     'table.resendFailed': 'Failed to re-send credentials',
+    'resend.title': 'Re-send credentials',
+    'resend.sending': 'Generating a new password and sending it to {email}…',
+    'resend.lifetimeRestarted': 'The account validity restarts now.',
+    'resend.wlcNotUpdated': 'The WLC did not confirm the update: the new credentials may not work.',
+    'resend.wlcIssues': 'The WLC accepted the commands, but the check found:',
     'table.activate': 'Activate',
     'table.revoke': 'Revoke',
     'table.delete': 'Delete',
@@ -411,7 +428,10 @@ const dictionaries: Record<Locale, Dict> = {
     'table.remarks': 'Notes',
 
     'status.pending': 'Pending',
-    'status.active': 'Connected',
+    'status.active': 'Active',
+    'status.connected': 'Connected',
+    'status.activeHint.offline': 'Valid account, no device connected to the WLC',
+    'status.activeHint.unknown': 'Valid account; connection state not available from the WLC',
     'status.expired': 'Expired',
     'status.deactivated': 'Revoked',
 

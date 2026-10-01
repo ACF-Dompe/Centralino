@@ -28,7 +28,10 @@ vi.mock('../../i18n', () => ({
         'table.resend': 'Re-invia Credenziali',
         'table.copied': 'Copiato!',
         'status.pending': 'In attesa',
-        'status.active': 'Connesso',
+        'status.active': 'Attivo',
+        'status.connected': 'Connesso',
+        'status.activeHint.offline': 'Nessun dispositivo connesso',
+        'status.activeHint.unknown': 'Stato connessione non disponibile',
         'status.expired': 'Scaduto',
         'status.deactivated': 'Revocato',
         'time.expired': 'Scaduto',
@@ -155,8 +158,36 @@ describe('GuestTable', () => {
 
   it('shows status badges with correct text', () => {
     render(<GuestTable guests={[guest1, guest2]} loading={false} {...handlers} />);
-    expect(screen.getByText('Connesso')).toBeInTheDocument();
+    expect(screen.getByText('Attivo')).toBeInTheDocument();
     expect(screen.getByText('In attesa')).toBeInTheDocument();
+  });
+
+  // An active account only means the credentials are valid. "Connesso" is
+  // reserved for a device the WLC actually sees on the air.
+  describe('connection state of active guests', () => {
+    it('says "Connesso" only when the WLC sees the guest on the air', () => {
+      render(<GuestTable guests={[{ ...guest1, connected: true }]} loading={false} {...handlers} />);
+      expect(screen.getByTestId('status-connected')).toHaveTextContent('Connesso');
+      expect(screen.queryByTestId('status-active')).not.toBeInTheDocument();
+    });
+
+    it('says "Attivo" when no device is connected', () => {
+      render(<GuestTable guests={[{ ...guest1, connected: false }]} loading={false} {...handlers} />);
+      expect(screen.getByTestId('status-active')).toHaveTextContent('Attivo');
+      expect(screen.getByTestId('status-active')).toHaveAttribute('title', 'Nessun dispositivo connesso');
+      expect(screen.queryByText('Connesso')).not.toBeInTheDocument();
+    });
+
+    it('says "Attivo", and why, when the WLC state is unknown', () => {
+      render(<GuestTable guests={[{ ...guest1, connected: null }]} loading={false} {...handlers} />);
+      expect(screen.getByTestId('status-active')).toHaveAttribute('title', 'Stato connessione non disponibile');
+    });
+
+    it('never says "Connesso" for an account that is not active', () => {
+      render(<GuestTable guests={[{ ...guest2, connected: true }]} loading={false} {...handlers} />);
+      expect(screen.queryByText('Connesso')).not.toBeInTheDocument();
+      expect(screen.getByText('In attesa')).toBeInTheDocument();
+    });
   });
 
   it('renders activate button only for pending guests', () => {

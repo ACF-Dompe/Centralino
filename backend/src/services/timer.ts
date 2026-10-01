@@ -2,6 +2,7 @@
  * Background services:
  *  - Real-time elapsed timer for active guests
  *  - Periodic sync with ALL authenticated WLC configs (one per sede)
+ *  - Which guests are actually associated (services/wlcPresence.ts)
  *  - Auto-expire guests whose duration has elapsed
  */
 import { getDb } from '../db/index.js';
@@ -14,12 +15,26 @@ import {
   listSedi,
 } from '../repositories/index.js';
 import { v4 as uuid } from 'uuid';
-import { execSsh, parseUsernameList, getGuestUsers, extractGuestUsers, type GuestUserInfo } from './wlcSsh.js';
+import {
+  execSsh,
+  parseUsernameList,
+  getGuestUsers,
+  extractGuestUsers,
+  parseWirelessClients,
+  type GuestUserInfo,
+} from './wlcSsh.js';
+import { recordPresence } from './wlcPresence.js';
 import { broadcast } from './ws.js';
 import { log } from '../logger.js';
 
+const CLIENT_TABLE_COMMAND = 'show wireless client summary detail';
+/** The client table has printed and the prompt is back (or the command was refused). */
+const CLIENT_TABLE_DONE = /summary detail[\s\S]*\n[^\n]*[#>][ \t]*$/;
+
 let timerInterval: NodeJS.Timeout | null = null;
 let syncInterval: NodeJS.Timeout | null = null;
+/** Sites whose controller has already been reported as not printing user names. */
+const warnedNoClientTable = new Set<number>();
 
 async function tickTimers(): Promise<void> {
   try {
@@ -52,7 +67,10 @@ async function syncSedeWlc(sedeId: number): Promise<void> {
   // the environment. This used to test `authenticated`, a column any operator
   // could flip from the header — and, because the write always landed on the
   // first row, flipping it for one site silently stopped the sync for another.
-  if (!cfg.usable) return;
+  if (!cfg.usable) {
+    recordPresence(sedeId, null);
+    return;
+  }
 
   const result = await execSsh({
     host: cfg.host,
@@ -63,11 +81,15 @@ async function syncSedeWlc(sedeId: number): Promise<void> {
       'terminal length 0',
       'show running-config | include ^username',
       'show running-config | section user-name',
-      'exit',
     ],
+    // Who is actually on the air. Optional: a release that refuses it must not
+    // cost the import/deactivation pass below.
+    optionalCommands: [CLIENT_TABLE_COMMAND],
+    waitFor: { pattern: CLIENT_TABLE_DONE, timeoutMs: 4_000 },
   });
 
   if (!result.success) {
+    recordPresence(sedeId, null);
     await addSyncLog({
       action: `sync: sede ${sedeId} failed`,
       method: 'SSH',
@@ -100,6 +122,18 @@ async function syncSedeWlc(sedeId: number): Promise<void> {
     }
   }
   const guestUsers = [...guestUsersByUsername.values()];
+
+  // Unknown rather than "nobody" when the table could not be read.
+  const clients = result.optionalFailed ? null : parseWirelessClients(result.output);
+  recordPresence(sedeId, clients);
+  if (!clients?.readable && !warnedNoClientTable.has(sedeId)) {
+    // Once per site, or the 30 s sync would flood the logs.
+    warnedNoClientTable.add(sedeId);
+    log.warn(
+      { sedeId, command: CLIENT_TABLE_COMMAND, refused: result.optionalFailed === true },
+      'WLC client table not readable: guest connection state will show as unknown',
+    );
+  }
   const managementCount = allUsers.length - legacyGuestUsers.length;
   const onController = new Set(allUsers.map((u) => u.username));
   // Also include user-name guest users in the controller set for deactivation checks

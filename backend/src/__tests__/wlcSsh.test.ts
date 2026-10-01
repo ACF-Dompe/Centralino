@@ -12,6 +12,7 @@ import {
   minutesToLifetime,
   extractGuestUsers,
   extractGuestUserNames,
+  parseWirelessClients,
 } from '../services/wlcSsh.js';
 
 // ── parseUsernameList ──────────────────────────────────────────────────────
@@ -339,5 +340,59 @@ describe('extractGuestUserNames (deprecated)', () => {
 
   it('returns empty array when no guest users', () => {
     expect(extractGuestUserNames('')).toEqual([]);
+  });
+});
+
+// ── parseWirelessClients ───────────────────────────────────────────────────
+
+describe('parseWirelessClients', () => {
+  const header =
+    'MAC Address    SSID          AP Name        State   IP Address    Device-type  VLAN  BSSID           Auth Method  Created  Connected  Protocol  Channel  Width  SGI  NSS  Rate   CAP  Username';
+  const table = (...rows: string[]) => [
+    '>>> show wireless client summary detail',
+    'WLC#show wireless client summary detail',
+    '',
+    `Number of Clients: ${rows.length}`,
+    '',
+    header,
+    '-'.repeat(header.length),
+    ...rows,
+    'WLC#',
+  ].join('\r\n');
+
+  it('collects the tokens of clients in the Run state', () => {
+    const scan = parseWirelessClients(table(
+      'aaaa.bbbb.cccc Dompe Guest   AP-MIL-01      Run     10.1.1.10     Apple-Device 20    0011.2233.4455  Web Auth     120      118        11ac      36       80     Y/Y  2/2  866.7  E    G.Mario123',
+    ));
+    expect(scan.readable).toBe(true);
+    // Lower-cased: the guest may type the username in any case.
+    expect(scan.runTokens.has('g.mario123')).toBe(true);
+  });
+
+  it('ignores clients that have not finished authenticating', () => {
+    const scan = parseWirelessClients(table(
+      'aaaa.bbbb.cccc Dompe Guest   AP-MIL-01      Webauth Pending 10.1.1.10  Apple-Device 20  0011.2233.4455  Web Auth  120  0  11ac  36  80  Y/Y  2/2  866.7  E  g.anna456',
+    ));
+    expect(scan.readable).toBe(true);
+    expect(scan.runTokens.has('g.anna456')).toBe(false);
+  });
+
+  it('is readable with no clients at all', () => {
+    const scan = parseWirelessClients(['Number of Clients: 0', '', 'WLC#'].join('\r\n'));
+    expect(scan).toEqual({ readable: true, runTokens: new Set() });
+  });
+
+  it('is not readable when the table carries no user names', () => {
+    const scan = parseWirelessClients([
+      'Number of Clients: 1',
+      'MAC Address    AP Name        Type ID   State   Protocol Method     Role',
+      'aaaa.bbbb.cccc AP-MIL-01      WLAN 1    Run     11ac     Web Auth   Local',
+    ].join('\r\n'));
+    expect(scan.readable).toBe(false);
+  });
+
+  it('is not readable when the command was refused', () => {
+    const scan = parseWirelessClients("% Invalid input detected at '^' marker.\r\nWLC#");
+    expect(scan.readable).toBe(false);
   });
 });

@@ -120,10 +120,7 @@ export default function GuestTable({ guests, loading, onActivate, onDelete, onRe
                     )}
                   </td>
                   <td className="px-4 py-3 align-top">
-                    <span className={`badge ${statusBadgeClass(g.status)}`}>
-                      {g.status === 'active' && <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse-soft" />}
-                      {t(`status.${g.status}`)}
-                    </span>
+                    <StatusBadge guest={g} />
                   </td>
                   <td className="px-4 py-3 align-top">
                     <div className="flex items-center justify-end gap-1">
@@ -154,6 +151,33 @@ export default function GuestTable({ guests, loading, onActivate, onDelete, onRe
       <div className="hidden">{tick}</div>
     </div>
   );
+}
+
+/**
+ * "Connesso" only when the controller sees a device on this username. An
+ * active account nobody is using is "Attivo" — the badge used to say
+ * "Connesso" for every valid account.
+ */
+function StatusBadge({ guest }: { guest: Guest }) {
+  const [, , t] = useLocale();
+  if (guest.status === 'active' && guest.connected === true) {
+    return (
+      <span data-testid="status-connected" className={`badge ${statusBadgeClass('active')}`}>
+        <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse-soft" />
+        {t('status.connected')}
+      </span>
+    );
+  }
+  if (guest.status === 'active') {
+    const hint = guest.connected === false ? 'status.activeHint.offline' : 'status.activeHint.unknown';
+    return (
+      <span data-testid="status-active" className={`badge ${statusBadgeClass('active')}`} title={t(hint)}>
+        <span className="h-1.5 w-1.5 rounded-full border border-emerald-500" />
+        {t('status.active')}
+      </span>
+    );
+  }
+  return <span className={`badge ${statusBadgeClass(guest.status)}`}>{t(`status.${guest.status}`)}</span>;
 }
 
 function CopyButton({ value }: { value: string }) {

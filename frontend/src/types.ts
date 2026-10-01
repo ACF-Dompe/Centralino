@@ -146,6 +146,23 @@ export interface Guest {
   enabledAt: string | null;
   remarks: string | null;
   sedeId: number | null;
+  /**
+   * Whether the controller sees a device associated with this username, from
+   * the last background sync. Null when the WLC's client table is not known.
+   * `status === 'active'` only says the account is valid.
+   */
+  connected?: boolean | null;
+}
+
+/** Answer of POST /guests/:id/resend-credentials. */
+export interface ResendResult {
+  success: boolean;
+  oneTimePassword: string;
+  wlcUpdated: boolean;
+  /** What the WLC read-back found wrong, when it accepted the commands anyway. */
+  wlcIssues?: string[];
+  emailSent: boolean;
+  emailMode: 'graph' | 'demo-log';
 }
 
 export interface WlcConfig {

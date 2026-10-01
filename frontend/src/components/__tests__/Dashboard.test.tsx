@@ -26,7 +26,9 @@ vi.mock('../../i18n', () => ({
         'header.lockConsole': 'Blocca Console',
         'header.changeSede': 'Cambia sede',
         'stats.registered': 'Registrati',
+        'stats.active': 'Attivi',
         'stats.online': 'Connessi Ora',
+        'stats.onlineUnknown': 'Stato connessione non disponibile dal WLC',
         'stats.pending': 'In attesa',
         'stats.expired': 'Scaduto',
         'stats.deactivated': 'Revocato',
@@ -39,11 +41,18 @@ vi.mock('../../i18n', () => ({
         'table.resend': 'Re-invia Credenziali',
         'table.resendSuccess': 'Credenziali reinviate a {email}',
         'table.resendFailed': 'Invio credenziali fallito',
+        'resend.title': 'Re-invio credenziali',
+        'resend.sending': 'Invio a {email} in corso…',
+        'resend.lifetimeRestarted': "La validità dell'account riparte da adesso.",
+        'resend.wlcNotUpdated': "Il WLC non ha confermato l'aggiornamento.",
+        'resend.wlcIssues': 'La verifica ha rilevato:',
+        'modal.close': 'Chiudi',
         'table.confirmDelete': 'Confermi eliminazione di {name}?',
         'table.copied': 'Copiato!',
         'table.copy': 'Copia',
         'status.pending': 'In attesa',
-        'status.active': 'Connesso',
+        'status.active': 'Attivo',
+        'status.connected': 'Connesso',
         'status.expired': 'Scaduto',
         'status.deactivated': 'Revocato',
         'sso.logout': 'Logout SSO',
@@ -184,6 +193,7 @@ vi.mock('../icons', () => ({
   Copy: (p: Record<string, unknown>) => <svg data-testid="copy-icon" {...p} />,
   Wifi: (p: Record<string, unknown>) => <svg data-testid="wifi-icon" {...p} />,
   RefreshCw: (p: Record<string, unknown>) => <svg data-testid="refresh-icon" {...p} />,
+  Loader2: (p: Record<string, unknown>) => <svg data-testid="loader-icon" {...p} />,
 }));
 
 // ── Test data ──────────────────────────────────────────────────────────────
@@ -520,6 +530,127 @@ describe('Dashboard', () => {
 
     await waitFor(() => {
       expect(mockResendCredentials).toHaveBeenCalledWith('g-1');
+    });
+  });
+
+  // ── Resend dialog ───────────────────────────────────────────────────────
+
+  describe('resend dialog', () => {
+    async function clickResend() {
+      const user = userEvent.setup();
+      render(<Dashboard config={wlcConfig} sede={sede} {...handlers} />);
+      await waitFor(() => {
+        expect(screen.getByTestId('guest-table')).toBeInTheDocument();
+      });
+      await user.click(screen.getByTestId('mock-resend'));
+      return user;
+    }
+
+    it('shows the outcome in a dialog, not in the corner toast', async () => {
+      mockResendCredentials.mockResolvedValue({ emailSent: true, wlcUpdated: true });
+      await clickResend();
+
+      const dialog = await screen.findByRole('dialog');
+      await waitFor(() => {
+        expect(dialog).toHaveTextContent('Credenziali reinviate a');
+      });
+      expect(dialog).toHaveTextContent('La validità dell\'account riparte da adesso.');
+      expect(screen.queryByTestId('toast')).not.toBeInTheDocument();
+    });
+
+    it('shows a waiting state while the WLC is being updated', async () => {
+      let resolve!: (v: unknown) => void;
+      mockResendCredentials.mockReturnValue(new Promise((r) => { resolve = r; }));
+      await clickResend();
+
+      expect(await screen.findByTestId('resend-sending')).toBeInTheDocument();
+      expect(screen.getByTestId('resend-dialog-close')).toBeDisabled();
+
+      await act(async () => { resolve({ emailSent: true, wlcUpdated: true }); });
+      await waitFor(() => {
+        expect(screen.queryByTestId('resend-sending')).not.toBeInTheDocument();
+      });
+      expect(screen.getByTestId('resend-dialog-close')).toBeEnabled();
+    });
+
+    it('warns when the WLC did not take the new password', async () => {
+      mockResendCredentials.mockResolvedValue({ emailSent: true, wlcUpdated: false });
+      await clickResend();
+
+      const dialog = await screen.findByRole('dialog');
+      await waitFor(() => {
+        expect(dialog).toHaveTextContent('Il WLC non ha confermato l\'aggiornamento.');
+      });
+    });
+
+    it('lists what the WLC read-back found wrong', async () => {
+      mockResendCredentials.mockResolvedValue({
+        emailSent: true,
+        wlcUpdated: true,
+        wlcIssues: ['account già scaduto secondo creation-time + lifetime'],
+      });
+      await clickResend();
+
+      const dialog = await screen.findByRole('dialog');
+      await waitFor(() => {
+        expect(dialog).toHaveTextContent('account già scaduto secondo creation-time + lifetime');
+      });
+    });
+
+    it('reports a failed email', async () => {
+      mockResendCredentials.mockResolvedValue({ emailSent: false, wlcUpdated: true });
+      await clickResend();
+
+      const dialog = await screen.findByRole('dialog');
+      await waitFor(() => {
+        expect(dialog).toHaveTextContent('Invio credenziali fallito');
+      });
+    });
+
+    it('reports a request error', async () => {
+      mockResendCredentials.mockRejectedValue(new Error('Guest non trovato'));
+      await clickResend();
+
+      const dialog = await screen.findByRole('dialog');
+      await waitFor(() => {
+        expect(dialog).toHaveTextContent('Guest non trovato');
+      });
+    });
+
+    it('closes with the button', async () => {
+      mockResendCredentials.mockResolvedValue({ emailSent: true, wlcUpdated: true });
+      const user = await clickResend();
+
+      await waitFor(() => {
+        expect(screen.getByTestId('resend-dialog-close')).toBeEnabled();
+      });
+      await user.click(screen.getByTestId('resend-dialog-close'));
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+  });
+
+  // ── Connection state ────────────────────────────────────────────────────
+
+  describe('"Connessi Ora" card', () => {
+    const active = (id: string, connected: boolean | null | undefined) => ({ ...guests[0], id, connected });
+
+    it('counts only guests the WLC sees on the air, not every active account', async () => {
+      mockListGuests.mockResolvedValue({ data: [active('a', true), active('b', false), active('c', false)] });
+      render(<Dashboard config={wlcConfig} sede={sede} {...handlers} />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('stat-online')).toHaveTextContent('1');
+      });
+    });
+
+    it('says "unknown" rather than 0 when the WLC client table is not available', async () => {
+      mockListGuests.mockResolvedValue({ data: [active('a', null), active('b', undefined)] });
+      render(<Dashboard config={wlcConfig} sede={sede} {...handlers} />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('stat-online')).toHaveTextContent('—');
+      });
+      expect(screen.getByTestId('stat-online')).toHaveAttribute('title', 'Stato connessione non disponibile dal WLC');
     });
   });
 

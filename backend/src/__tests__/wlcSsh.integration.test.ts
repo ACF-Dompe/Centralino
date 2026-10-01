@@ -124,7 +124,7 @@ describe('execSsh', () => {
 
       // 2. Shell was requested
       expect(mockClient.shell).toHaveBeenCalledWith(
-        expect.objectContaining({ term: 'vt100', cols: 240, rows: 2000 }),
+        expect.objectContaining({ term: 'vt100', cols: 512, rows: 2000 }),
         expect.any(Function),
       );
 
@@ -326,6 +326,143 @@ describe('execSsh', () => {
     });
   });
 
+  // ── Optional probes ────────────────────────────────────────────────────
+
+  describe('optionalCommands', () => {
+    it('runs them after the required commands', async () => {
+      const events = captureClientEvents();
+      const { stream } = createMockStream();
+
+      const promise = execSsh({
+        host: '172.18.106.100',
+        username: 'admin_guest',
+        password: 'secret',
+        commands: ['show running-config'],
+        optionalCommands: ['show wireless client summary detail'],
+      });
+
+      events.ready();
+      mockClient.shell.mock.calls[0][1](null, stream);
+
+      await vi.advanceTimersByTimeAsync(1200);
+      expect(stream.write).toHaveBeenLastCalledWith('show running-config\n');
+      await vi.advanceTimersByTimeAsync(800);
+      expect(stream.write).toHaveBeenLastCalledWith('show wireless client summary detail\n');
+
+      await vi.advanceTimersByTimeAsync(800 + 800 + 800);
+      const result = await promise;
+      expect(result.success).toBe(true);
+      expect(result.optionalFailed).toBeUndefined();
+    });
+
+    it('reports a refused probe without failing the run or dropping earlier output', async () => {
+      const events = captureClientEvents();
+      const { stream, handlers: streamEvents } = createMockStream();
+
+      const promise = execSsh({
+        host: '172.18.106.100',
+        username: 'admin_guest',
+        password: 'secret',
+        commands: ['show running-config'],
+        optionalCommands: ['show wireless client summary detail'],
+      });
+
+      events.ready();
+      mockClient.shell.mock.calls[0][1](null, stream);
+
+      await vi.advanceTimersByTimeAsync(1200);
+      streamEvents.data(Buffer.from('user-name g.mario123\r\n'));
+      await vi.advanceTimersByTimeAsync(800);
+      streamEvents.data(Buffer.from("% Invalid input detected at '^' marker.\r\nWLC#"));
+
+      await vi.advanceTimersByTimeAsync(800 + 800 + 800);
+      const result = await promise;
+      expect(result.success).toBe(true);
+      expect(result.optionalFailed).toBe(true);
+      expect(result.output).toContain('user-name g.mario123');
+    });
+
+    it('still fails the run when a required command is refused', async () => {
+      const events = captureClientEvents();
+      const { stream, handlers: streamEvents } = createMockStream();
+
+      const promise = execSsh({
+        host: '172.18.106.100',
+        username: 'admin_guest',
+        password: 'secret',
+        commands: ['configure terminal'],
+        optionalCommands: ['show wireless client summary detail'],
+      });
+
+      events.ready();
+      mockClient.shell.mock.calls[0][1](null, stream);
+
+      await vi.advanceTimersByTimeAsync(1200);
+      streamEvents.data(Buffer.from('% Invalid input detected\r\n'));
+
+      const result = await promise;
+      expect(result.success).toBe(false);
+      expect(stream.write).not.toHaveBeenCalledWith('show wireless client summary detail\n');
+    });
+  });
+
+  // ── waitFor ────────────────────────────────────────────────────────────
+
+  describe('waitFor', () => {
+    it('keeps the session open until the expected output has arrived', async () => {
+      const events = captureClientEvents();
+      const { stream, handlers: streamEvents } = createMockStream();
+
+      const promise = execSsh({
+        host: '172.18.106.100',
+        username: 'admin_guest',
+        password: 'secret',
+        commands: ['show running-config | section user-name g.x'],
+        waitFor: { pattern: /\nuser-name g\.x\r?\n[\s\S]*#$/, timeoutMs: 6000 },
+      });
+
+      events.ready();
+      mockClient.shell.mock.calls[0][1](null, stream);
+
+      await vi.advanceTimersByTimeAsync(1200 + 800);
+      // Where the fixed delay would already have closed the session.
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(stream.write).not.toHaveBeenCalledWith('exit\n');
+
+      streamEvents.data(Buffer.from('\nuser-name g.x\r\n creation-time 1\r\nWLC#'));
+      await vi.advanceTimersByTimeAsync(200);
+      expect(stream.write).toHaveBeenCalledWith('exit\n');
+
+      await vi.advanceTimersByTimeAsync(800);
+      const result = await promise;
+      expect(result.success).toBe(true);
+      expect(result.output).toContain('creation-time 1');
+    });
+
+    it('gives up waiting after timeoutMs and still resolves', async () => {
+      const events = captureClientEvents();
+      const { stream } = createMockStream();
+
+      const promise = execSsh({
+        host: '172.18.106.100',
+        username: 'admin_guest',
+        password: 'secret',
+        commands: ['show clock'],
+        waitFor: { pattern: /never/, timeoutMs: 1000 },
+      });
+
+      events.ready();
+      mockClient.shell.mock.calls[0][1](null, stream);
+
+      // initial delay, one command, the per-command delay, then 1000 ms of polling
+      await vi.advanceTimersByTimeAsync(1200 + 800 + 800 + 1000);
+      expect(stream.write).toHaveBeenCalledWith('exit\n');
+      await vi.advanceTimersByTimeAsync(800);
+      const result = await promise;
+      expect(result.success).toBe(true);
+    });
+  });
+
   // ── Connection / shell errors ──────────────────────────────────────────
 
   describe('connection and shell errors', () => {
@@ -388,6 +525,34 @@ describe('execSsh', () => {
       expect(result.success).toBe(false);
       expect(result.error).toContain('SSH timeout');
       expect(result.error).toContain('5000ms');
+    });
+
+    // A ten-command provisioning run takes ~10 s of pacing alone. With one
+    // budget for connecting AND running, the default 10 s cut every run off
+    // halfway and reported it as a timeout.
+    it('gives a connected session the time its command schedule needs', async () => {
+      const events = captureClientEvents();
+      const { stream } = createMockStream();
+      const commands = Array.from({ length: 10 }, (_, i) => `cmd ${i}`);
+
+      const promise = execSsh({
+        host: '172.18.106.100',
+        username: 'admin_guest',
+        password: 'secret',
+        commands,
+        timeoutMs: 5000,
+      });
+
+      events.ready();
+      mockClient.shell.mock.calls[0][1](null, stream);
+
+      // Past the connection budget, and still sending commands.
+      await vi.advanceTimersByTimeAsync(1200 + 9 * 800);
+      expect(stream.write).toHaveBeenCalledWith('cmd 9\n');
+
+      await vi.advanceTimersByTimeAsync(800 + 800 + 800);
+      const result = await promise;
+      expect(result.success).toBe(true);
     });
 
     it('uses config.wlc.sshTimeoutMs as default timeout', async () => {
