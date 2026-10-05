@@ -18,6 +18,8 @@ import type {
   DirectoryUser,
   WlcReloadResult,
   ResendResult,
+  SecretOnCreate,
+  SecretOnDelete,
 } from '../types';
 
 const BASE = '/api';
@@ -227,8 +229,9 @@ export const adminApi = {
 
   // Sedi — the unfiltered list, unlike api.listSedi which honours the caller's grants
   listSedi: () => request<{ data: AdminSede[] }>('/admin/sedi'),
-  createSede: (body: Partial<AdminSede> & { code: string; name: string; city: string }) =>
-    request<{ data: AdminSede }>('/admin/sedi', { method: 'POST', body: JSON.stringify(body) }),
+  /** With a `password`, also creates the site's Key Vault secret. */
+  createSede: (body: Partial<AdminSede> & { code: string; name: string; city: string; password?: string }) =>
+    request<{ data: AdminSede; secret: SecretOnCreate }>('/admin/sedi', { method: 'POST', body: JSON.stringify(body) }),
   updateSede: (id: number, body: Partial<AdminSede>) =>
     request<{ data: AdminSede }>(`/admin/sedi/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   setSedeActive: (id: number, active: boolean, force = false) =>
@@ -241,7 +244,12 @@ export const adminApi = {
       `/admin/sedi/${id}/test`,
       { method: 'POST' },
     ),
-  deleteSede: (id: number) => request<void>(`/admin/sedi/${id}`, { method: 'DELETE' }),
+  /** Also deletes the site's Key Vault secret, unless the deployment binds it. */
+  deleteSede: (id: number) =>
+    request<{ success: boolean; secret: SecretOnDelete; secretName: string; envVar: string }>(
+      `/admin/sedi/${id}`,
+      { method: 'DELETE' },
+    ),
 
   // Controller password in Key Vault (COMPLIANCE.md D4). Read on demand only,
   // never kept around; every read and write is audited server-side.

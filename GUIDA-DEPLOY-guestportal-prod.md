@@ -228,14 +228,15 @@ az role assignment create --assignee "$FRONTEND_UAMI_PID" --role AcrPull --scope
 # 2.3 Key Vault Secrets User SOLO al backend (il frontend non legge segreti)
 az role assignment create --assignee "$BACKEND_UAMI_PID" --role "Key Vault Secrets User" --scope "$KV_ID"
 
-# 2.4 Key Vault Secrets Officer al backend, SOLO sui segreti WLC: serve per
-#     cambiare la password di un controller dal pannello admin (COMPLIANCE.md D4).
-#     Scope per singolo segreto, così il backend non può scrivere gli altri.
-#     Ripetere per ogni nuova sede (o assegnare sul vault, accettando lo scope più ampio).
-for CODE in MIL AQ NA TIR SM; do
-  az role assignment create --assignee "$BACKEND_UAMI_PID" --role "Key Vault Secrets Officer" \
-    --scope "$KV_ID/secrets/WLC-PASSWORD-$CODE"
-done
+# 2.4 Key Vault Secrets Officer al backend, sull'intero vault: il pannello admin
+#     crea il segreto WLC-PASSWORD-<CODICE> quando si crea una sede, ne cambia
+#     la password e lo elimina con la sede (COMPLIANCE.md D4).
+#     Uno scope sul singolo segreto non basta: non si può assegnare su un
+#     segreto che non esiste ancora, e crearne uno richiede il ruolo sul vault.
+#     Il backend può quindi scrivere ogni segreto del vault: per contenere
+#     l'impatto, conviene un vault che contenga solo le password WLC.
+az role assignment create --assignee "$BACKEND_UAMI_PID" --role "Key Vault Secrets Officer" \
+  --scope "$KV_ID"
 ```
 Il principal Entra della UAMI backend sul PostgreSQL è creato nel §4.
 

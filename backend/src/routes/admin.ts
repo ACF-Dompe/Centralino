@@ -45,16 +45,39 @@ import { loginWebUi } from '../services/wlcWebui.js';
 import {
   readWlcPasswordFromVault,
   writeWlcPasswordToVault,
+  deleteWlcPasswordFromVault,
   reloadWlcPasswords,
+  isKeyVaultConfigured,
   describeKeyVaultError,
   KeyVaultNotConfiguredError,
   type WlcReloadResult,
 } from '../services/wlcCredentials.js';
-import { wlcPasswordForSede } from '../config.js';
+import { wlcPasswordForSede, isWlcPasswordEnvBound } from '../config.js';
 import { validateHost, validateUsername, validatePassword } from '../utils/sanitize.js';
 
 /** Site codes become Key Vault secret names, so they are tightly constrained. */
 const SEDE_CODE_PATTERN = /^[A-Z0-9]{2,20}$/;
+
+/**
+ * Validate a controller password before it goes to Key Vault. Throws with a
+ * message fit for the admin.
+ */
+function parseWlcPassword(raw: unknown): string {
+  const submitted = typeof raw === 'string' ? raw : '';
+  // The validator trims, and a stored password quietly different from the
+  // one on the controller would only surface as a failed login later.
+  if (submitted !== submitted.trim()) {
+    throw new Error('La password non può iniziare o finire con uno spazio');
+  }
+  // Same rules as any credential that ends up in an IOS-XE session:
+  // printable ASCII, no line breaks.
+  return validatePassword(submitted);
+}
+
+/** What happened to a site's Key Vault secret when the site was created. */
+type SecretOnCreate = 'created' | 'existing' | 'missing' | 'not_configured';
+/** What happened to a site's Key Vault secret when the site was deleted. */
+type SecretOnDelete = 'deleted' | 'not_found' | 'kept_env_bound' | 'not_configured' | 'failed';
 
 function actorOf(req: Request): string {
   return req.authz?.email || req.authz?.subject || 'unknown';
@@ -263,12 +286,18 @@ export function createAdminRouter(): Router {
   });
 
   /**
-   * Create a site.
+   * Create a site, and its Key Vault secret.
    *
    * The code is validated hard and checked for collisions on its *normalized*
    * form, because that is what becomes the environment variable: `SM-1` and
    * `SM_1` would otherwise map to one `WLC_PASSWORD_SM_1` and quietly share a
    * password between two different controllers.
+   *
+   * With a `password`, the secret `WLC-PASSWORD-<CODE>` is created (or given a
+   * new version) and loaded into memory, so the site has its credential from
+   * the start. The site is created first and removed again if Key Vault
+   * refuses, so a failure leaves nothing half-made. Without one, an existing
+   * secret of that name is picked up if there is one.
    */
   router.post('/sedi', async (req: Request, res: Response) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
@@ -304,6 +333,19 @@ export function createAdminRouter(): Router {
     const validation = validateSedeWlcFields(body);
     if (validation) return res.status(400).json({ success: false, error: 'invalid_payload', message: validation });
 
+    // Everything is checked before anything is written.
+    let password: string | null = null;
+    if (body.password != null && body.password !== '') {
+      try {
+        password = parseWlcPassword(body.password);
+      } catch (err) {
+        return res.status(400).json({ success: false, error: 'invalid_payload', message: (err as Error).message });
+      }
+      if (!isKeyVaultConfigured()) {
+        return res.status(503).json({ success: false, error: 'keyvault_unavailable', message: new KeyVaultNotConfiguredError().message });
+      }
+    }
+
     const sede = await createSede(
       {
         code,
@@ -315,15 +357,47 @@ export function createAdminRouter(): Router {
         wlcSshPort: body.wlcSshPort != null ? Number(body.wlcSshPort) : undefined,
         wlcUsername: body.wlcUsername != null ? String(body.wlcUsername) : undefined,
         wlcSsid: body.wlcSsid != null ? String(body.wlcSsid) : undefined,
-        // New sites start out of service: their Key Vault secret does not exist
-        // yet, so offering them to operators would only offer a failure.
+        // New sites start out of service, secret or not: operators are offered
+        // a controller only once an admin has seen a connection test pass (or
+        // forced it).
         active: false,
       },
       actorOf(req),
     );
 
+    let secret: SecretOnCreate;
+    if (password != null) {
+      try {
+        await writeWlcPasswordToVault(sede.code, password);
+      } catch (err) {
+        // No site without the secret it was created with: take it back out.
+        await deleteSede(sede.id);
+        log.warn(
+          { event: 'admin-sede-create-rolled-back', actor: actorOf(req), code: sede.code, correlationId: req.correlationId },
+          'Site creation undone: its Key Vault secret could not be written',
+        );
+        return keyVaultFailure(req, res, err, 'write', sede.code);
+      }
+      secret = 'created';
+    } else if (isKeyVaultConfigured()) {
+      // A secret the platform team created ahead of the site. Reading it is a
+      // convenience: failing to must not fail the creation.
+      try {
+        secret = (await readWlcPasswordFromVault(sede.code)) != null ? 'existing' : 'missing';
+      } catch (err) {
+        log.warn({ code: sede.code, err: describeKeyVaultError(err) }, 'Could not look up the secret of a new site');
+        secret = 'missing';
+      }
+    } else {
+      secret = 'not_configured';
+    }
+
     await auditSede(req, 'admin-sede-created', sede.code);
-    res.status(201).json({ success: true, data: sede });
+    if (secret === 'created') await auditSede(req, 'admin-wlc-secret-created', sede.code);
+
+    // Re-read: `credentialConfigured` now reflects the secret just loaded.
+    const created = (await getAdminSedeById(sede.id)) ?? sede;
+    res.status(201).json({ success: true, data: created, secret });
   });
 
   router.put('/sedi/:id', async (req: Request, res: Response) => {
@@ -489,17 +563,9 @@ export function createAdminRouter(): Router {
     if (!sede) return res.status(404).json({ success: false, error: 'not_found', message: 'Sede non trovata.' });
 
     const raw = (req.body ?? {}) as { password?: unknown };
-    const submitted = typeof raw.password === 'string' ? raw.password : '';
     let password: string;
     try {
-      // The validator trims, and a stored password quietly different from the
-      // one on the controller would only surface as a failed login later.
-      if (submitted !== submitted.trim()) {
-        throw new Error('La password non può iniziare o finire con uno spazio');
-      }
-      // Same rules as any credential that ends up in an IOS-XE session:
-      // printable ASCII, no line breaks.
-      password = validatePassword(submitted);
+      password = parseWlcPassword(raw.password);
     } catch (err) {
       return res.status(400).json({ success: false, error: 'invalid_payload', message: (err as Error).message });
     }
@@ -546,11 +612,17 @@ export function createAdminRouter(): Router {
   });
 
   /**
-   * Delete a site, but only while nothing points at it.
+   * Delete a site, but only while nothing points at it — and its Key Vault
+   * secret with it.
    *
    * `guests.sede_id` has no foreign key, so deleting a site with history would
    * leave those guests referencing an id that no longer resolves — and creating
    * a site with the same code later would hand it somebody else's past.
+   *
+   * The secret goes after the row: a site left without its secret would be
+   * worse than a secret left without its site. It is soft-deleted (recoverable
+   * for the vault's retention period), and kept when the deployment binds it to
+   * `WLC_PASSWORD_<CODE>`, which the next revision would fail to resolve.
    */
   router.delete('/sedi/:id', async (req: Request, res: Response) => {
     const id = Number(req.params.id);
@@ -569,7 +641,31 @@ export function createAdminRouter(): Router {
 
     await deleteSede(id);
     await auditSede(req, 'admin-sede-deleted', sede.code);
-    res.status(204).end();
+
+    let secret: SecretOnDelete;
+    if (!isKeyVaultConfigured()) {
+      secret = 'not_configured';
+    } else if (isWlcPasswordEnvBound(sede.code)) {
+      secret = 'kept_env_bound';
+    } else {
+      try {
+        secret = await deleteWlcPasswordFromVault(sede.code);
+        if (secret === 'deleted') await auditSede(req, 'admin-wlc-secret-deleted', sede.code);
+      } catch (err) {
+        log.error(
+          { event: 'admin-wlc-keyvault-error', operation: 'delete', code: sede.code, err: describeKeyVaultError(err), actor: actorOf(req), correlationId: req.correlationId },
+          'Key Vault call failed',
+        );
+        secret = 'failed';
+      }
+    }
+
+    res.json({
+      success: true,
+      secret,
+      secretName: sede.credentialSecretName,
+      envVar: sede.credentialEnvVar,
+    });
   });
 
   /* ----------------------------- Break glass ----------------------------- */

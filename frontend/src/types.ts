@@ -50,6 +50,12 @@ export interface AdminSede extends Sede {
   updatedBy: string | null;
 }
 
+/** What happened to a new site's Key Vault secret (`WLC-PASSWORD-<CODE>`). */
+export type SecretOnCreate = 'created' | 'existing' | 'missing' | 'not_configured';
+
+/** What happened to a deleted site's Key Vault secret. */
+export type SecretOnDelete = 'deleted' | 'not_found' | 'kept_env_bound' | 'not_configured' | 'failed';
+
 /** Outcome of reloading the WLC passwords from Key Vault. */
 export interface WlcReloadResult {
   loaded: string[];

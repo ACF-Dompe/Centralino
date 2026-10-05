@@ -7,9 +7,13 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const { mockGetSecret, mockSetSecret, mockSecretClientCtor, mockListSedi } = vi.hoisted(() => ({
+const {
+  mockGetSecret, mockSetSecret, mockBeginDeleteSecret, mockBeginRecoverDeletedSecret, mockSecretClientCtor, mockListSedi,
+} = vi.hoisted(() => ({
   mockGetSecret: vi.fn(),
   mockSetSecret: vi.fn(),
+  mockBeginDeleteSecret: vi.fn(),
+  mockBeginRecoverDeletedSecret: vi.fn(),
   mockSecretClientCtor: vi.fn(),
   mockListSedi: vi.fn(),
 }));
@@ -21,8 +25,15 @@ vi.mock('@azure/keyvault-secrets', () => ({
     }
     getSecret = mockGetSecret;
     setSecret = mockSetSecret;
+    beginDeleteSecret = mockBeginDeleteSecret;
+    beginRecoverDeletedSecret = mockBeginRecoverDeletedSecret;
   },
 }));
+
+/** A long-running operation that has already finished. */
+function donePoller(): { pollUntilDone: () => Promise<unknown> } {
+  return { pollUntilDone: vi.fn(async () => ({})) };
+}
 
 vi.mock('@azure/identity', () => ({ DefaultAzureCredential: class {} }));
 
@@ -40,6 +51,7 @@ import { config, wlcPasswordForSede } from '../config.js';
 import {
   readWlcPasswordFromVault,
   writeWlcPasswordToVault,
+  deleteWlcPasswordFromVault,
   reloadWlcPasswords,
   KeyVaultNotConfiguredError,
   resetKeyVaultClient,
@@ -115,6 +127,59 @@ describe('writeWlcPasswordToVault', () => {
 
     await expect(writeWlcPasswordToVault('MIL', 'new-pass')).rejects.toThrow('Forbidden');
     expect(getCachedWlcPassword('MIL')).toBe('old');
+  });
+
+  // A site recreated with the code of a deleted one: Key Vault still holds the
+  // old secret soft-deleted and refuses the name until it is recovered.
+  it('recovers a soft-deleted secret of the same name, then writes', async () => {
+    mockSetSecret
+      .mockRejectedValueOnce(Object.assign(
+        new Error('Secret WLC-PASSWORD-TOR is currently in a deleted but recoverable state, and its name cannot be reused'),
+        { statusCode: 409, code: 'Conflict' },
+      ))
+      .mockResolvedValueOnce({});
+    const poller = donePoller();
+    mockBeginRecoverDeletedSecret.mockResolvedValue(poller);
+
+    await writeWlcPasswordToVault('TOR', 'tor-pass');
+
+    expect(mockBeginRecoverDeletedSecret).toHaveBeenCalledWith('WLC-PASSWORD-TOR');
+    expect(poller.pollUntilDone).toHaveBeenCalled();
+    expect(mockSetSecret).toHaveBeenCalledTimes(2);
+    expect(wlcPasswordForSede('TOR')).toBe('tor-pass');
+  });
+
+  it('does not recover on any other conflict', async () => {
+    mockSetSecret.mockRejectedValue(Object.assign(new Error('Something else'), { statusCode: 409 }));
+
+    await expect(writeWlcPasswordToVault('TOR', 'tor-pass')).rejects.toThrow('Something else');
+    expect(mockBeginRecoverDeletedSecret).not.toHaveBeenCalled();
+  });
+});
+
+describe('deleteWlcPasswordFromVault', () => {
+  it('deletes the site secret, waits for it, and forgets the value', async () => {
+    setCachedWlcPassword('TOR', 'tor-pass');
+    const poller = donePoller();
+    mockBeginDeleteSecret.mockResolvedValue(poller);
+
+    expect(await deleteWlcPasswordFromVault('TOR')).toBe('deleted');
+    expect(mockBeginDeleteSecret).toHaveBeenCalledWith('WLC-PASSWORD-TOR');
+    expect(poller.pollUntilDone).toHaveBeenCalled();
+    expect(getCachedWlcPassword('TOR')).toBeUndefined();
+  });
+
+  it('reports a secret that was never there', async () => {
+    mockBeginDeleteSecret.mockRejectedValue(notFound());
+    expect(await deleteWlcPasswordFromVault('TOR')).toBe('not_found');
+  });
+
+  it('keeps the cached value when Key Vault refuses', async () => {
+    setCachedWlcPassword('TOR', 'tor-pass');
+    mockBeginDeleteSecret.mockRejectedValue(Object.assign(new Error('Forbidden'), { statusCode: 403 }));
+
+    await expect(deleteWlcPasswordFromVault('TOR')).rejects.toThrow('Forbidden');
+    expect(getCachedWlcPassword('TOR')).toBe('tor-pass');
   });
 });
 

@@ -1,5 +1,6 @@
 /**
- * WLC passwords in Key Vault: read, write, reload.
+ * WLC passwords in Key Vault: read, write (which creates the secret for a new
+ * site), delete, reload.
  *
  * One secret per site, `WLC-PASSWORD-<CODE>` (see `credentialNamesForSedeCode`).
  * Values read here land in the in-memory cache that `wlcPasswordForSede` checks
@@ -59,6 +60,16 @@ function isNotFound(err: unknown): boolean {
   return e?.statusCode === 404 || e?.code === 'SecretNotFound';
 }
 
+/**
+ * Key Vault keeps a deleted secret, soft-deleted, for the vault's retention
+ * period, and refuses a new value under that name until it is recovered or
+ * purged. This is what a site recreated with the code of a deleted one meets.
+ */
+function isDeletedButRecoverable(err: unknown): boolean {
+  const e = err as { statusCode?: number; message?: string } | null;
+  return e?.statusCode === 409 && /deleted but recoverable/i.test(e?.message ?? '');
+}
+
 /** A short, loggable description of an SDK error — never a secret value. */
 export function describeKeyVaultError(err: unknown): string {
   const e = err as { statusCode?: number; code?: string; message?: string } | null;
@@ -92,14 +103,49 @@ export async function readWlcPasswordFromVault(code: string): Promise<string | n
 }
 
 /**
- * Store a new password for a site in Key Vault (a new secret version) and use
- * it from now on. The controller itself is not touched: the password must
- * already have been changed there.
+ * Store a password for a site in Key Vault and use it from now on: it creates
+ * the secret for a new site, and adds a version to an existing one. The
+ * controller itself is not touched: the password must already be set there.
+ *
+ * A secret left soft-deleted by a deleted site with the same code is
+ * recovered first (its old versions come back with it), rather than purged:
+ * purging is irreversible, and recovering needs no more than Secrets Officer.
  */
 export async function writeWlcPasswordToVault(code: string, password: string): Promise<void> {
   const { secretName } = credentialNamesForSedeCode(code);
-  await getClient().setSecret(secretName, password, { contentType: 'text/plain' });
+  const client = getClient();
+  try {
+    await client.setSecret(secretName, password, { contentType: 'text/plain' });
+  } catch (err) {
+    if (!isDeletedButRecoverable(err)) throw err;
+    log.warn({ code, secretName }, 'Recovering a soft-deleted WLC secret before writing it');
+    const poller = await client.beginRecoverDeletedSecret(secretName);
+    await poller.pollUntilDone();
+    await client.setSecret(secretName, password, { contentType: 'text/plain' });
+  }
   setCachedWlcPassword(code, password);
+}
+
+/**
+ * Delete a site's secret from Key Vault and forget it.
+ *
+ * Soft delete only: the vault keeps it recoverable for its retention period,
+ * and a site later recreated with the same code recovers it (see
+ * `writeWlcPasswordToVault`). Waits for the deletion to finish, so that such a
+ * recreation does not find the name still "being deleted".
+ */
+export async function deleteWlcPasswordFromVault(code: string): Promise<'deleted' | 'not_found'> {
+  const { secretName } = credentialNamesForSedeCode(code);
+  try {
+    const poller = await getClient().beginDeleteSecret(secretName);
+    await poller.pollUntilDone();
+  } catch (err) {
+    if (!isNotFound(err)) throw err;
+    deleteCachedWlcPassword(code);
+    return 'not_found';
+  }
+  deleteCachedWlcPassword(code);
+  return 'deleted';
 }
 
 /**

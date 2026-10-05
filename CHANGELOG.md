@@ -43,6 +43,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Frontend image moved from `nginx-unprivileged:1.28-alpine` to `1.30-alpine`.** The 1.28 branch is out of support: its tag has not been rebuilt since February 2026 (nginx 1.28.2), and the nginx advisories published since then list only 1.30.x and 1.31.x as fixed.
 - **Deploy pipeline SARIF uploads now carry a `category`** (`deploy-trivy-fs`, `deploy-trivy-backend`, `deploy-trivy-frontend`). The three uploads of the same job had none, so each overwrote the previous one in code scanning, and alerts from one scan were closed or kept open depending on which step ran last.
 
+### Changed
+
+#### A site's Key Vault secret follows the site
+- **Creating a site creates its secret.** The new-site form has the controller password field: on Save the site is created and `WLC-PASSWORD-<CODE>` is written to Key Vault and loaded into memory, so the site has its credential from the start (it still starts out of service until a connection test passes). If Key Vault refuses, the site is removed again: nothing is left half-made. Left empty, an existing secret of that name is picked up, if there is one. The panel then opens on the new site and says what happened to the secret.
+- **Deleting a site deletes its secret** (soft delete: recoverable in Key Vault for the vault's retention period, never purged). It is kept when the deployment binds it to `WLC_PASSWORD_<CODE>`, since the next Container Apps revision would fail to resolve it; the panel says so.
+- **Recreating a site with a deleted site's code** recovers the soft-deleted secret before writing the new password, instead of failing on Key Vault's "deleted but recoverable" conflict.
+- `POST /api/admin/sedi` accepts `password` and answers `secret: created | existing | missing | not_configured`; `DELETE /api/admin/sedi/:id` answers 200 with `secret: deleted | not_found | kept_env_bound | not_configured | failed` instead of 204. New audit events `admin-wlc-secret-created` and `admin-wlc-secret-deleted`.
+- **Infra:** the backend identity needs **Key Vault Secrets Officer on the whole vault** (a per-secret scope cannot cover a secret that does not exist yet); `GUIDA-DEPLOY-guestportal-prod.md` §2.4 and COMPLIANCE.md D4 are updated accordingly.
+
 ### Fixed
 
 #### Site form: controller address and ports were lost

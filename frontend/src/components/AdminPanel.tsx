@@ -330,6 +330,13 @@ function SediTab() {
   const [error, setError] = useState<string | null>(null);
   const [reloading, setReloading] = useState(false);
   const [reloadResult, setReloadResult] = useState<WlcReloadResult | null>(null);
+  /** What creating or deleting a site did to its Key Vault secret. */
+  const [notice, setNotice] = useState<SedeNotice | null>(null);
+
+  function select(id: number | 'new') {
+    setSelected(id);
+    setNotice(null);
+  }
 
   /**
    * Refreshes keep the form mounted. Showing the spinner on every reload
@@ -383,7 +390,7 @@ function SediTab() {
           className={`w-full rounded-lg px-3 py-2 text-left text-xs font-semibold transition ${
             selected === 'new' ? 'bg-navy text-white' : 'text-navy hover:bg-navy/5'
           }`}
-          onClick={() => setSelected('new')}
+          onClick={() => select('new')}
         >
           + {t('admin.sede.new')}
         </button>
@@ -399,7 +406,7 @@ function SediTab() {
           <button
             key={s.id}
             data-testid={`admin-sede-${s.code}`}
-            onClick={() => setSelected(s.id)}
+            onClick={() => select(s.id)}
             className={`w-full rounded-lg px-3 py-2 text-left transition ${
               selected === s.id ? 'bg-slate-100 ring-1 ring-navy/20' : 'hover:bg-slate-50'
             }`}
@@ -442,16 +449,47 @@ function SediTab() {
             ))}
           </div>
         )}
+        {notice && (
+          <div
+            data-testid="sede-notice"
+            className={`mb-3 rounded-lg border px-3 py-2 text-xs ${
+              notice.kind === 'warning'
+                ? 'border-amber-200 bg-amber-50 text-amber-800'
+                : 'border-emerald-200 bg-emerald-50 text-emerald-800'
+            }`}
+          >
+            {notice.text}
+          </div>
+        )}
         {selected === 'new'
-          // Land on the new site, where its password can be set straight away.
-          ? <SedeForm key="new" sede={null} onSaved={(id) => { setSelected(id ?? null); void load(); }} />
+          // Land on the new site: its form shows where the secret stands.
+          ? <SedeForm key="new" sede={null} onSaved={(id, n) => { setSelected(id ?? null); setNotice(n ?? null); void load(); }} />
           : current
-            ? <SedeForm key={current.id} sede={current} onSaved={() => void load()} />
+            ? (
+              <SedeForm
+                key={current.id}
+                sede={current}
+                onSaved={(id, n) => {
+                  if (n) setNotice(n);
+                  // No id back means the site is gone: fall back to the first one.
+                  if (id === undefined) setSelected(null);
+                  void load();
+                }}
+              />
+            )
             : <p className="text-sm text-slate-500">{t('admin.sede.selectOne')}</p>}
       </div>
     </div>
   );
 }
+
+interface SedeNotice {
+  kind: 'success' | 'warning';
+  text: string;
+}
+
+/** Secret outcomes that need the admin to do something. */
+const SECRET_WARNINGS = new Set(['missing', 'not_configured', 'kept_env_bound', 'failed']);
 
 function Dot({ ok, label }: { ok: boolean; label: string }) {
   return (
@@ -471,7 +509,7 @@ function Dot({ ok, label }: { ok: boolean; label: string }) {
  * password and nothing else — the address and ports typed next to it were
  * never sent, with no hint that they had not been.
  */
-function SedeForm({ sede, onSaved }: { sede: AdminSede | null; onSaved: (id?: number) => void }) {
+function SedeForm({ sede, onSaved }: { sede: AdminSede | null; onSaved: (id?: number, notice?: SedeNotice) => void }) {
   const [, , t] = useLocale();
   const isNew = sede == null;
 
@@ -486,6 +524,9 @@ function SedeForm({ sede, onSaved }: { sede: AdminSede | null; onSaved: (id?: nu
   const [wlcSsid, setWlcSsid] = useState(sede?.wlcSsid ?? 'Dompe Guest');
   const [editingPassword, setEditingPassword] = useState(false);
   const [passwordDraft, setPasswordDraft] = useState('');
+  /** A new site's password: creating the site creates its secret with it. */
+  const [newPassword, setNewPassword] = useState('');
+  const [showNewPassword, setShowNewPassword] = useState(false);
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -533,8 +574,19 @@ function SedeForm({ sede, onSaved }: { sede: AdminSede | null; onSaved: (id?: nu
     const body = { name, city, address, wlcHost, wlcPort, wlcSshPort, wlcUsername, wlcSsid };
     try {
       if (isNew) {
-        const r = await adminApi.createSede({ code: code.trim().toUpperCase(), ...body });
-        onSaved(r.data.id);
+        const r = await adminApi.createSede({
+          code: code.trim().toUpperCase(),
+          ...body,
+          ...(newPassword ? { password: newPassword } : {}),
+        });
+        onSaved(r.data.id, {
+          kind: SECRET_WARNINGS.has(r.secret) ? 'warning' : 'success',
+          text: t(`admin.sede.created.${r.secret}`, {
+            code: r.data.code,
+            secret: r.data.credentialSecretName,
+            envVar: r.data.credentialEnvVar,
+          }),
+        });
         return;
       }
       if (fieldsDirty) {
@@ -607,12 +659,15 @@ function SedeForm({ sede, onSaved }: { sede: AdminSede | null; onSaved: (id?: nu
 
   async function remove() {
     if (isNew) return;
-    if (!window.confirm(t('admin.sede.confirmDelete', { code: sede.code }))) return;
+    if (!window.confirm(t('admin.sede.confirmDelete', { code: sede.code, secret: sede.credentialSecretName }))) return;
     setBusy(true);
     setError(null);
     try {
-      await adminApi.deleteSede(sede.id);
-      onSaved();
+      const r = await adminApi.deleteSede(sede.id);
+      onSaved(undefined, {
+        kind: SECRET_WARNINGS.has(r.secret) ? 'warning' : 'success',
+        text: t(`admin.sede.deleted.${r.secret}`, { code: sede.code, secret: r.secretName, envVar: r.envVar }),
+      });
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -684,10 +739,42 @@ function SedeForm({ sede, onSaved }: { sede: AdminSede | null; onSaved: (id?: nu
             <input id="wlc-ssid" className="input" value={wlcSsid} onChange={(e) => setWlcSsid(e.target.value)} />
           </Field>
         </div>
-        {/* The password lives in Key Vault, keyed by the site code, so it can
-            only be set once the site exists. */}
+        {/* The password lives in Key Vault, in a secret named after the site
+            code: for a new site, creating the site creates the secret. */}
         {isNew
-          ? <p className="mt-2 text-[11px] text-slate-400">{t('admin.sede.newSedePasswordHint')}</p>
+          ? (
+            <div data-testid="sede-new-password" className="mt-4 rounded-lg border border-slate-200 p-3">
+              <label
+                htmlFor="sede-new-password-input"
+                className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-widest text-slate-500"
+              >
+                <Key className="h-3.5 w-3.5" /> {t('admin.sede.password')}
+              </label>
+              <div className="relative mt-2 w-64">
+                <input
+                  id="sede-new-password-input"
+                  data-testid="sede-new-password-input"
+                  type={showNewPassword ? 'text' : 'password'}
+                  autoComplete="new-password"
+                  className="input pr-9 font-mono"
+                  value={newPassword}
+                  disabled={busy}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                />
+                <button
+                  type="button"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                  onClick={() => setShowNewPassword((v) => !v)}
+                  aria-label={showNewPassword ? t('admin.sede.passwordHide') : t('admin.sede.passwordShow')}
+                >
+                  {showNewPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
+              <p className="mt-2 text-[11px] text-slate-400">
+                {t('admin.sede.newSedePasswordHint', { secret: `WLC-PASSWORD-${code.trim() || '…'}` })}
+              </p>
+            </div>
+          )
           : (
             <SedePassword
               key={sede.id}

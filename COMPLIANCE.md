@@ -199,7 +199,7 @@ rileva il MITM **senza** toccare i controller, ed è la via più economica.
 
 | Campo | Valore |
 |---|---|
-| **Cosa** | Dal pannello di amministrazione un utente con ruolo `admin` può **vedere** la password del controller di una sede (letta live da Key Vault, `GET /api/admin/sedi/:id/password`), **cambiarla** (nuova versione del segreto `WLC-PASSWORD-<CODE>`, `PUT /api/admin/sedi/:id/password`) e **ricaricare** in memoria tutte le password da Key Vault senza riavvio (`POST /api/admin/wlc/reload`). |
+| **Cosa** | Dal pannello di amministrazione un utente con ruolo `admin` può **vedere** la password del controller di una sede (letta live da Key Vault, `GET /api/admin/sedi/:id/password`), **cambiarla** (nuova versione del segreto `WLC-PASSWORD-<CODE>`, `PUT /api/admin/sedi/:id/password`), **crearla** insieme alla sede (`POST /api/admin/sedi` con `password`: crea il segreto, o lo recupera se era rimasto eliminato da una sede con lo stesso codice), **eliminarla** insieme alla sede (`DELETE /api/admin/sedi/:id`: eliminazione soft, recuperabile per il periodo di conservazione del vault) e **ricaricare** in memoria tutte le password da Key Vault senza riavvio (`POST /api/admin/wlc/reload`). |
 | **Perché** | Richiesta operativa: la rotazione della password del controller non deve dipendere da un ticket al team piattaforma e da una nuova revisione ACA, e una sede nuova deve poter essere messa in servizio dal pannello. Prima la password era deliberatamente non leggibile né scrivibile via HTTP (§5.1). |
 | **Deviazione** | Una sessione admin compromessa può leggere la password admin di ogni WLC e sostituirla nel Key Vault (negando così il servizio sulla sede finché non viene ripristinata). Il backend richiede sul vault il ruolo **Key Vault Secrets Officer** (scrittura), non più solo Secrets User. |
 | **Rischio residuo** | La password del controller diventa raggiungibile da chi controlla una sessione admin, non più solo da chi ha accesso al Key Vault. Il controller non viene modificato dall'app: la password va cambiata prima sul WLC, poi salvata qui. |
@@ -209,7 +209,8 @@ rileva il MITM **senza** toccare i controller, ed è la via più economica.
 | Controllo | Dove |
 |---|---|
 | Solo ruolo `admin` (intero router `/api/admin`, autorizzazione risolta per richiesta) | `index.ts`, `middleware/authorize.ts` |
-| **Ogni** lettura e scrittura auditata a `warn` con attore, sede e `correlationId` (`admin-wlc-password-viewed`, `admin-wlc-password-changed`, `admin-wlc-reload`), più una riga in `sync_logs` visibile in UI. Il valore non compare mai nei log | `routes/admin.ts` |
+| **Ogni** lettura e scrittura auditata a `warn` con attore, sede e `correlationId` (`admin-wlc-password-viewed`, `admin-wlc-password-changed`, `admin-wlc-secret-created`, `admin-wlc-secret-deleted`, `admin-wlc-reload`), più una riga in `sync_logs` visibile in UI. Il valore non compare mai nei log | `routes/admin.ts` |
+| Nessuno stato a metà: la sede viene creata solo se Key Vault accetta il segreto (altrimenti la riga è rimossa); alla cancellazione il segreto si elimina dopo la riga, ed è **mantenuto** se il deploy lo collega a `WLC_PASSWORD_<CODE>` (la revisione successiva non riuscirebbe a risolverlo). Mai purge: l'eliminazione resta recuperabile | `routes/admin.ts`, `services/wlcCredentials.ts` |
 | Lettura su richiesta, una sede alla volta: la password non fa parte del DTO sede né di alcun elenco; risposta con `Cache-Control: no-store`; nel pannello viene tolta dallo stato quando nascosta e comunque dopo 30 s | `routes/admin.ts`, `AdminPanel.tsx` |
 | La scrittura non restituisce mai il valore; validazione come ogni credenziale IOS-XE (ASCII stampabile, niente a capo, niente spazi iniziali/finali che il validatore rimuoverebbe in silenzio) | `routes/admin.ts`, `utils/sanitize.ts` |
 | Key Vault resta l'unico archivio: nulla va a database; la cache in memoria è per processo e si ricostruisce all'avvio | `services/wlcCredentials.ts`, `utils/wlcPasswordCache.ts` |
@@ -217,7 +218,7 @@ rileva il MITM **senza** toccare i controller, ed è la via più economica.
 
 **Limiti noti, a verbale:**
 
-1. Il ruolo **Key Vault Secrets Officer** va concesso al backend; per contenere l'impatto conviene assegnarlo con scope sui singoli segreti `WLC-PASSWORD-*` anziché sull'intero vault.
+1. Il ruolo **Key Vault Secrets Officer** va concesso al backend **sull'intero vault**: uno scope sul singolo segreto non può coprire il segreto di una sede non ancora creata. Il backend può quindi scrivere ed eliminare ogni segreto del vault; per contenere l'impatto conviene che il vault contenga solo le password WLC.
 2. La cache è per replica: con più repliche una modifica dal pannello arriva alle altre al riavvio o al successivo "Ricarica configurazioni WLC" (oggi il backend gira con una replica).
 3. Resta l'esposizione del canale verso il controller descritta in **D2**/**D3**.
 

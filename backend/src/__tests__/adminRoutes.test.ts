@@ -56,7 +56,9 @@ const mockWlcCredentials = vi.hoisted(() => {
   return {
     readWlcPasswordFromVault: vi.fn(),
     writeWlcPasswordToVault: vi.fn(),
+    deleteWlcPasswordFromVault: vi.fn(),
     reloadWlcPasswords: vi.fn(),
+    isKeyVaultConfigured: vi.fn(() => true),
     describeKeyVaultError: vi.fn((err: unknown) => (err as Error).message),
     KeyVaultNotConfiguredError,
   };
@@ -152,6 +154,7 @@ beforeEach(() => {
   mockBreakGlass.countUsableBreakGlassAccounts.mockResolvedValue(1);
   mockRepo.listSediAdmin.mockResolvedValue([adminSede()]);
   mockRepo.getAdminSedeById.mockResolvedValue(adminSede());
+  mockWlcCredentials.isKeyVaultConfigured.mockReturnValue(true);
   app = createApp();
 });
 
@@ -601,12 +604,139 @@ describe('sedi', () => {
     expect(mockRepo.deleteSede).not.toHaveBeenCalled();
   });
 
-  it('deletes a site nothing references', async () => {
+  it('deletes a site nothing references, and its Key Vault secret', async () => {
+    const tor = adminSede({ id: 9, code: 'TOR', credentialEnvVar: 'WLC_PASSWORD_TOR', credentialSecretName: 'WLC-PASSWORD-TOR' });
+    mockRepo.getAdminSedeById.mockResolvedValue(tor);
     mockRepo.countGuestsBySede.mockResolvedValue(0);
+    mockWlcCredentials.deleteWlcPasswordFromVault.mockResolvedValue('deleted');
+
+    const res = await request(app).delete('/api/admin/sedi/9');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ success: true, secret: 'deleted', secretName: 'WLC-PASSWORD-TOR' });
+    expect(mockRepo.deleteSede).toHaveBeenCalledWith(9);
+    expect(mockWlcCredentials.deleteWlcPasswordFromVault).toHaveBeenCalledWith('TOR');
+    // Row first: a site without its secret would be worse than the reverse.
+    expect(mockRepo.deleteSede.mock.invocationCallOrder[0])
+      .toBeLessThan(mockWlcCredentials.deleteWlcPasswordFromVault.mock.invocationCallOrder[0]);
+    expect(mockLog.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'admin-wlc-secret-deleted', code: 'TOR' }),
+      expect.any(String),
+    );
+  });
+
+  // The deployment resolves WLC_PASSWORD_<CODE> from the secret: without it
+  // the next Container Apps revision would not start.
+  it('keeps a secret the deployment binds to an environment variable', async () => {
+    mockRepo.countGuestsBySede.mockResolvedValue(0); // MIL, bound in beforeEach
+
     const res = await request(app).delete('/api/admin/sedi/1');
 
-    expect(res.status).toBe(204);
+    expect(res.status).toBe(200);
+    expect(res.body.secret).toBe('kept_env_bound');
     expect(mockRepo.deleteSede).toHaveBeenCalledWith(1);
+    expect(mockWlcCredentials.deleteWlcPasswordFromVault).not.toHaveBeenCalled();
+  });
+
+  it('still deletes the site when Key Vault refuses, and says so', async () => {
+    mockRepo.getAdminSedeById.mockResolvedValue(adminSede({ id: 9, code: 'TOR' }));
+    mockRepo.countGuestsBySede.mockResolvedValue(0);
+    mockWlcCredentials.deleteWlcPasswordFromVault.mockRejectedValue(new Error('403 Forbidden'));
+
+    const res = await request(app).delete('/api/admin/sedi/9');
+
+    expect(res.status).toBe(200);
+    expect(res.body.secret).toBe('failed');
+    expect(mockRepo.deleteSede).toHaveBeenCalledWith(9);
+  });
+
+  it('leaves Key Vault alone when it is not configured', async () => {
+    mockWlcCredentials.isKeyVaultConfigured.mockReturnValue(false);
+    mockRepo.getAdminSedeById.mockResolvedValue(adminSede({ id: 9, code: 'TOR' }));
+    mockRepo.countGuestsBySede.mockResolvedValue(0);
+
+    const res = await request(app).delete('/api/admin/sedi/9');
+
+    expect(res.body.secret).toBe('not_configured');
+    expect(mockWlcCredentials.deleteWlcPasswordFromVault).not.toHaveBeenCalled();
+  });
+});
+
+describe('creating a site with its Key Vault secret', () => {
+  const body = { code: 'TOR', name: 'Torino', city: 'Torino', wlcHost: '10.0.0.9' };
+  const tor = () => adminSede({ id: 9, code: 'TOR', active: false, credentialConfigured: false });
+
+  beforeEach(() => {
+    mockRepo.getSedeByCode.mockResolvedValue(null);
+    mockRepo.listSediAdmin.mockResolvedValue([]);
+    mockRepo.createSede.mockResolvedValue(tor());
+    mockRepo.getAdminSedeById.mockResolvedValue({ ...tor(), credentialConfigured: true });
+  });
+
+  it('creates the secret with the password, without echoing or logging it', async () => {
+    mockWlcCredentials.writeWlcPasswordToVault.mockResolvedValue(undefined);
+
+    const res = await request(app).post('/api/admin/sedi').send({ ...body, password: 'T0rino-Wlc' });
+
+    expect(res.status).toBe(201);
+    expect(res.body.secret).toBe('created');
+    expect(res.body.data.credentialConfigured).toBe(true);
+    expect(mockWlcCredentials.writeWlcPasswordToVault).toHaveBeenCalledWith('TOR', 'T0rino-Wlc');
+    // Never stored with the site.
+    expect(mockRepo.createSede).toHaveBeenCalledWith(expect.not.objectContaining({ password: expect.anything() }), 'admin@dompe.com');
+    expect(JSON.stringify(res.body)).not.toContain('T0rino-Wlc');
+    expect(JSON.stringify(mockLog.warn.mock.calls)).not.toContain('T0rino-Wlc');
+    expect(mockLog.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'admin-wlc-secret-created', code: 'TOR' }),
+      expect.any(String),
+    );
+  });
+
+  it('takes the site back out when Key Vault refuses the secret', async () => {
+    mockWlcCredentials.writeWlcPasswordToVault.mockRejectedValue(new Error('403 Forbidden'));
+
+    const res = await request(app).post('/api/admin/sedi').send({ ...body, password: 'T0rino-Wlc' });
+
+    expect(res.status).toBe(502);
+    expect(res.body.error).toBe('keyvault_error');
+    expect(mockRepo.deleteSede).toHaveBeenCalledWith(9);
+  });
+
+  it('creates nothing when Key Vault is not configured to hold the password', async () => {
+    mockWlcCredentials.isKeyVaultConfigured.mockReturnValue(false);
+
+    const res = await request(app).post('/api/admin/sedi').send({ ...body, password: 'T0rino-Wlc' });
+
+    expect(res.status).toBe(503);
+    expect(mockRepo.createSede).not.toHaveBeenCalled();
+  });
+
+  it('creates nothing with an invalid password', async () => {
+    const res = await request(app).post('/api/admin/sedi').send({ ...body, password: ' padded ' });
+
+    expect(res.status).toBe(400);
+    expect(mockRepo.createSede).not.toHaveBeenCalled();
+    expect(mockWlcCredentials.writeWlcPasswordToVault).not.toHaveBeenCalled();
+  });
+
+  it('picks up a secret created ahead of the site', async () => {
+    mockWlcCredentials.readWlcPasswordFromVault.mockResolvedValue('already-there');
+
+    const res = await request(app).post('/api/admin/sedi').send(body);
+
+    expect(res.status).toBe(201);
+    expect(res.body.secret).toBe('existing');
+    expect(mockWlcCredentials.writeWlcPasswordToVault).not.toHaveBeenCalled();
+    expect(JSON.stringify(res.body)).not.toContain('already-there');
+  });
+
+  it('says when there is no secret yet', async () => {
+    mockWlcCredentials.readWlcPasswordFromVault.mockResolvedValue(null);
+
+    const res = await request(app).post('/api/admin/sedi').send(body);
+
+    expect(res.status).toBe(201);
+    expect(res.body.secret).toBe('missing');
   });
 });
 

@@ -367,9 +367,21 @@ export function wlcPasswordForSede(sedeCode: string | null | undefined): string 
     const fromVault = getCachedWlcPassword(sedeCode);
     if (fromVault && fromVault.length > 0) return fromVault;
 
-    const key = 'WLC_PASSWORD_' + sedeCode.toUpperCase().replace(/[^A-Z0-9]/g, '_');
-    const v = process.env[key];
+    const v = process.env[wlcPasswordEnvVar(sedeCode)];
     if (v && v.length > 0 && !isUnresolvedSecretReference(v)) return v;
   }
   return config.wlc.defaultPassword;
+}
+
+function wlcPasswordEnvVar(sedeCode: string): string {
+  return 'WLC_PASSWORD_' + sedeCode.toUpperCase().replace(/[^A-Z0-9]/g, '_');
+}
+
+/**
+ * Whether the deployment binds this site's password to `WLC_PASSWORD_<CODE>`,
+ * resolved or not. Such a binding points at the Key Vault secret: deleting the
+ * secret would make the next Container Apps revision fail to resolve it.
+ */
+export function isWlcPasswordEnvBound(sedeCode: string): boolean {
+  return process.env[wlcPasswordEnvVar(sedeCode)] !== undefined;
 }

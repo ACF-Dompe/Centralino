@@ -41,6 +41,11 @@ vi.mock('../../i18n', () => ({
         'admin.bg.unlock': 'Sblocca',
         'admin.sede.credentialMissing': 'Password del controller non configurata.',
         'admin.sede.savedButPasswordFailed': 'Dati della sede salvati, ma la password no: {error}',
+        'admin.sede.created.created': 'Sede {code} creata. Segreto {secret} creato.',
+        'admin.sede.created.missing': 'Sede {code} creata, senza password: {secret} non esiste.',
+        'admin.sede.deleted.deleted': 'Sede {code} eliminata con il segreto {secret}.',
+        'admin.sede.deleted.kept_env_bound': 'Sede {code} eliminata. {secret} mantenuto: collegato a {envVar}.',
+        'admin.sede.confirmDelete': 'Eliminare {code} e il segreto {secret}?',
         'toast.loading': 'Caricamento...',
       };
       const val = dict[key] ?? key;
@@ -441,6 +446,91 @@ describe('AdminPanel', () => {
       await u.click(screen.getByTestId('sede-test-btn'));
 
       await waitFor(() => expect(mockAdminApi.testSede).toHaveBeenCalledWith(1));
+    });
+
+    describe('Key Vault secret of a new or deleted site', () => {
+      const tor = {
+        ...sedi[0], id: 9, code: 'TOR', name: 'Torino', city: 'Torino', active: false,
+        credentialEnvVar: 'WLC_PASSWORD_TOR', credentialSecretName: 'WLC-PASSWORD-TOR',
+      };
+
+      async function fillNewSite(u: ReturnType<typeof userEvent.setup>) {
+        await u.click(screen.getByTestId('sede-new-btn'));
+        await u.type(screen.getByLabelText('admin.sede.code'), 'tor');
+        await u.type(screen.getByLabelText('admin.sede.name'), 'Torino');
+        await u.type(screen.getByLabelText('admin.sede.city'), 'Torino');
+        await u.type(screen.getByLabelText('admin.sede.host'), '10.0.0.9');
+      }
+
+      async function openSedi() {
+        const u = userEvent.setup();
+        render(<AdminPanel currentUserEmail="admin@dompe.com" onClose={vi.fn()} />);
+        await u.click(screen.getByTestId('admin-tab-sedi'));
+        await waitFor(() => expect(screen.getByTestId('sede-new-btn')).toBeInTheDocument());
+        return u;
+      }
+
+      it('creates the site with its password, says the secret was created, and opens it', async () => {
+        mockAdminApi.createSede.mockResolvedValue({ data: tor, secret: 'created' });
+        const u = await openSedi();
+        mockAdminApi.listSedi.mockResolvedValue({ data: [sedi[0], tor] });
+
+        await fillNewSite(u);
+        // The secret the site will get is named before it exists.
+        expect(screen.getByTestId('sede-new-password')).toHaveTextContent('WLC-PASSWORD-TOR');
+        await u.type(screen.getByTestId('sede-new-password-input'), 'T0rino-Wlc');
+        await u.click(screen.getByTestId('sede-save-btn'));
+
+        await waitFor(() => expect(mockAdminApi.createSede).toHaveBeenCalledWith(expect.objectContaining({
+          code: 'TOR', wlcHost: '10.0.0.9', password: 'T0rino-Wlc',
+        })));
+        await waitFor(() => expect(screen.getByTestId('sede-notice')).toHaveTextContent('Sede TOR creata. Segreto WLC-PASSWORD-TOR creato.'));
+        // Now on the new site's own form.
+        await waitFor(() => expect(screen.getByLabelText('admin.sede.code')).toHaveValue('TOR'));
+        expect(screen.getByLabelText('admin.sede.code')).toBeDisabled();
+      });
+
+      it('sends no password when left empty, and warns that the site has none', async () => {
+        mockAdminApi.createSede.mockResolvedValue({ data: tor, secret: 'missing' });
+        const u = await openSedi();
+
+        await fillNewSite(u);
+        await u.click(screen.getByTestId('sede-save-btn'));
+
+        await waitFor(() => expect(mockAdminApi.createSede).toHaveBeenCalled());
+        expect(mockAdminApi.createSede.mock.calls[0][0]).not.toHaveProperty('password');
+        await waitFor(() => expect(screen.getByTestId('sede-notice')).toHaveTextContent('senza password'));
+      });
+
+      it('deletes a site and its secret, after a confirmation that names the secret', async () => {
+        window.confirm = vi.fn(() => true);
+        mockAdminApi.listSedi.mockResolvedValue({ data: [tor] });
+        mockAdminApi.deleteSede.mockResolvedValue({
+          success: true, secret: 'deleted', secretName: 'WLC-PASSWORD-TOR', envVar: 'WLC_PASSWORD_TOR',
+        });
+        const u = await openSedi();
+        await waitFor(() => expect(screen.getByTestId('sede-delete-btn')).toBeInTheDocument());
+        mockAdminApi.listSedi.mockResolvedValue({ data: [] });
+
+        await u.click(screen.getByTestId('sede-delete-btn'));
+
+        expect(window.confirm).toHaveBeenCalledWith('Eliminare TOR e il segreto WLC-PASSWORD-TOR?');
+        await waitFor(() => expect(mockAdminApi.deleteSede).toHaveBeenCalledWith(9));
+        await waitFor(() => expect(screen.getByTestId('sede-notice')).toHaveTextContent('Sede TOR eliminata con il segreto WLC-PASSWORD-TOR.'));
+      });
+
+      it('says why a secret was kept', async () => {
+        window.confirm = vi.fn(() => true);
+        mockAdminApi.deleteSede.mockResolvedValue({
+          success: true, secret: 'kept_env_bound', secretName: 'WLC-PASSWORD-MIL', envVar: 'WLC_PASSWORD_MIL',
+        });
+        const u = await openSedi();
+        await waitFor(() => expect(screen.getByTestId('sede-delete-btn')).toBeInTheDocument());
+
+        await u.click(screen.getByTestId('sede-delete-btn'));
+
+        await waitFor(() => expect(screen.getByTestId('sede-notice')).toHaveTextContent('collegato a WLC_PASSWORD_MIL'));
+      });
     });
 
     /*
