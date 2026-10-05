@@ -45,6 +45,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+#### Site form: controller address and ports were lost
+- The "Sedi e WLC" form had two saves. "Salva password", sitting inside the controller section, wrote the password to Key Vault and nothing else; the address, ports, account and SSID typed next to it were only sent by the "Salva" at the bottom, with no sign that they were still unsaved.
+- Worse, every refresh of the site list replaced the panel with a spinner, which unmounted the form: saving a password for a site that had none, running a connection test, or activating the site silently discarded whatever was being edited. The test also ran against the address still in the database.
+- There is now one Save: it writes the site record, then the new password if one was typed (after the same confirmation), and says which half failed if only the password did. Save stays disabled until something changes, an "unsaved changes" marker shows meanwhile, the connection test is disabled until the changes are saved, and refreshes keep the form mounted. A new site opens on its own form once created, so its password can be set straight away.
+- No backend change: `PUT /api/admin/sedi/:id` already stored every field in `sedi`. Address, ports, account and SSID live only in the database; Key Vault holds only the password.
+
 #### Guest accounts on the WLC: cut-off sessions, inherited expiry, no read-back
 - **Every provisioning run timed out.** `WLC_SSH_TIMEOUT_MS` (10 s) covered connecting *and* running, and the ten-command sequence needs ~10 s of pacing alone: create and resend always ended in "SSH timeout" and closed the session before `write memory` and the check had answered, so resend always reported `wlcUpdated: false`. The budget now covers connecting; once the shell is open the session also gets the time its schedule needs.
 - **Re-send kept the old expiry.** The controller counts the lifetime from `creation-time`, which an edit does not reset, while the email promised a fresh duration: credentials re-sent for an older account arrived already expired. Resend now deletes and recreates the account (`no user-name` first, retried without it if the controller refuses), and restarts the guest's countdown in the app to match.

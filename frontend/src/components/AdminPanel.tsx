@@ -331,8 +331,12 @@ function SediTab() {
   const [reloading, setReloading] = useState(false);
   const [reloadResult, setReloadResult] = useState<WlcReloadResult | null>(null);
 
+  /**
+   * Refreshes keep the form mounted. Showing the spinner on every reload
+   * unmounted the site form — a password save, a connection test or an
+   * activation silently threw away the address and ports being edited.
+   */
   const load = useCallback(async () => {
-    setLoading(true);
     try {
       const r = await adminApi.listSedi();
       setSedi(r.data);
@@ -439,7 +443,8 @@ function SediTab() {
           </div>
         )}
         {selected === 'new'
-          ? <SedeForm key="new" sede={null} onSaved={() => { setSelected(null); void load(); }} />
+          // Land on the new site, where its password can be set straight away.
+          ? <SedeForm key="new" sede={null} onSaved={(id) => { setSelected(id ?? null); void load(); }} />
           : current
             ? <SedeForm key={current.id} sede={current} onSaved={() => void load()} />
             : <p className="text-sm text-slate-500">{t('admin.sede.selectOne')}</p>}
@@ -457,7 +462,16 @@ function Dot({ ok, label }: { ok: boolean; label: string }) {
   );
 }
 
-function SedeForm({ sede, onSaved }: { sede: AdminSede | null; onSaved: () => void }) {
+/**
+ * One site, with its controller settings and password.
+ *
+ * A single Save writes everything that changed: the site record to the
+ * database, then the password to Key Vault. There used to be a separate "Salva
+ * password" button sitting inside the controller section, which saved the
+ * password and nothing else — the address and ports typed next to it were
+ * never sent, with no hint that they had not been.
+ */
+function SedeForm({ sede, onSaved }: { sede: AdminSede | null; onSaved: (id?: number) => void }) {
   const [, , t] = useLocale();
   const isNew = sede == null;
 
@@ -470,27 +484,86 @@ function SedeForm({ sede, onSaved }: { sede: AdminSede | null; onSaved: () => vo
   const [wlcSshPort, setWlcSshPort] = useState(sede?.wlcSshPort ?? 22);
   const [wlcUsername, setWlcUsername] = useState(sede?.wlcUsername ?? 'admin_guest');
   const [wlcSsid, setWlcSsid] = useState(sede?.wlcSsid ?? 'Dompe Guest');
+  const [editingPassword, setEditingPassword] = useState(false);
+  const [passwordDraft, setPasswordDraft] = useState('');
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState<{ password: boolean } | null>(null);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
 
+  /** Take the values the server stored, which may differ (trimmed, for one). */
+  function resetFields(s: AdminSede) {
+    setName(s.name);
+    setCity(s.city);
+    setAddress(s.address ?? '');
+    setWlcHost(s.wlcHost ?? '');
+    setWlcPort(s.wlcPort ?? 443);
+    setWlcSshPort(s.wlcSshPort ?? 22);
+    setWlcUsername(s.wlcUsername ?? 'admin_guest');
+    setWlcSsid(s.wlcSsid ?? 'Dompe Guest');
+  }
+
+  const fieldsDirty = isNew || (
+    name !== sede.name
+    || city !== sede.city
+    || (address ?? '') !== (sede.address ?? '')
+    || (wlcHost ?? '') !== (sede.wlcHost ?? '')
+    || wlcPort !== sede.wlcPort
+    || wlcSshPort !== sede.wlcSshPort
+    || wlcUsername !== sede.wlcUsername
+    || wlcSsid !== sede.wlcSsid
+  );
+  const passwordPending = !isNew && editingPassword && passwordDraft.length > 0;
+  const dirty = fieldsDirty || passwordPending;
+
+  function cancelPassword() {
+    setEditingPassword(false);
+    setPasswordDraft('');
+  }
+
   async function save() {
+    // Asked before anything is written, so declining leaves everything as it was.
+    if (passwordPending && !window.confirm(t('admin.sede.passwordConfirm', { code: sede!.code }))) return;
+
     setBusy(true);
     setError(null);
+    setSaved(null);
+    setTestResult(null);
+    const body = { name, city, address, wlcHost, wlcPort, wlcSshPort, wlcUsername, wlcSsid };
     try {
-      const body = { name, city, address, wlcHost, wlcPort, wlcSshPort, wlcUsername, wlcSsid };
       if (isNew) {
-        await adminApi.createSede({ code: code.trim().toUpperCase(), ...body });
-      } else {
-        await adminApi.updateSede(sede.id, body);
+        const r = await adminApi.createSede({ code: code.trim().toUpperCase(), ...body });
+        onSaved(r.data.id);
+        return;
       }
-      onSaved();
+      if (fieldsDirty) {
+        const r = await adminApi.updateSede(sede.id, body);
+        resetFields(r.data);
+      }
     } catch (err) {
+      // Nothing was written: the record failed first, and the password waits for it.
       setError((err as Error).message);
-    } finally {
       setBusy(false);
+      return;
     }
+
+    let passwordSaved = false;
+    if (passwordPending) {
+      try {
+        await adminApi.setSedePassword(sede.id, passwordDraft);
+        cancelPassword();
+        passwordSaved = true;
+      } catch (err) {
+        const message = (err as Error).message;
+        // The record may already be saved: say which half went through.
+        setError(fieldsDirty ? t('admin.sede.savedButPasswordFailed', { error: message }) : message);
+      }
+    }
+
+    if (fieldsDirty || passwordSaved) setSaved({ password: passwordSaved });
+    setBusy(false);
+    onSaved(sede.id);
   }
 
   async function test() {
@@ -500,7 +573,7 @@ function SedeForm({ sede, onSaved }: { sede: AdminSede | null; onSaved: () => vo
     try {
       const r = await adminApi.testSede(sede.id);
       setTestResult({ ok: r.success, message: r.success ? t('admin.sede.testOk') : (r.error ?? t('admin.sede.testFailed')) });
-      onSaved();
+      onSaved(sede.id);
     } catch (err) {
       setTestResult({ ok: false, message: (err as Error).message });
     } finally {
@@ -514,7 +587,7 @@ function SedeForm({ sede, onSaved }: { sede: AdminSede | null; onSaved: () => vo
     setError(null);
     try {
       await adminApi.setSedeActive(sede.id, !sede.active, force);
-      onSaved();
+      onSaved(sede.id);
     } catch (err) {
       const apiErr = err as ApiError;
       if (apiErr.code === 'untested_sede') {
@@ -615,7 +688,18 @@ function SedeForm({ sede, onSaved }: { sede: AdminSede | null; onSaved: () => vo
             only be set once the site exists. */}
         {isNew
           ? <p className="mt-2 text-[11px] text-slate-400">{t('admin.sede.newSedePasswordHint')}</p>
-          : <SedePassword key={sede.id} sede={sede} onSaved={onSaved} />}
+          : (
+            <SedePassword
+              key={sede.id}
+              sede={sede}
+              editing={editingPassword}
+              draft={passwordDraft}
+              disabled={busy}
+              onEdit={() => { setEditingPassword(true); setSaved(null); }}
+              onDraftChange={setPasswordDraft}
+              onCancel={cancelPassword}
+            />
+          )}
       </div>
 
       {!isNew && sede.wlcLastCheckAt && (
@@ -631,19 +715,38 @@ function SedeForm({ sede, onSaved }: { sede: AdminSede | null; onSaved: () => vo
           {testResult.message}
         </div>
       )}
+      {saved && (
+        <div data-testid="sede-saved" className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+          <Check className="mr-1 inline h-3 w-3 align-text-bottom" />{t('admin.sede.saved')}
+          {saved.password && (
+            <span data-testid="sede-password-saved" className="ml-1">{t('admin.sede.passwordSaved')}</span>
+          )}
+        </div>
+      )}
       {error && (
-        <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+        <div data-testid="sede-error" className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
           <AlertTriangle className="mr-1 inline h-3 w-3 align-text-bottom" />{error}
         </div>
       )}
 
       <div className="flex flex-wrap items-center gap-2 border-t border-slate-200 pt-4">
-        <button data-testid="sede-save-btn" className="btn-primary" disabled={busy} onClick={() => void save()}>
+        <button data-testid="sede-save-btn" className="btn-primary" disabled={busy || !dirty} onClick={() => void save()}>
           <Save className="h-4 w-4" /> {t('admin.sede.save')}
         </button>
+        {!isNew && dirty && (
+          <span data-testid="sede-unsaved" className="text-[11px] font-medium text-amber-700">{t('admin.sede.unsaved')}</span>
+        )}
         {!isNew && (
           <>
-            <button data-testid="sede-test-btn" className="btn-ghost" disabled={busy} onClick={() => void test()}>
+            {/* The test reads the saved settings, not the form: testing while
+                they differ would probe the old address and report on it. */}
+            <button
+              data-testid="sede-test-btn"
+              className="btn-ghost"
+              disabled={busy || dirty}
+              title={dirty ? t('admin.sede.saveBeforeTest') : undefined}
+              onClick={() => void test()}
+            >
               <RefreshCw className="h-4 w-4" /> {t('admin.sede.test')}
             </button>
             <button data-testid="sede-active-toggle" className="btn-ghost" disabled={busy} onClick={() => void toggleActive()}>
@@ -662,29 +765,45 @@ function SedeForm({ sede, onSaved }: { sede: AdminSede | null; onSaved: () => vo
 /** How long a revealed password stays on screen before it is masked again. */
 const PASSWORD_REVEAL_MS = 30_000;
 
+interface SedePasswordProps {
+  sede: AdminSede;
+  editing: boolean;
+  draft: string;
+  disabled: boolean;
+  onEdit: () => void;
+  onDraftChange: (value: string) => void;
+  onCancel: () => void;
+}
+
 /**
  * The controller password, held in Key Vault (COMPLIANCE.md D4).
  *
  * Fetched only when the admin asks to see it, dropped from memory when hidden
- * (or after 30 seconds), and never part of the site record. Changing it writes
- * a new Key Vault version that the backend uses immediately; the controller is
- * not touched, so the password must already have been changed there.
+ * (or after 30 seconds), and never part of the site record. A new value is
+ * held by the site form and written by its Save, after the site record; the
+ * controller is not touched, so the password must already have been changed
+ * there.
  */
-function SedePassword({ sede, onSaved }: { sede: AdminSede; onSaved: () => void }) {
+function SedePassword({ sede, editing, draft, disabled, onEdit, onDraftChange, onCancel }: SedePasswordProps) {
   const [, , t] = useLocale();
   const [revealed, setRevealed] = useState<string | null>(null);
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState('');
   const [showDraft, setShowDraft] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
 
   useEffect(() => {
     if (revealed == null) return;
     const timer = setTimeout(() => setRevealed(null), PASSWORD_REVEAL_MS);
     return () => clearTimeout(timer);
   }, [revealed]);
+
+  // A new value was just stored: whatever was on screen is the old one.
+  useEffect(() => {
+    if (!editing) {
+      setRevealed(null);
+      setShowDraft(false);
+    }
+  }, [editing]);
 
   async function toggleReveal() {
     setError(null);
@@ -696,33 +815,6 @@ function SedePassword({ sede, onSaved }: { sede: AdminSede; onSaved: () => void 
     try {
       const r = await adminApi.getSedePassword(sede.id);
       setRevealed(r.data.password);
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function cancelEdit() {
-    setEditing(false);
-    setDraft('');
-    setShowDraft(false);
-  }
-
-  async function savePassword() {
-    if (!draft) return;
-    if (!window.confirm(t('admin.sede.passwordConfirm', { code: sede.code }))) return;
-    setBusy(true);
-    setError(null);
-    setSaved(false);
-    try {
-      await adminApi.setSedePassword(sede.id, draft);
-      cancelEdit();
-      setRevealed(null);
-      setSaved(true);
-      // Only a site that had no password needs the list refreshed (its
-      // "credential" dot and the missing-password banner change).
-      if (!sede.credentialConfigured) onSaved();
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -746,7 +838,7 @@ function SedePassword({ sede, onSaved }: { sede: AdminSede; onSaved: () => void 
           <button
             data-testid="sede-password-toggle"
             className="btn-ghost p-2"
-            disabled={busy}
+            disabled={busy || disabled}
             onClick={() => void toggleReveal()}
             aria-label={revealed != null ? t('admin.sede.passwordHide') : t('admin.sede.passwordShow')}
             title={revealed != null ? t('admin.sede.passwordHide') : t('admin.sede.passwordShow')}
@@ -755,61 +847,47 @@ function SedePassword({ sede, onSaved }: { sede: AdminSede; onSaved: () => void 
           </button>
         )}
         {!editing && (
-          <button
-            data-testid="sede-password-edit"
-            className="btn-ghost text-xs"
-            disabled={busy}
-            onClick={() => { setEditing(true); setSaved(false); }}
-          >
+          <button data-testid="sede-password-edit" className="btn-ghost text-xs" disabled={busy || disabled} onClick={onEdit}>
             {t('admin.sede.passwordEdit')}
           </button>
         )}
       </div>
 
       {editing && (
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <label className="sr-only" htmlFor={`sede-password-input-${sede.id}`}>{t('admin.sede.passwordNew')}</label>
-          <div className="relative">
-            <input
-              id={`sede-password-input-${sede.id}`}
-              data-testid="sede-password-input"
-              type={showDraft ? 'text' : 'password'}
-              autoComplete="new-password"
-              className="input w-64 pr-9 font-mono"
-              placeholder={t('admin.sede.passwordNew')}
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-            />
-            <button
-              type="button"
-              data-testid="sede-password-input-toggle"
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
-              onClick={() => setShowDraft((v) => !v)}
-              aria-label={showDraft ? t('admin.sede.passwordHide') : t('admin.sede.passwordShow')}
-            >
-              {showDraft ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+        <>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <label className="sr-only" htmlFor={`sede-password-input-${sede.id}`}>{t('admin.sede.passwordNew')}</label>
+            <div className="relative">
+              <input
+                id={`sede-password-input-${sede.id}`}
+                data-testid="sede-password-input"
+                type={showDraft ? 'text' : 'password'}
+                autoComplete="new-password"
+                className="input w-64 pr-9 font-mono"
+                placeholder={t('admin.sede.passwordNew')}
+                value={draft}
+                disabled={disabled}
+                onChange={(e) => onDraftChange(e.target.value)}
+              />
+              <button
+                type="button"
+                data-testid="sede-password-input-toggle"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                onClick={() => setShowDraft((v) => !v)}
+                aria-label={showDraft ? t('admin.sede.passwordHide') : t('admin.sede.passwordShow')}
+              >
+                {showDraft ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </div>
+            <button data-testid="sede-password-cancel" className="btn-ghost text-xs" disabled={disabled} onClick={onCancel}>
+              {t('admin.sede.passwordCancel')}
             </button>
           </div>
-          <button
-            data-testid="sede-password-save"
-            className="btn-primary text-xs"
-            disabled={busy || draft.length === 0}
-            onClick={() => void savePassword()}
-          >
-            <Save className="h-3.5 w-3.5" /> {t('admin.sede.passwordSave')}
-          </button>
-          <button className="btn-ghost text-xs" disabled={busy} onClick={cancelEdit}>
-            {t('admin.sede.passwordCancel')}
-          </button>
-        </div>
+          <p data-testid="sede-password-pending" className="mt-1 text-[11px] text-amber-700">{t('admin.sede.passwordPending')}</p>
+        </>
       )}
 
       <p className="mt-2 text-[11px] text-slate-400">{t('admin.sede.passwordHelp')}</p>
-      {saved && (
-        <p data-testid="sede-password-saved" className="mt-1 text-[11px] font-medium text-emerald-700">
-          <Check className="mr-1 inline h-3 w-3 align-text-bottom" />{t('admin.sede.passwordSaved')}
-        </p>
-      )}
       {error && (
         <p data-testid="sede-password-error" className="mt-1 text-[11px] font-medium text-rose-700">
           <AlertTriangle className="mr-1 inline h-3 w-3 align-text-bottom" />{error}

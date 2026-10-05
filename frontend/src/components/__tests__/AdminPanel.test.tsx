@@ -40,6 +40,7 @@ vi.mock('../../i18n', () => ({
         'admin.bg.enable': 'Abilita',
         'admin.bg.unlock': 'Sblocca',
         'admin.sede.credentialMissing': 'Password del controller non configurata.',
+        'admin.sede.savedButPasswordFailed': 'Dati della sede salvati, ma la password no: {error}',
         'toast.loading': 'Caricamento...',
       };
       const val = dict[key] ?? key;
@@ -368,29 +369,39 @@ describe('AdminPanel', () => {
         await waitFor(() => expect(screen.getByTestId('sede-password-error')).toHaveTextContent('Key Vault non configurato'));
       });
 
-      it('saves a new password after confirmation', async () => {
+      it('saves a new password with the site Save, after confirmation', async () => {
         window.confirm = vi.fn(() => true);
         mockAdminApi.setSedePassword.mockResolvedValue({ success: true });
         const u = await openSedi();
 
         await u.click(screen.getByTestId('sede-password-edit'));
         await u.type(screen.getByTestId('sede-password-input'), 'N3w-pass');
-        await u.click(screen.getByTestId('sede-password-save'));
+        // No save button of its own any more: it only saved the password.
+        expect(screen.queryByTestId('sede-password-save')).not.toBeInTheDocument();
+        expect(screen.getByTestId('sede-password-pending')).toBeInTheDocument();
+        await u.click(screen.getByTestId('sede-save-btn'));
 
         await waitFor(() => expect(mockAdminApi.setSedePassword).toHaveBeenCalledWith(1, 'N3w-pass'));
         await waitFor(() => expect(screen.getByTestId('sede-password-saved')).toBeInTheDocument());
         expect(screen.queryByTestId('sede-password-input')).not.toBeInTheDocument();
+        // Nothing else changed, so the site record is not rewritten.
+        expect(mockAdminApi.updateSede).not.toHaveBeenCalled();
       });
 
-      it('does not save when the confirmation is declined', async () => {
+      it('saves nothing when the confirmation is declined', async () => {
         window.confirm = vi.fn(() => false);
         const u = await openSedi();
 
+        await u.clear(screen.getByLabelText('admin.sede.host'));
+        await u.type(screen.getByLabelText('admin.sede.host'), '10.9.9.9');
         await u.click(screen.getByTestId('sede-password-edit'));
         await u.type(screen.getByTestId('sede-password-input'), 'N3w-pass');
-        await u.click(screen.getByTestId('sede-password-save'));
+        await u.click(screen.getByTestId('sede-save-btn'));
 
         expect(mockAdminApi.setSedePassword).not.toHaveBeenCalled();
+        expect(mockAdminApi.updateSede).not.toHaveBeenCalled();
+        // Still there to be saved.
+        expect(screen.getByLabelText('admin.sede.host')).toHaveValue('10.9.9.9');
       });
 
       it('lets the new password be shown while typing it', async () => {
@@ -430,6 +441,137 @@ describe('AdminPanel', () => {
       await u.click(screen.getByTestId('sede-test-btn'));
 
       await waitFor(() => expect(mockAdminApi.testSede).toHaveBeenCalledWith(1));
+    });
+
+    /*
+     * The controller settings used to be lost in two ways: "Salva password"
+     * saved only the password, and every reload of the list unmounted the form
+     * and dropped whatever was being edited.
+     */
+    describe('saving the controller settings', () => {
+      async function openSedi() {
+        const u = userEvent.setup();
+        render(<AdminPanel currentUserEmail="admin@dompe.com" onClose={vi.fn()} />);
+        await u.click(screen.getByTestId('admin-tab-sedi'));
+        await waitFor(() => expect(screen.getByLabelText('admin.sede.host')).toBeInTheDocument());
+        return u;
+      }
+
+      async function editHost(u: ReturnType<typeof userEvent.setup>, value: string) {
+        await u.clear(screen.getByLabelText('admin.sede.host'));
+        await u.type(screen.getByLabelText('admin.sede.host'), value);
+      }
+
+      it('keeps Save disabled until something changes, then flags the unsaved change', async () => {
+        const u = await openSedi();
+        expect(screen.getByTestId('sede-save-btn')).toBeDisabled();
+        expect(screen.queryByTestId('sede-unsaved')).not.toBeInTheDocument();
+
+        await editHost(u, '10.9.9.9');
+
+        expect(screen.getByTestId('sede-save-btn')).toBeEnabled();
+        expect(screen.getByTestId('sede-unsaved')).toBeInTheDocument();
+      });
+
+      it('saves the address, ports and account', async () => {
+        mockAdminApi.updateSede.mockImplementation(async (_id: number, body: Record<string, unknown>) => ({
+          data: { ...sedi[0], ...body },
+        }));
+        const u = await openSedi();
+
+        await editHost(u, '10.9.9.9');
+        await u.clear(screen.getByLabelText('admin.sede.sshPort'));
+        await u.type(screen.getByLabelText('admin.sede.sshPort'), '2222');
+        await u.click(screen.getByTestId('sede-save-btn'));
+
+        await waitFor(() => expect(mockAdminApi.updateSede).toHaveBeenCalledWith(1, expect.objectContaining({
+          wlcHost: '10.9.9.9',
+          wlcSshPort: 2222,
+          wlcUsername: 'admin_guest',
+        })));
+        await waitFor(() => expect(screen.getByTestId('sede-saved')).toBeInTheDocument());
+        expect(mockAdminApi.setSedePassword).not.toHaveBeenCalled();
+      });
+
+      it('writes the settings and the new password with one Save, record first', async () => {
+        window.confirm = vi.fn(() => true);
+        const order: string[] = [];
+        mockAdminApi.updateSede.mockImplementation(async (_id: number, body: Record<string, unknown>) => {
+          order.push('record');
+          return { data: { ...sedi[0], ...body } };
+        });
+        mockAdminApi.setSedePassword.mockImplementation(async () => {
+          order.push('password');
+          return { success: true };
+        });
+        const u = await openSedi();
+
+        await editHost(u, '10.9.9.9');
+        await u.click(screen.getByTestId('sede-password-edit'));
+        await u.type(screen.getByTestId('sede-password-input'), 'N3w-pass');
+        await u.click(screen.getByTestId('sede-save-btn'));
+
+        await waitFor(() => expect(order).toEqual(['record', 'password']));
+        expect(mockAdminApi.updateSede).toHaveBeenCalledWith(1, expect.objectContaining({ wlcHost: '10.9.9.9' }));
+        expect(mockAdminApi.setSedePassword).toHaveBeenCalledWith(1, 'N3w-pass');
+        await waitFor(() => expect(screen.getByTestId('sede-password-saved')).toBeInTheDocument());
+      });
+
+      it('writes no password when the site record is refused', async () => {
+        window.confirm = vi.fn(() => true);
+        mockAdminApi.updateSede.mockRejectedValue(new Error('Host non valido'));
+        const u = await openSedi();
+
+        await editHost(u, '10.9.9.9');
+        await u.click(screen.getByTestId('sede-password-edit'));
+        await u.type(screen.getByTestId('sede-password-input'), 'N3w-pass');
+        await u.click(screen.getByTestId('sede-save-btn'));
+
+        await waitFor(() => expect(screen.getByTestId('sede-error')).toHaveTextContent('Host non valido'));
+        expect(mockAdminApi.setSedePassword).not.toHaveBeenCalled();
+      });
+
+      it('says which half went through when only the password fails', async () => {
+        window.confirm = vi.fn(() => true);
+        mockAdminApi.updateSede.mockImplementation(async (_id: number, body: Record<string, unknown>) => ({
+          data: { ...sedi[0], ...body },
+        }));
+        mockAdminApi.setSedePassword.mockRejectedValue(new Error('Key Vault non raggiungibile'));
+        const u = await openSedi();
+
+        await editHost(u, '10.9.9.9');
+        await u.click(screen.getByTestId('sede-password-edit'));
+        await u.type(screen.getByTestId('sede-password-input'), 'N3w-pass');
+        await u.click(screen.getByTestId('sede-save-btn'));
+
+        await waitFor(() => expect(screen.getByTestId('sede-error')).toHaveTextContent(
+          'Dati della sede salvati, ma la password no: Key Vault non raggiungibile',
+        ));
+        // Kept, so it can be saved again.
+        expect(screen.getByTestId('sede-password-input')).toHaveValue('N3w-pass');
+      });
+
+      it('keeps the edits when the list reloads', async () => {
+        mockAdminApi.setSedeActive.mockResolvedValue({ data: { ...sedi[0], active: false } });
+        const u = await openSedi();
+
+        await editHost(u, '10.9.9.9');
+        await u.click(screen.getByTestId('sede-active-toggle'));
+
+        await waitFor(() => expect(mockAdminApi.listSedi).toHaveBeenCalledTimes(2));
+        expect(screen.getByLabelText('admin.sede.host')).toHaveValue('10.9.9.9');
+      });
+
+      // The test reads the saved settings: run now, it would probe the old address.
+      it('does not test while the settings differ from the saved ones', async () => {
+        const u = await openSedi();
+        expect(screen.getByTestId('sede-test-btn')).toBeEnabled();
+
+        await editHost(u, '10.9.9.9');
+
+        expect(screen.getByTestId('sede-test-btn')).toBeDisabled();
+        expect(screen.getByTestId('sede-test-btn')).toHaveAttribute('title', 'admin.sede.saveBeforeTest');
+      });
     });
   });
 
